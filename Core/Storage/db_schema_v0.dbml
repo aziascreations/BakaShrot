@@ -1,0 +1,32 @@
+
+table archives {
+	# UTC Unix Timestamp after which this archived message should be deleted.
+	delete_by ??? [NOT NULL]
+	
+	message_data TEXT [NOT NULL]
+}
+
+table data {
+	group_id INTEGER [NOT NULL]
+	node_id INTEGER [NOT NULL]
+	message_id INTEGER [NOT NULL]
+	message_data TEXT [NOT NULL]
+}
+
+# Create it, but we'll implement this later.
+table attachements {
+	group_id INTEGER [NOT NULL]
+	node_id INTEGER [NOT NULL]
+	message_id INTEGER [NOT NULL]
+	attachement_data BLOB [NOT NULL]
+}
+
+index {
+	data, on combined group_id/node_id
+	data, on message_id
+	attachements, on combined group_id/node_id
+	attachements, on message_id
+}
+
+# Note, ignore it
+# msg_type TEXT GENERATED ALWAYS AS (data ->> '$.messageData.MsgType') VIRTUAL

@@ -1,0 +1,12 @@
+# IDEs
+.vs/
+.idea/
+
+# Build Artifacts
+*.exe
+*.dll
+*.so
+*.a
+*.pdb
+*.lib
+*.exp
