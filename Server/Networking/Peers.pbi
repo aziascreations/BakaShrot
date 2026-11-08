@@ -239,6 +239,8 @@ Procedure.i BakaShrot_PeerLink_SendMissing(*Link.BakaShrot_PeerLink, TopicId.i, 
 
 			AddElement(Batch\Messages())
 			Batch\Messages()\MessageId = Messages()\MessageId
+			; As stored: when it was pushed to its origin, whichever server that was.
+			Batch\Messages()\PushedAt  = Messages()\PushedAt
 			Batch\Messages()\JsonData  = Messages()\JsonData
 		Next
 

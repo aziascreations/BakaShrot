@@ -8,12 +8,14 @@ XIncludeFile "../Packets.pbi"
 ; S2C, answers a GetLatestMessage with the latest message of that topic/node combination.
 ; TopicId, NodeId: the server's own ids for them.
 ; TopicName, NodeName: their names, or their ids in digits if they have none.
+; PushedAt: when it was pushed, see Packets.pbi.
 Structure BakaShrot_LatestMessage Extends BakaShrot_PacketBase
     TopicId.l
     NodeId.l
     TopicName.s
     NodeName.s
     MessageId.q
+    PushedAt.q
     JsonData.s
 EndStructure
 
@@ -54,6 +56,9 @@ Procedure.i BakaShrot_LatestMessagePacket_Encode(*Latest.BakaShrot_LatestMessage
     EndIf
 
     If MsgPackWriteInteger(*MsgPackData, *Latest\MessageId) <> #MsgPack_Error_Success
+        Goto EncodeFailed
+    EndIf
+    If MsgPackWriteInteger(*MsgPackData, *Latest\PushedAt) <> #MsgPack_Error_Success
         Goto EncodeFailed
     EndIf
 
@@ -136,6 +141,15 @@ Procedure.i BakaShrot_LatestMessagePacket_Decode(*MsgPackData.MsgPackData)
     EndIf
     *Latest\MessageId = MsgPackReadInteger(*MsgPackData)
     If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or *Latest\MessageId < 1
+        Goto DecodeFailed
+    EndIf
+
+    ; PushedAt
+    If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+        Goto DecodeFailed
+    EndIf
+    *Latest\PushedAt = MsgPackReadInteger(*MsgPackData)
+    If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or Not BakaShrot_IsValidTimestamp(*Latest\PushedAt)
         Goto DecodeFailed
     EndIf
 

@@ -18,7 +18,8 @@ EndStructure
 #BakaShrot_ProtocolMagic   = $42534854 ; "BSHT"
 ; 2: topics and nodes by name (Commons/Networking/Names.pbi), see Design/Packets.md.
 ; 3: the Hello sealed for the server, a key per connection, everything after
-;    the ChallengeRequest encrypted (Connections.pbi).
+;    the ChallengeRequest encrypted (Connections.pbi). Messages carry when
+;    they were pushed (PushedAt).
 #BakaShrot_ProtocolVersion = 3
 
 ; Size in bytes of the nonce sent in a challenge request and echoed in its response.
@@ -38,6 +39,16 @@ EndStructure
 ; Size in bytes of the server's signature in a ChallengeRequest
 ; (#BakaShrot_Ed25519_SignatureSize).
 #BakaShrot_HandshakeSignatureSize = 64
+
+; When a message was pushed: milliseconds since 1970-01-01 00:00:00 UTC, set
+; by the server it was pushed to, and kept as is by every server it's
+; replicated to. Anything outside 1 to #BakaShrot_MaxTimestamp (9999-12-31)
+; is invalid on the wire.
+#BakaShrot_MaxTimestamp = 253402300799999
+
+Procedure.i BakaShrot_IsValidTimestamp(Timestamp.q)
+	ProcedureReturn Bool(Timestamp >= 1 And Timestamp <= #BakaShrot_MaxTimestamp)
+EndProcedure
 
 ; Biggest packet accepted on the wire once authenticated, anything bigger
 ; aborts the connection. Before that, only #BakaShrot_MaxHandshakePacketSize

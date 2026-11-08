@@ -5,7 +5,8 @@
 ;   Topic, Node  Whose latest message to get, each a name or an id.
 ;   ClientIni    Identity and server to use, defaults to "client.ini".
 ;
-; Prints the latest message stored for that topic/node, the server refuses
+; Prints the latest message stored for that topic/node, and when it was
+; pushed (UTC), then its data. The server refuses
 ; if the client's ReadTopics don't allow the topic, if either is unknown, or
 ; if there's no message.
 ; Compile as a console program, exits with 0 on success, 1 on failure.
@@ -55,7 +56,7 @@ If Not BakaShrot_GetLatestMessageOf(Topic, Node)
 EndIf
 
 PrintN("Message " + BakaShrot_GetMessageTopicString() + ":" + BakaShrot_GetMessageNodeString() + "#" + Str(BakaShrot_GetMessageId()) +
-       " (ids " + Str(BakaShrot_GetMessageTopicId()) + ":" + Str(BakaShrot_GetMessageNodeId()) + ")")
+       " (ids " + Str(BakaShrot_GetMessageTopicId()) + ":" + Str(BakaShrot_GetMessageNodeId()) + "), pushed " + ToolClient_FormatUtc(BakaShrot_GetMessagePushedAt()))
 PrintN(BakaShrot_GetMessageDataString())
 
 ToolClient_Close()

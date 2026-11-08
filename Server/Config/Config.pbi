@@ -9,6 +9,9 @@
 ;   [BakaShrot.Server]         -> BakaShrot_CoreConfig\Server
 ;   [BakaShrot.Topics]         -> topic names, "name = id" lines
 ;   [BakaShrot.Nodes]          -> node names, "name = id" lines
+;   [BakaShrot.Retention]      -> how long each topic's messages are kept
+;                                  here, "topic = max age" lines, see
+;                                  BakaShrot_RetentionRule
 ;   [BakaShrot.Peer.<name>]    -> one BakaShrot_CoreConfig\Peers() entry per
 ;                                  section.
 ;   [BakaShrot.Client.<name>]  -> one BakaShrot_CoreConfig\Clients() entry per
@@ -157,6 +160,37 @@ Structure BakaShrot_ClientConfig
 EndStructure
 
 
+; One line of [BakaShrot.Retention]: messages of the topics it matches may
+; be deleted from this server once they were pushed MaxAgeMs ago (see
+; Server/Storage/Retention.pbi). Only this server's: each server keeps its
+; own, a peer keeps what it was sent as long as its own rules say.
+;   logs = 30d          one topic, by name (known here or not) or id
+;   sensors.* = 12h     a pattern, matching names (Commons/Networking/Names.pbi)
+;   * = 365d            every other topic
+; Ages: numbers with a unit, s m h d w, added up ("1d12h"); "forever" (or
+; 0) keeps them. A topic takes its id's line, else its name's, else the
+; first pattern matching it, in the file's order, else "*"'s. Without any
+; line, messages are kept forever.
+Enumeration BakaShrot_RetentionKinds
+	#BakaShrot_Retention_Id      = 1
+	#BakaShrot_Retention_Name    = 2
+	#BakaShrot_Retention_Pattern = 3
+	#BakaShrot_Retention_Default = 4
+EndEnumeration
+
+Structure BakaShrot_RetentionRule
+	Kind.i
+	; As written: the topic's name or id, the pattern, or "*".
+	Ref.s
+	; For #BakaShrot_Retention_Id.
+	TopicId.i
+	; 0: kept forever.
+	MaxAgeMs.q
+	; The age as written, for SaveConfig() and the logs.
+	AgeText.s
+EndStructure
+
+
 ; Ini Section: [BakaShrot.Server]
 Structure BakaShrot_ServerConfig
 
@@ -189,6 +223,10 @@ Structure BakaShrot_ServerConfig
 	; Most messages sent to a peer per packet when it's missing some, 1-10000.
 	; A batch is also cut short to fit in one packet (64 KB).
 	PeerBatchSize.i
+
+	; Seconds between two passes deleting the messages past their topic's
+	; max age ([BakaShrot.Retention]). Default 60.
+	RetentionInterval.i
 
 EndStructure
 
@@ -224,6 +262,9 @@ Structure BakaShrot_CoreConfig
 	Map UsedTopicIds.i()
 	Map UsedNodeIds.i()
 
+	; [BakaShrot.Retention], in the file's order.
+	List Retention.BakaShrot_RetentionRule()
+
 	; One [BakaShrot.Peer.<name>] entry per map key.
 	Map Peers.BakaShrot_PeerConfig()
 
@@ -241,6 +282,7 @@ Macro Ptr_BakaShrot_CoreConfig : i : EndMacro
 #BakaShrot_Config_DefaultPeerRetryDelay    = 10
 #BakaShrot_Config_DefaultPeerSyncInterval  = 5
 #BakaShrot_Config_DefaultPeerBatchSize     = 100
+#BakaShrot_Config_DefaultRetentionInterval = 60
 
 ; What ReadPreferenceString() returns for a missing key, to tell it from an
 ; empty one: an empty PushTopics allows nothing, a missing one the default.
@@ -330,6 +372,145 @@ Procedure.i ResolveConfigNode(*Config.BakaShrot_CoreConfig, Ref.s)
 		ProcedureReturn *Config\NodeIds()
 	EndIf
 	ProcedureReturn -1
+EndProcedure
+
+
+; An age as [BakaShrot.Retention] writes it ("30d", "1d12h", "forever") in
+; milliseconds, 0 for forever, -1 if it isn't one.
+Procedure.q ParseRetentionAge(Text.s)
+	Protected i.i, c.s, Digits.s, Total.q, Unit.q, Seen.i
+
+	Text = LCase(Trim(Text))
+	If Text = "forever" Or Text = "0"
+		ProcedureReturn 0
+	EndIf
+	If Text = ""
+		ProcedureReturn -1
+	EndIf
+
+	For i = 1 To Len(Text)
+		c = Mid(Text, i, 1)
+		If c >= "0" And c <= "9"
+			Digits + c
+			If Len(Digits) > 9
+				ProcedureReturn -1
+			EndIf
+			Continue
+		EndIf
+		Select c
+			Case "s" : Unit = 1000
+			Case "m" : Unit = 60 * 1000
+			Case "h" : Unit = 3600 * 1000
+			Case "d" : Unit = 86400 * 1000
+			Case "w" : Unit = 7 * 86400 * 1000
+			Default  : ProcedureReturn -1
+		EndSelect
+		; A unit needs its number: "d" or "1dd" isn't an age.
+		If Digits = ""
+			ProcedureReturn -1
+		EndIf
+		Total + Val(Digits) * Unit
+		Digits = ""
+		Seen = #True
+	Next
+
+	; A number without a unit: seconds or days? Refused rather than guessed.
+	If Digits <> "" Or Not Seen
+		ProcedureReturn -1
+	EndIf
+	ProcedureReturn Total
+EndProcedure
+
+
+; Reads [BakaShrot.Retention] into *Config\Retention().
+; Returns #False on an invalid line, with the reason in BakaShrot_ConfigError.
+Procedure.i ParseRetentionSection(*Config.BakaShrot_CoreConfig)
+	Protected Ref.s, Value.s, MaxAge.q, Id.i
+
+	If Not PreferenceGroup("BakaShrot.Retention")
+		ProcedureReturn #True
+	EndIf
+
+	If ExaminePreferenceKeys()
+		While NextPreferenceKey()
+			Ref   = Trim(PreferenceKeyName())
+			Value = Trim(PreferenceKeyValue())
+			MaxAge = ParseRetentionAge(Value)
+			If MaxAge < 0
+				BakaShrot_ConfigError = "[BakaShrot.Retention] " + Ref + " = '" + Value + "' isn't an age: numbers with a unit (s m h d w), like 30d or 1d12h, or 'forever'"
+				ProcedureReturn #False
+			EndIf
+
+			AddElement(*Config\Retention())
+			*Config\Retention()\Ref      = Ref
+			*Config\Retention()\MaxAgeMs = MaxAge
+			*Config\Retention()\AgeText  = Value
+			*Config\Retention()\TopicId  = -1
+			Id = BakaShrot_RefToId(Ref)
+			If Ref = "*"
+				*Config\Retention()\Kind = #BakaShrot_Retention_Default
+			ElseIf Id >= 0
+				*Config\Retention()\Kind    = #BakaShrot_Retention_Id
+				*Config\Retention()\TopicId = Id
+			ElseIf BakaShrot_IsValidName(Ref)
+				; A name this config doesn't have may still come from a peer.
+				*Config\Retention()\Kind = #BakaShrot_Retention_Name
+			ElseIf BakaShrot_IsValidPattern(Ref)
+				*Config\Retention()\Kind = #BakaShrot_Retention_Pattern
+			Else
+				BakaShrot_ConfigError = "[BakaShrot.Retention] '" + Ref + "' isn't a topic name, id, pattern or *"
+				ProcedureReturn #False
+			EndIf
+		Wend
+	EndIf
+
+	; Two lines for the same topic: the second would silently lose.
+	Protected NewMap Seen.i()
+	ForEach *Config\Retention()
+		Ref = LCase(*Config\Retention()\Ref)
+		If FindMapElement(Seen(), Ref)
+			BakaShrot_ConfigError = "[BakaShrot.Retention] '" + *Config\Retention()\Ref + "' is given twice"
+			ProcedureReturn #False
+		EndIf
+		Seen(Ref) = #True
+	Next
+
+	ProcedureReturn #True
+EndProcedure
+
+
+; How long a topic's messages are kept by *Config's [BakaShrot.Retention],
+; in ms, 0 for forever. Name is "" for an unnamed topic.
+Procedure.q RetentionMaxAgeMs(List Rules.BakaShrot_RetentionRule(), TopicId.i, Name.s)
+	Protected *Default.BakaShrot_RetentionRule, *Named.BakaShrot_RetentionRule, *Matched.BakaShrot_RetentionRule
+
+	ForEach Rules()
+		Select Rules()\Kind
+			Case #BakaShrot_Retention_Id
+				If Rules()\TopicId = TopicId
+					ProcedureReturn Rules()\MaxAgeMs
+				EndIf
+			Case #BakaShrot_Retention_Name
+				If Not *Named And Name <> "" And LCase(Rules()\Ref) = LCase(Name)
+					*Named = @Rules()
+				EndIf
+			Case #BakaShrot_Retention_Pattern
+				If Not *Matched And Name <> "" And BakaShrot_GlobMatch(Rules()\Ref, Name)
+					*Matched = @Rules()
+				EndIf
+			Case #BakaShrot_Retention_Default
+				*Default = @Rules()
+		EndSelect
+	Next
+
+	If *Named
+		ProcedureReturn *Named\MaxAgeMs
+	ElseIf *Matched
+		ProcedureReturn *Matched\MaxAgeMs
+	ElseIf *Default
+		ProcedureReturn *Default\MaxAgeMs
+	EndIf
+	ProcedureReturn 0
 EndProcedure
 
 
@@ -649,8 +830,17 @@ Procedure.Ptr_BakaShrot_CoreConfig LoadConfig(IniFilePath.s)
 	*Config\Server\PeerRetryDelay    = ReadPreferenceLong("PeerRetryDelay", #BakaShrot_Config_DefaultPeerRetryDelay)
 	*Config\Server\PeerSyncInterval  = ReadPreferenceLong("PeerSyncInterval", #BakaShrot_Config_DefaultPeerSyncInterval)
 	*Config\Server\PeerBatchSize     = ReadPreferenceLong("PeerBatchSize", #BakaShrot_Config_DefaultPeerBatchSize)
+	*Config\Server\RetentionInterval = ReadPreferenceLong("RetentionInterval", #BakaShrot_Config_DefaultRetentionInterval)
+	If *Config\Server\RetentionInterval < 1
+		BakaShrot_ConfigError = "[BakaShrot.Server] RetentionInterval must be 1 second or more"
+		Goto LoadFailed
+	EndIf
 	*Config\Server\ReplicatingTopicsText = ReadConfigKey("ReplicatingTopics", "ReplicatingTopicIds", "")
 	If Not ParseTopicSet(*Config, *Config\Server\ReplicatingTopicsText, @*Config\Server\ReplicatingTopics, "[BakaShrot.Server] ReplicatingTopics")
+		Goto LoadFailed
+	EndIf
+
+	If Not ParseRetentionSection(*Config)
 		Goto LoadFailed
 	EndIf
 
@@ -806,6 +996,7 @@ Procedure.i SaveConfig(IniFilePath.s, *Config.BakaShrot_CoreConfig)
 	WritePreferenceLong("PeerRetryDelay", *Config\Server\PeerRetryDelay)
 	WritePreferenceLong("PeerSyncInterval", *Config\Server\PeerSyncInterval)
 	WritePreferenceLong("PeerBatchSize", *Config\Server\PeerBatchSize)
+	WritePreferenceLong("RetentionInterval", *Config\Server\RetentionInterval)
 
 	PreferenceGroup("BakaShrot.Topics")
 	ForEach *Config\TopicNames()
@@ -816,6 +1007,13 @@ Procedure.i SaveConfig(IniFilePath.s, *Config.BakaShrot_CoreConfig)
 	ForEach *Config\NodeNames()
 		WritePreferenceString(*Config\NodeNames(), MapKey(*Config\NodeNames()))
 	Next
+
+	If ListSize(*Config\Retention())
+		PreferenceGroup("BakaShrot.Retention")
+		ForEach *Config\Retention()
+			WritePreferenceString(*Config\Retention()\Ref, *Config\Retention()\AgeText)
+		Next
+	EndIf
 
 	ForEach *Config\Peers()
 		PreferenceGroup("BakaShrot.Peer." + MapKey(*Config\Peers()))

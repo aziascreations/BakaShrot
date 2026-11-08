@@ -12,10 +12,12 @@
 ;                      every --interval ms, until stopped (Ctrl+C) or the
 ;                      connection fails.
 ;   --interval <Ms>    How often --follow checks, defaults to 500.
+;   --time, -t         Also prints when each message was pushed, in UTC.
 ;   ClientIni          Identity and server to use, defaults to "client.ini".
 ;
 ; Prints each message on its own line, in message id order, as its id, a
-; tab, and its data as stored (JSON or not, a message with line breaks spans
+; tab (with --time: when it was pushed, "2026-11-08T14:03:59.123Z", and
+; another tab), and its data as stored (JSON or not, a message with line breaks spans
 ; several lines). The server refuses if the client's ReadTopics don't allow
 ; the topic, or if either is unknown.
 ; Compile as a console program, exits with 0 on success, 1 on failure.
@@ -31,7 +33,7 @@ XIncludeFile "../../Commons/Networking/Names.pbi"
 #GetMessages_BatchLimit = 10000
 
 Define Topic.s, Node.s, IniPath.s = "client.ini", AfterText.s = "0"
-Define Limit.q = -1, Follow.i = #False, IntervalMs.i = 500
+Define Limit.q = -1, Follow.i = #False, IntervalMs.i = 500, ShowTime.i = #False
 Define i.i, Argument.s, Value.s, Positional.i
 Define AfterMessageId.q, Printed.q, Asked.l, Count.l, n.l
 
@@ -39,8 +41,9 @@ OpenConsole()
 
 ; Prints the usage and exits.
 Procedure Usage()
-	PrintN("Usage: GetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [--interval <Ms>] [ClientIni]")
+	PrintN("Usage: GetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [--interval <Ms>] [--time] [ClientIni]")
 	PrintN("  Topic and Node are names or ids. Prints each message as its id, a tab, and its data.")
+	PrintN("  --time also prints when it was pushed (UTC) between them.")
 	End 1
 EndProcedure
 
@@ -89,6 +92,8 @@ While i < CountProgramParameters()
 					EndIf
 					IntervalMs = Val(Value)
 			EndSelect
+		Case "--time", "-t"
+			ShowTime = #True
 		Case "--follow", "-f"
 			Follow = #True
 		Default
@@ -161,7 +166,11 @@ Repeat
 	For n = 0 To Count - 1
 		BakaShrot_SelectMessage(n)
 		AfterMessageId = BakaShrot_GetMessageId()
-		PrintN(Str(AfterMessageId) + #TAB$ + BakaShrot_GetMessageDataString())
+		If ShowTime
+			PrintN(Str(AfterMessageId) + #TAB$ + ToolClient_FormatUtc(BakaShrot_GetMessagePushedAt()) + #TAB$ + BakaShrot_GetMessageDataString())
+		Else
+			PrintN(Str(AfterMessageId) + #TAB$ + BakaShrot_GetMessageDataString())
+		EndIf
 	Next
 	Printed + Count
 

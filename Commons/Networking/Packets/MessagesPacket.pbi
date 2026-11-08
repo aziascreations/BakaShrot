@@ -9,6 +9,8 @@ XIncludeFile "GetMessagesPacket.pbi"
 ; One message of a Messages answer.
 Structure BakaShrot_MessagesEntry
     MessageId.q
+    ; When it was pushed, see Packets.pbi.
+    PushedAt.q
     JsonData.s
 EndStructure
 
@@ -19,7 +21,7 @@ EndStructure
 ; Encoded size of the answer's own fields, and of each message on top of its
 ; JSON, rounded up. Used to stop an answer before it gets over #BakaShrot_MaxPacketSize.
 #BakaShrot_MessagesOverhead        = 64 + 2 * (#BakaShrot_MaxNameLength + 2)
-#BakaShrot_MessagesMessageOverhead = 16
+#BakaShrot_MessagesMessageOverhead = 25
 
 ; S2C, answers a GetMessages with the messages of that topic/node combination
 ; stored after the asked id, in message id order: as many as were asked for,
@@ -89,6 +91,9 @@ Procedure.i BakaShrot_MessagesPacket_Encode(*Answer.BakaShrot_Messages, *OutSize
     EndIf
     ForEach *Answer\Messages()
         If MsgPackWriteInteger(*MsgPackData, *Answer\Messages()\MessageId) <> #MsgPack_Error_Success
+            Goto EncodeFailed
+        EndIf
+        If MsgPackWriteInteger(*MsgPackData, *Answer\Messages()\PushedAt) <> #MsgPack_Error_Success
             Goto EncodeFailed
         EndIf
         If MsgPackWriteString(*MsgPackData, *Answer\Messages()\JsonData) <> #MsgPack_Error_Success
@@ -199,6 +204,15 @@ Procedure.i BakaShrot_MessagesPacket_Decode(*MsgPackData.MsgPackData)
             Goto DecodeFailed
         EndIf
         PreviousMessageId = *Answer\Messages()\MessageId
+
+        ; PushedAt
+        If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+            Goto DecodeFailed
+        EndIf
+        *Answer\Messages()\PushedAt = MsgPackReadInteger(*MsgPackData)
+        If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or Not BakaShrot_IsValidTimestamp(*Answer\Messages()\PushedAt)
+            Goto DecodeFailed
+        EndIf
 
         ; JsonData
         If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_String

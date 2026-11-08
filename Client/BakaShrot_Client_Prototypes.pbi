@@ -31,6 +31,7 @@ PrototypeC.q BakaShrot_PushMessageTo_Prototype(Topic.p-unicode, JsonData.p-unico
 PrototypeC.i BakaShrot_GetLatestMessage_Prototype(TopicId.l, NodeId.l)
 PrototypeC.i BakaShrot_GetLatestMessageOf_Prototype(Topic.p-unicode, Node.p-unicode)
 PrototypeC.q BakaShrot_GetMessageId_Prototype()
+PrototypeC.q BakaShrot_GetMessagePushedAt_Prototype()
 PrototypeC.i BakaShrot_GetMessageData_Prototype(*Buffer, BufferSize.i)
 PrototypeC.l BakaShrot_GetMessageTopicId_Prototype()
 PrototypeC.l BakaShrot_GetMessageNodeId_Prototype()
@@ -66,6 +67,7 @@ Global BakaShrot_PushMessageTo.BakaShrot_PushMessageTo_Prototype
 Global BakaShrot_GetLatestMessage.BakaShrot_GetLatestMessage_Prototype
 Global BakaShrot_GetLatestMessageOf.BakaShrot_GetLatestMessageOf_Prototype
 Global BakaShrot_GetMessageId.BakaShrot_GetMessageId_Prototype
+Global BakaShrot_GetMessagePushedAt.BakaShrot_GetMessagePushedAt_Prototype
 Global BakaShrot_GetMessageData.BakaShrot_GetMessageData_Prototype
 Global BakaShrot_GetMessageTopicId.BakaShrot_GetMessageTopicId_Prototype
 Global BakaShrot_GetMessageNodeId.BakaShrot_GetMessageNodeId_Prototype
@@ -123,6 +125,7 @@ Procedure.i BakaShrot_LoadClient(DllPath.s)
 	BakaShrot_PushMessage      = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_PushMessageW")
 	BakaShrot_GetLatestMessage = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_GetLatestMessage")
 	BakaShrot_GetMessageId     = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_GetMessageId")
+	BakaShrot_GetMessagePushedAt = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_GetMessagePushedAt")
 	BakaShrot_GetMessageData   = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_GetMessageDataW")
 	BakaShrot_GetRefusalReason = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_GetRefusalReasonW")
 	BakaShrot_Query            = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_QueryW")
@@ -149,7 +152,7 @@ Procedure.i BakaShrot_LoadClient(DllPath.s)
 		ProcedureReturn #False
 	EndIf
 
-	If Not BakaShrot_PushMessage Or Not BakaShrot_GetLatestMessage Or Not BakaShrot_GetMessageId Or Not BakaShrot_GetMessageData Or Not BakaShrot_GetRefusalReason
+	If Not BakaShrot_PushMessage Or Not BakaShrot_GetLatestMessage Or Not BakaShrot_GetMessageId Or Not BakaShrot_GetMessagePushedAt Or Not BakaShrot_GetMessageData Or Not BakaShrot_GetRefusalReason
 		BakaShrot_UnloadClient()
 		ProcedureReturn #False
 	EndIf

@@ -78,6 +78,13 @@ Procedure.i ToolClient_Connect(IniPath.s)
 EndProcedure
 
 
+; Ms (milliseconds since 1970 UTC, as BakaShrot_GetMessagePushedAt() gives
+; it) as "2026-11-08T14:03:59.123Z".
+Procedure.s ToolClient_FormatUtc(Ms.q)
+	ProcedureReturn FormatDate("%yyyy-%mm-%ddT%hh:%ii:%ss", Ms / 1000) + "." + RSet(Str(Ms % 1000), 3, "0") + "Z"
+EndProcedure
+
+
 ; Disconnects and unloads the DLL.
 Procedure ToolClient_Close()
 	BakaShrot_Disconnect()

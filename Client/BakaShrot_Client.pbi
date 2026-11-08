@@ -17,6 +17,7 @@
 ;        BakaShrot_GetLatestMessageOf(Topic, Node), or
 ;        BakaShrot_GetLatestMessage(TopicId, NodeId), then
 ;          BakaShrot_GetMessageId(), BakaShrot_GetMessageData(),
+;          BakaShrot_GetMessagePushedAt() (ms since 1970 UTC),
 ;          BakaShrot_GetMessageTopic() / BakaShrot_GetMessageNode() (names)
 ;          and BakaShrot_GetMessageTopicId() / BakaShrot_GetMessageNodeId()
 ;        BakaShrot_GetMessages(Topic, Node, AfterMessageId, Limit): the
@@ -86,6 +87,7 @@ Global BakaShrot_Outbound.BakaShrot_Outbound
 
 ; Filled by the requests, see BakaShrot_GetLatestMessage() and BakaShrot_GetRefusalReasonA/W().
 Global BakaShrot_MessageId.q      = 0
+Global BakaShrot_MessagePushedAt.q = 0
 Global BakaShrot_MessageData.s    = ""
 Global BakaShrot_MessageTopicId.l = -1
 Global BakaShrot_MessageNodeId.l  = -1
@@ -511,6 +513,7 @@ Procedure.i BakaShrot_GetLatestMessageOfString(Topic.s, Node.s)
 
 	BakaShrot_RefusalReason = ""
 	BakaShrot_MessageId     = 0
+	BakaShrot_MessagePushedAt = 0
 	BakaShrot_MessageData   = ""
 	BakaShrot_MessageTopicId = -1
 	BakaShrot_MessageNodeId  = -1
@@ -564,6 +567,7 @@ Procedure.i BakaShrot_GetLatestMessageOfString(Topic.s, Node.s)
 	IsExpected = Bool(BakaShrot_RefMatches(Topic, *Latest\TopicId, *Latest\TopicName) And BakaShrot_RefMatches(Node, *Latest\NodeId, *Latest\NodeName))
 	If IsExpected
 		BakaShrot_MessageId      = *Latest\MessageId
+		BakaShrot_MessagePushedAt = *Latest\PushedAt
 		BakaShrot_MessageData    = *Latest\JsonData
 		BakaShrot_MessageTopicId = *Latest\TopicId
 		BakaShrot_MessageNodeId  = *Latest\NodeId
@@ -571,6 +575,7 @@ Procedure.i BakaShrot_GetLatestMessageOfString(Topic.s, Node.s)
 		BakaShrot_MessageNode    = *Latest\NodeName
 		AddElement(BakaShrot_Messages())
 		BakaShrot_Messages()\MessageId = *Latest\MessageId
+		BakaShrot_Messages()\PushedAt  = *Latest\PushedAt
 		BakaShrot_Messages()\JsonData  = *Latest\JsonData
 	EndIf
 	FreeStructure(*Latest)
@@ -627,6 +632,7 @@ Procedure.l BakaShrot_GetMessagesString(Topic.s, Node.s, AfterMessageId.q, Limit
 
 	BakaShrot_RefusalReason  = ""
 	BakaShrot_MessageId      = 0
+	BakaShrot_MessagePushedAt = 0
 	BakaShrot_MessageData    = ""
 	BakaShrot_MessageTopicId = -1
 	BakaShrot_MessageNodeId  = -1
@@ -709,6 +715,7 @@ Procedure.l BakaShrot_GetMessagesString(Topic.s, Node.s, AfterMessageId.q, Limit
 
 	If FirstElement(BakaShrot_Messages())
 		BakaShrot_MessageId   = BakaShrot_Messages()\MessageId
+		BakaShrot_MessagePushedAt = BakaShrot_Messages()\PushedAt
 		BakaShrot_MessageData = BakaShrot_Messages()\JsonData
 	EndIf
 	ProcedureReturn Count
@@ -743,6 +750,7 @@ ProcedureCDLL.i BakaShrot_SelectMessage(Index.l)
 	EndIf
 	SelectElement(BakaShrot_Messages(), Index)
 	BakaShrot_MessageId   = BakaShrot_Messages()\MessageId
+	BakaShrot_MessagePushedAt = BakaShrot_Messages()\PushedAt
 	BakaShrot_MessageData = BakaShrot_Messages()\JsonData
 	ProcedureReturn #True
 EndProcedure
@@ -757,6 +765,12 @@ EndProcedure
 ; or BakaShrot_GetMessages(), 0 if none.
 ProcedureCDLL.q BakaShrot_GetMessageId()
 	ProcedureReturn BakaShrot_MessageId
+EndProcedure
+
+; When that message was pushed, to whichever server it was pushed to: in
+; milliseconds since 1970-01-01 00:00:00 UTC. 0 if none.
+ProcedureCDLL.q BakaShrot_GetMessagePushedAt()
+	ProcedureReturn BakaShrot_MessagePushedAt
 EndProcedure
 
 ; The server's topic and node ids of that message, -1 if none.

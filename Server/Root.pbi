@@ -28,6 +28,7 @@
 XIncludeFile "Config/Config.pbi"
 XIncludeFile "Storage/Storage.pbi"
 XIncludeFile "Storage/Names.pbi"
+XIncludeFile "Storage/Retention.pbi"
 XIncludeFile "Networking/Networking.pbi"
 XIncludeFile "Networking/Peers.pbi"
 
@@ -121,9 +122,17 @@ Procedure.i BakaShrot_Root_StartWorkers(*Root.BakaShrot_Root)
 		ProcedureReturn #False
 	EndIf
 
+	; Deletes the messages past their topic's max age, see Storage/Retention.pbi.
+	If Not StartStorageRetention(*Config)
+		PrintN("[Root] Failed to start the retention thread")
+		CloseStorageWriter()
+		ProcedureReturn #False
+	EndIf
+
 	*Root\Server = BakaShrot_NetServer_Start(*Config\Server\Host, *Config\Server\Port, *Config)
 	If Not *Root\Server
 		PrintN("[Root] Failed to listen on '" + *Config\Server\Host + ":" + Str(*Config\Server\Port) + "'")
+		StopStorageRetention()
 		CloseStorageWriter()
 		ProcedureReturn #False
 	EndIf
@@ -134,6 +143,7 @@ Procedure.i BakaShrot_Root_StartWorkers(*Root.BakaShrot_Root)
 		PrintN("[Root] Failed to start the peer links, are [BakaShrot] PrivateKey and every peer's PublicKey valid?")
 		BakaShrot_NetServer_Stop(*Root\Server)
 		*Root\Server = 0
+		StopStorageRetention()
 		CloseStorageWriter()
 		ProcedureReturn #False
 	EndIf
@@ -157,6 +167,8 @@ Procedure BakaShrot_Root_StopWorkers(*Root.BakaShrot_Root)
 		BakaShrot_NetServer_Stop(*Root\Server)
 		*Root\Server = 0
 	EndIf
+
+	StopStorageRetention()
 
 	; Nothing writes anymore. Checkpoints the WAL into the database file.
 	CloseStorageWriter()

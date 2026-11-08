@@ -39,6 +39,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Iterator, Optional, Union
 
 __all__ = [
@@ -73,7 +74,9 @@ class ConnectionLostError(BakaShrotError):
 @dataclass(frozen=True)
 class Message:
     """A stored message. data is as stored: JSON or not (the server's
-    is_json column tells which, json() parses it)."""
+    is_json column tells which, json() parses it). pushed_at: when it was
+    pushed, to whichever server it was pushed to, in milliseconds since
+    1970-01-01 UTC (pushed is the same as a datetime)."""
 
     id: int
     topic: str
@@ -81,10 +84,16 @@ class Message:
     topic_id: int
     node_id: int
     data: str
+    pushed_at: int = 0
 
     def json(self) -> Any:
         """The data parsed as JSON, raises ValueError if it isn't."""
         return json.loads(self.data)
+
+    @property
+    def pushed(self) -> datetime:
+        """When it was pushed, as an aware datetime in UTC."""
+        return datetime.fromtimestamp(self.pushed_at / 1000, tz=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -181,6 +190,7 @@ class _Dll:
             "BakaShrot_SelectMessage": (I, [L]),
             "BakaShrot_HasMoreMessages": (I, []),
             "BakaShrot_GetMessageId": (Q, []),
+            "BakaShrot_GetMessagePushedAt": (Q, []),
             "BakaShrot_GetMessageTopicId": (L, []),
             "BakaShrot_GetMessageNodeId": (L, []),
             "BakaShrot_GetMessageTopicA": (I, [S, I]),
@@ -334,7 +344,8 @@ class Client:
     def _current(self) -> Message:
         dll = self._dll
         return Message(dll.GetMessageId(), dll.string(dll.GetMessageTopicA), dll.string(dll.GetMessageNodeA),
-                       dll.GetMessageTopicId(), dll.GetMessageNodeId(), dll.string(dll.GetMessageDataA))
+                       dll.GetMessageTopicId(), dll.GetMessageNodeId(), dll.string(dll.GetMessageDataA),
+                       dll.GetMessagePushedAt())
 
     def latest(self, topic: Ref, node: Ref) -> Optional[Message]:
         """The latest message of topic/node, None if there's none yet."""

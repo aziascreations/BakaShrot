@@ -122,11 +122,11 @@ over its own link to another server.
 | 8 | PushMessage | C→S | `Topic` str (ref, "" for the client's own), `JsonData` str | MessagePushed / RequestRefused |
 | 9 | MessagePushed | S→C | `MessageId` int ≥ 1 | |
 | 10 | GetLatestMessage | C→S | `Topic` str (ref), `Node` str (ref) | LatestMessage / RequestRefused |
-| 11 | LatestMessage | S→C | `TopicId`, `NodeId` int 0-65535 (the server's), `TopicName`, `NodeName` str (names, or ids in digits), `MessageId` int ≥ 1, `JsonData` str | |
+| 11 | LatestMessage | S→C | `TopicId`, `NodeId` int 0-65535 (the server's), `TopicName`, `NodeName` str (names, or ids in digits), `MessageId` int ≥ 1, `PushedAt` int (time, see below), `JsonData` str | |
 | 12 | RequestRefused | S→C | `Reason` str, for logs and humans | |
 | 13 | SyncStateRequest | P→S | None. | SyncState / RequestRefused |
 | 14 | SyncState | S→P | `TopicCount` int, then each topic's `Id` int and `Name` str (the named topics S takes from P); `NodeCount` int, then each node's `Id` and `Name` (the named nodes S takes from P); `TopicPatternCount` int, then each pattern str; `NodePatternCount` int, then each pattern str (S's wildcards for P, `*` included); `PairCount` int, then each pair's `TopicId`, `NodeId`, `MessageId`. Ids are S's own, names are never digits | |
-| 15 | ReplicateMessages | P→S | `Topic` str, `Node` str (names, never digits), `Count` int 1-10000, then each message's `MessageId` int (≥ 1, strictly increasing) and `JsonData` str | MessagePushed (last id) / RequestRefused |
+| 15 | ReplicateMessages | P→S | `Topic` str, `Node` str (names, never digits), `Count` int 1-10000, then each message's `MessageId` int (≥ 1, strictly increasing), `PushedAt` int (as stored, from its origin) and `JsonData` str | MessagePushed (last id) / RequestRefused |
 | 16 | QueryRequest | C→S | `Sql` str | QueryResult / RequestRefused |
 | 17 | QueryResult | S→C | `JsonResult` str: `{"columns":[...],"rows":[[...],...]}`, every value a string or null | |
 | 18 | ResolveName | C→S | `Kind` int (1 topic, 2 node), `Ref` str | NameResolved / RequestRefused |
@@ -134,7 +134,12 @@ over its own link to another server.
 | 20 | ListNames | C→S | `Kind` int (1 topics, 2 nodes) | NamesList |
 | 21 | NamesList | S→C | `Kind` int, `Truncated` int 0/1, `Count` int, then each entry's `Id` int, `Name` str ("" if unnamed), `Origin` str ("config", "id") | |
 | 22 | GetMessages | C→S | `Topic` str (ref), `Node` str (ref), `AfterMessageId` int ≥ 0, `Limit` int 1-10000 | Messages / RequestRefused |
-| 23 | Messages | S→C | `TopicId`, `NodeId` int 0-65535 (the server's), `TopicName`, `NodeName` str (names, or ids in digits), `More` int 0/1, `Count` int 0-10000, then each message's `MessageId` int (≥ 1, strictly increasing, above `AfterMessageId`) and `JsonData` str | |
+| 23 | Messages | S→C | `TopicId`, `NodeId` int 0-65535 (the server's), `TopicName`, `NodeName` str (names, or ids in digits), `More` int 0/1, `Count` int 0-10000, then each message's `MessageId` int (≥ 1, strictly increasing, above `AfterMessageId`), `PushedAt` int and `JsonData` str | |
+
+**Times** (`PushedAt`): milliseconds since 1970-01-01 00:00:00 UTC, 1 to
+`#BakaShrot_MaxTimestamp` (9999-12-31), anything else aborts. A message is
+stamped by the server it's pushed to, when the push arrives (its clock, not
+the client's), and keeps that time on every server it's replicated to.
 
 ## Rules
 
@@ -204,7 +209,8 @@ PushMessage(t, json)       AllowWrite, t in PushTopics ("" = own topic), at most
                            #BakaShrot_MaxMessageSize. JSON or not: stored as
                            is, SQLite flags it in is_json
                            -> stored under t and the authenticated node with the
-                           next message id -> MessagePushed(id)
+                           next message id, stamped with now (pushed_at)
+                           -> MessagePushed(id)
 GetLatestMessage(t, n)     AllowRead, t in ReadTopics -> LatestMessage
 GetMessages(t, n, after,   AllowRead, t in ReadTopics -> Messages: those above
             limit)         after, in id order, at most limit, fewer once they
@@ -253,7 +259,7 @@ S -> P  SyncState           every name S takes from P (its AcceptTopics and
            yet):
 P -> S  ReplicateMessages   the topic and node names, the next missing messages
                             of that pair, in id order, with their original
-                            message ids: up to PeerBatchSize of them, cut short
+                            message ids and pushed_at: up to PeerBatchSize of them, cut short
                             at about 64 KB (a bigger message goes alone)
         S: resolves the names to its own ids, adds the ones a wildcard took,
            refuses what it doesn't take (only if its config changed since
@@ -279,6 +285,13 @@ S -> P  MessagePushed(id)   the batch stored in one transaction with
   or ReplicateMessages is refused with `Only peers can replicate`.
 - **Unexpected packets:** a packet on a link outside a check-in drops the
   link.
+- **Retention:** each server deletes a topic's messages past its own
+  `[BakaShrot.Retention]` max age (`Server/Storage/Retention.pbi`), by their
+  pushed_at. The sync state comes from `node_heads`, which deleting leaves
+  alone: a server still says it has what it deleted, so peers don't send it
+  again. What a peer sends already past this server's max age isn't
+  stored, but counts as received the same way (still acknowledged). A
+  peer that links later only gets what the others still have.
 
 ## Code conventions
 

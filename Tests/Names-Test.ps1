@@ -244,7 +244,7 @@ try {
     Expect "B's unnamed node 9 pushes into logs" (Tool "PushMessage.exe" @($M3, $Anon)) "message #1"
     Expect "B's bsecret pushes into logs" (Tool "PushMessage.exe" @($M3, $BSecret)) "message #1"
     Start-Sleep -Seconds 4
-    Expect "A got logs:blocal (ids 1:20)" (Tool "GetLatestMessage.exe" @("logs", "blocal", $Kitchen)) 'logs:blocal#1 \(ids 1:20\) \| \{"from":"b-local"\}'
+    Expect "A got logs:blocal (ids 1:20)" (Tool "GetLatestMessage.exe" @("logs", "blocal", $Kitchen)) 'logs:blocal#1 \(ids 1:20\), pushed \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z \| \{"from":"b-local"\}'
     Expect "A didn't get sensors:blocal (not accepted)" (Tool "GetLatestMessage.exe" @("sensors", "blocal", $Kitchen)) "No message" 1
     Expect "A didn't get logs:9 (unnamed)" (Tool "GetLatestMessage.exe" @("logs", "9", $Kitchen)) "No message" 1
     Expect "A didn't get logs:bsecret (B's SendNodes)" (Tool "GetLatestMessage.exe" @("logs", "bsecret", $Kitchen)) "No message" 1

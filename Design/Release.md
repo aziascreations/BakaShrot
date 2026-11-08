@@ -210,7 +210,7 @@ Notes for when the builds move to a pipeline.
   - `Build.ps1` ends by running the server, which waits on its console:
     needs a `-NoRun` switch. It also writes private keys into `Build\`,
     which must never be published as an artifact.
-  - The tests use fixed ports (12399 for the release, 12401-12407 for
+  - The tests use fixed ports (12399 for the release, 12401-12409 for
     `Tests/`): parallel jobs on one runner collide, make them parameters
     or pick free ones.
   - One entry point that runs every test (`Tests/*.ps1`, the handshake

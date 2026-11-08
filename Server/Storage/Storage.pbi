@@ -3,7 +3,7 @@
 ;
 ; Opens the SQLite database file that backs the node's local storage, and
 ; provides the basic read/write operations on top of it.
-; Schema: see db_schema_v5.dbml in this same folder.
+; Schema: see db_schema_v6.dbml in this same folder.
 ;
 ; Needs SQLite 3.38+ with its JSON functions (json_valid, ->>), which the one
 ; bundled with PureBasic 5.73 (3.33.0) doesn't have. On Windows, the official
@@ -36,11 +36,36 @@ CompilerElse
 CompilerEndIf
 
 
-; One row of the "data" table (see db_schema_v5.dbml).
+; One row of the "data" table (see db_schema_v6.dbml).
+; PushedAt: when it was pushed, ms since 1970 UTC (Packets.pbi).
 Structure BakaShrot_Message
 	MessageId.q
+	PushedAt.q
 	JsonData.s
 EndStructure
+
+
+CompilerIf #PB_Compiler_OS <> #PB_OS_Windows
+	ImportC ""
+		BakaShrot_GetTimeOfDay.l(*TimeVal, *TimeZone) As "gettimeofday"
+	EndImport
+CompilerEndIf
+
+; Now, in milliseconds since 1970-01-01 00:00:00 UTC: what a pushed message
+; is stamped with (pushed_at).
+Procedure.q BakaShrot_NowUtcMs()
+	CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+		; 100 ns intervals since 1601-01-01 UTC.
+		Protected FileTime.q
+		GetSystemTimeAsFileTime_(@FileTime)
+		ProcedureReturn (FileTime - 116444736000000000) / 10000
+	CompilerElse
+		; Untested: Linux isn't built yet. struct timeval, 64-bit.
+		Protected Dim TimeVal.q(1)
+		BakaShrot_GetTimeOfDay(@TimeVal(0), 0)
+		ProcedureReturn TimeVal(0) * 1000 + TimeVal(1) / 1000
+	CompilerEndIf
+EndProcedure
 
 
 ; How long a connection waits for another one's lock before a statement
@@ -165,7 +190,42 @@ Procedure.i MigrateStorageTopicIds(DbId.i)
 EndProcedure
 
 
-; Creates the tables and indexes described by db_schema_v5.dbml, if they
+; v5 -> v6: "data" got pushed_at. Adds it to a database made before, every
+; message stamped with the time of the upgrade (their real one is unknown),
+; in one transaction. Nothing to do on a new or already upgraded database.
+Procedure.i MigrateStoragePushedAt(DbId.i)
+	Protected Has.i
+
+	Has = StorageHasColumn(DbId, "data", "pushed_at")
+	If Has = -1
+		ProcedureReturn #False
+	ElseIf Has
+		ProcedureReturn #True
+	EndIf
+
+	If Not DatabaseUpdate(DbId, "BEGIN IMMEDIATE")
+		ProcedureReturn #False
+	EndIf
+	If Not DatabaseUpdate(DbId, "ALTER TABLE data ADD COLUMN pushed_at INTEGER NOT NULL DEFAULT 0")
+		DatabaseUpdate(DbId, "ROLLBACK")
+		ProcedureReturn #False
+	EndIf
+	; Bound for the next statement run, so right before it.
+	SetDatabaseQuad(DbId, 0, BakaShrot_NowUtcMs())
+	If Not DatabaseUpdate(DbId, "UPDATE data SET pushed_at = ?")
+		DatabaseUpdate(DbId, "ROLLBACK")
+		ProcedureReturn #False
+	EndIf
+	If Not DatabaseUpdate(DbId, "COMMIT")
+		DatabaseUpdate(DbId, "ROLLBACK")
+		ProcedureReturn #False
+	EndIf
+
+	ProcedureReturn #True
+EndProcedure
+
+
+; Creates the tables and indexes described by db_schema_v6.dbml, if they
 ; don't exist yet. Plain "CREATE IF NOT EXISTS" for now - a real versioned
 ; upgrade mechanism (DbUpdater) will replace this later.
 ; Fails on a database made with an older schema, since it would be left as is.
@@ -190,13 +250,15 @@ Procedure.i SetupStorageDatabase(DbId.i)
 		ProcedureReturn #False
 	EndIf
 
-	If Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS archives (" +
-	                             "delete_by INTEGER NOT NULL, " +
-	                             "message_data TEXT NOT NULL)")
+	; A leftover of the first schemas, never used: the retention deletes
+	; instead (Retention.pbi).
+	If Not DatabaseUpdate(DbId, "DROP TABLE IF EXISTS archives")
 		ProcedureReturn #False
 	EndIf
 
 	; is_json is set by SQLite on insert, and can't be written.
+	; pushed_at: when it was pushed to its origin, ms since 1970 UTC, kept as
+	; is when replicated. Last, like the ALTER TABLE below adds it.
 	; The UNIQUE constraint's index also serves (topic_id, node_id) lookups.
 	If Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS data (" +
 	                             "topic_id INTEGER NOT NULL, " +
@@ -204,6 +266,7 @@ Procedure.i SetupStorageDatabase(DbId.i)
 	                             "message_id INTEGER NOT NULL, " +
 	                             "message_data TEXT NOT NULL, " +
 	                             "is_json INTEGER NOT NULL GENERATED ALWAYS AS (json_valid(message_data)) STORED, " +
+	                             "pushed_at INTEGER NOT NULL DEFAULT 0, " +
 	                             "UNIQUE (topic_id, node_id, message_id))")
 		ProcedureReturn #False
 	EndIf
@@ -215,6 +278,18 @@ Procedure.i SetupStorageDatabase(DbId.i)
 	EndIf
 	FinishDatabaseQuery(DbId)
 	If Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_data_message_id ON data (message_id)")
+		ProcedureReturn #False
+	EndIf
+
+	; A database from before pushed_at: its messages get the time of this
+	; upgrade, so a topic's max age (Server/Storage/Retention.pbi) counts
+	; from now for them instead of deleting them all at once.
+	If Not MigrateStoragePushedAt(DbId)
+		ProcedureReturn #False
+	EndIf
+
+	; What the retention deletes by: a topic's messages pushed before a time.
+	If Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_data_topic_pushed_at ON data (topic_id, pushed_at)")
 		ProcedureReturn #False
 	EndIf
 
@@ -238,7 +313,9 @@ Procedure.i SetupStorageDatabase(DbId.i)
 	; every insert, whoever does it. The sync state comes from it instead of
 	; a GROUP BY over every message (131 ms at 1.9M rows, on every check-in).
 	; Filled from "data" when it's created on an existing database.
-	; !!! Nothing deletes from "data" yet: whatever does must update it too.
+	; Deleting from "data" (the retention) leaves it alone, on purpose: a
+	; pair's head stays its highest id ever, so the next push still gets the
+	; id after it, and peers aren't sent again what was deleted here.
 	If Not DatabaseQuery(DbId, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'node_heads'")
 		ProcedureReturn #False
 	EndIf
@@ -294,9 +371,13 @@ Procedure.i SetupStorageDatabase(DbId.i)
 	EndIf
 
 	; For queries by name: SELECT * FROM messages WHERE topic = 'logs' AND
-	; node = 'kitchen' still goes through the indexes.
-	If Not DatabaseUpdate(DbId, "CREATE VIEW IF NOT EXISTS messages AS " +
-	                             "SELECT t.name AS topic, n.name AS node, d.message_id, d.message_data, d.is_json, d.topic_id, d.node_id " +
+	; node = 'kitchen' still goes through the indexes. pushed_utc is
+	; pushed_at as text, "2026-11-08T14:03:59.123Z".
+	; Made again on every start, so an older one gets the newer columns.
+	If Not DatabaseUpdate(DbId, "DROP VIEW IF EXISTS messages") Or
+	   Not DatabaseUpdate(DbId, "CREATE VIEW messages AS " +
+	                             "SELECT t.name AS topic, n.name AS node, d.message_id, d.message_data, d.is_json, d.topic_id, d.node_id, " +
+	                             "d.pushed_at, strftime('%Y-%m-%dT%H:%M:%fZ', d.pushed_at / 1000.0, 'unixepoch') AS pushed_utc " +
 	                             "FROM data d JOIN topics t ON t.topic_id = d.topic_id JOIN nodes n ON n.node_id = d.node_id")
 		ProcedureReturn #False
 	EndIf
@@ -305,14 +386,15 @@ Procedure.i SetupStorageDatabase(DbId.i)
 EndProcedure
 
 
-; Inserts one JSON message into the "data" table.
+; Inserts one JSON message into the "data" table, pushed now.
 Procedure.i Insert(DbId.i, TopicId.i, NodeId.i, MessageId.i, JsonData.s)
 	SetDatabaseLong(DbId, 0, TopicId)
 	SetDatabaseLong(DbId, 1, NodeId)
 	SetDatabaseLong(DbId, 2, MessageId)
 	SetDatabaseString(DbId, 3, JsonData)
+	SetDatabaseQuad(DbId, 4, BakaShrot_NowUtcMs())
 
-	ProcedureReturn DatabaseUpdate(DbId, "INSERT INTO data (topic_id, node_id, message_id, message_data) VALUES (?, ?, ?, ?)")
+	ProcedureReturn DatabaseUpdate(DbId, "INSERT INTO data (topic_id, node_id, message_id, message_data, pushed_at) VALUES (?, ?, ?, ?, ?)")
 EndProcedure
 
 
@@ -413,7 +495,7 @@ Procedure.i GetLatestMessage(DbId.i, TopicId.i, NodeId.i, *Message.BakaShrot_Mes
 
 	SetDatabaseLong(DbId, 0, TopicId)
 	SetDatabaseLong(DbId, 1, NodeId)
-	If Not DatabaseQuery(DbId, "SELECT message_id, message_data FROM data WHERE topic_id = ? AND node_id = ? ORDER BY message_id DESC LIMIT 1")
+	If Not DatabaseQuery(DbId, "SELECT message_id, message_data, pushed_at FROM data WHERE topic_id = ? AND node_id = ? ORDER BY message_id DESC LIMIT 1")
 		ProcedureReturn #False
 	EndIf
 
@@ -421,6 +503,7 @@ Procedure.i GetLatestMessage(DbId.i, TopicId.i, NodeId.i, *Message.BakaShrot_Mes
 	If Found
 		*Message\MessageId = GetDatabaseQuad(DbId, 0)
 		*Message\JsonData  = GetDatabaseString(DbId, 1)
+		*Message\PushedAt  = GetDatabaseQuad(DbId, 2)
 	EndIf
 	FinishDatabaseQuery(DbId)
 
@@ -672,7 +755,7 @@ Procedure.i GetMessagesAfter(DbId.i, TopicId.i, NodeId.i, AfterMessageId.q, Limi
 	SetDatabaseLong(DbId, 1, NodeId)
 	SetDatabaseQuad(DbId, 2, AfterMessageId)
 	SetDatabaseLong(DbId, 3, Limit + 1)
-	If Not DatabaseQuery(DbId, "SELECT message_id, message_data FROM data WHERE topic_id = ? AND node_id = ? AND message_id > ? ORDER BY message_id LIMIT ?")
+	If Not DatabaseQuery(DbId, "SELECT message_id, message_data, pushed_at FROM data WHERE topic_id = ? AND node_id = ? AND message_id > ? ORDER BY message_id LIMIT ?")
 		ProcedureReturn #False
 	EndIf
 
@@ -684,6 +767,7 @@ Procedure.i GetMessagesAfter(DbId.i, TopicId.i, NodeId.i, AfterMessageId.q, Limi
 		AddElement(Messages())
 		Messages()\MessageId = GetDatabaseQuad(DbId, 0)
 		Messages()\JsonData  = GetDatabaseString(DbId, 1)
+		Messages()\PushedAt  = GetDatabaseQuad(DbId, 2)
 		Chars + Len(Messages()\JsonData)
 	Wend
 	FinishDatabaseQuery(DbId)
@@ -700,13 +784,15 @@ EndProcedure
 ; new one is dropped, even if it differs. See Design/ReplicationIssues.md.
 ; On its own connection: for tools writing while the server is stopped
 ; (BenchSeed). The server itself writes through Writer.pbi.
+; PushedAt: when it was pushed to its origin, ms since 1970 UTC.
 ; Returns #False if the insert failed.
-Procedure.i InsertReplicatedMessage(DbId.i, TopicId.i, NodeId.i, MessageId.q, JsonData.s)
+Procedure.i InsertReplicatedMessage(DbId.i, TopicId.i, NodeId.i, MessageId.q, JsonData.s, PushedAt.q)
 	SetDatabaseLong(DbId, 0, TopicId)
 	SetDatabaseLong(DbId, 1, NodeId)
 	SetDatabaseQuad(DbId, 2, MessageId)
 	SetDatabaseString(DbId, 3, JsonData)
-	ProcedureReturn DatabaseUpdate(DbId, "INSERT OR IGNORE INTO data (topic_id, node_id, message_id, message_data) VALUES (?, ?, ?, ?)")
+	SetDatabaseQuad(DbId, 4, PushedAt)
+	ProcedureReturn DatabaseUpdate(DbId, "INSERT OR IGNORE INTO data (topic_id, node_id, message_id, message_data, pushed_at) VALUES (?, ?, ?, ?, ?)")
 EndProcedure
 
 

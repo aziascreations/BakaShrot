@@ -6,8 +6,10 @@
 XIncludeFile "../Packets.pbi"
 
 ; One message of a ReplicateMessages batch.
+; PushedAt: when it was pushed to its origin (Packets.pbi), stored as is.
 Structure BakaShrot_ReplicatedMessage
     MessageId.q
+    PushedAt.q
     JsonData.s
 EndStructure
 
@@ -24,14 +26,14 @@ EndStructure
 ; Encoded size of a batch's own fields, and of each message on top of its
 ; JSON, rounded up. Used to stop a batch before it gets over #BakaShrot_MaxPacketSize.
 #BakaShrot_ReplicateBatchOverhead   = 64 + 2 * (#BakaShrot_MaxNameLength + 2)
-#BakaShrot_ReplicateMessageOverhead = 16
+#BakaShrot_ReplicateMessageOverhead = 25
 
 ; Peer -> Server, messages the server is missing for one topic/node, in
 ; message id order, with the message ids they were stored under on their
 ; origin. Topic and Node are names, never ids (Commons/Networking/Names.pbi):
 ; the server stores them under its own ids for those names, and refuses
 ; names it doesn't know.
-; On the wire: topic, node, message count, then each message's id and JSON.
+; On the wire: topic, node, message count, then each message's id, PushedAt and JSON.
 ; Answered with a MessagePushed carrying the last message's id, or a RequestRefused.
 Structure BakaShrot_ReplicateMessages Extends BakaShrot_PacketBase
     Topic.s
@@ -77,6 +79,9 @@ Procedure.i BakaShrot_ReplicateMessagesPacket_Encode(*Batch.BakaShrot_ReplicateM
     EndIf
     ForEach *Batch\Messages()
         If MsgPackWriteInteger(*MsgPackData, *Batch\Messages()\MessageId) <> #MsgPack_Error_Success
+            Goto EncodeFailed
+        EndIf
+        If MsgPackWriteInteger(*MsgPackData, *Batch\Messages()\PushedAt) <> #MsgPack_Error_Success
             Goto EncodeFailed
         EndIf
         If MsgPackWriteString(*MsgPackData, *Batch\Messages()\JsonData) <> #MsgPack_Error_Success
@@ -157,6 +162,15 @@ Procedure.i BakaShrot_ReplicateMessagesPacket_Decode(*MsgPackData.MsgPackData)
             Goto DecodeFailed
         EndIf
         PreviousMessageId = *Batch\Messages()\MessageId
+
+        ; PushedAt
+        If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+            Goto DecodeFailed
+        EndIf
+        *Batch\Messages()\PushedAt = MsgPackReadInteger(*MsgPackData)
+        If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or Not BakaShrot_IsValidTimestamp(*Batch\Messages()\PushedAt)
+            Goto DecodeFailed
+        EndIf
 
         ; JsonData
         If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_String

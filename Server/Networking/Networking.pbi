@@ -122,6 +122,11 @@ Structure BakaShrot_NetClient
 	AcceptTopics.BakaShrot_NameSet
 	AcceptNodes.BakaShrot_NameSet
 
+	; [BakaShrot.Retention], for peers only: what they send that's already
+	; past its max age isn't stored. A copy, lists aren't safe to walk from
+	; several threads.
+	List Retention.BakaShrot_RetentionRule()
+
 	; This thread's own database connection, opened once authenticated.
 	DbId.i
 EndStructure
@@ -259,6 +264,7 @@ Procedure.i BakaShrot_NetClient_Authenticate(*Client.BakaShrot_NetClient)
 	If *Client\PeerName <> "" And FindMapElement(*Server\Config\Peers(), *Client\PeerName)
 		CopyStructure(@*Server\Config\Peers()\AcceptTopics, @*Client\AcceptTopics, BakaShrot_NameSet)
 		CopyStructure(@*Server\Config\Peers()\AcceptNodes, @*Client\AcceptNodes, BakaShrot_NameSet)
+		CopyList(*Server\Config\Retention(), *Client\Retention())
 	EndIf
 	UnlockMutex(*Server\Mutex)
 	If ClientName = ""
@@ -543,6 +549,7 @@ Procedure.i BakaShrot_NetClient_HandleGetLatestMessage(*Client.BakaShrot_NetClie
 	Latest\TopicName = BakaShrot_Names_TopicRef(TopicId)
 	Latest\NodeName  = BakaShrot_Names_NodeRef(NodeId)
 	Latest\MessageId = Message\MessageId
+	Latest\PushedAt  = Message\PushedAt
 	Latest\JsonData  = Message\JsonData
 	*Answer = BakaShrot_LatestMessagePacket_Encode(@Latest, @AnswerSize)
 	If Not *Answer
@@ -627,6 +634,7 @@ Procedure.i BakaShrot_NetClient_HandleGetMessages(*Client.BakaShrot_NetClient, *
 
 		AddElement(Answer\Messages())
 		Answer\Messages()\MessageId = Messages()\MessageId
+		Answer\Messages()\PushedAt  = Messages()\PushedAt
 		Answer\Messages()\JsonData  = Messages()\JsonData
 	Next
 	ClearList(Messages())
@@ -907,11 +915,14 @@ EndProcedure
 ; replicates, unless a wildcard there takes a name this server doesn't have,
 ; which is then added, see Storage/Names.pbi. The sync state tells the peer
 ; what's taken here, so it doesn't send the rest in the first place.
+; Messages already past the topic's max age here ([BakaShrot.Retention]) are
+; skipped, but acknowledged like the others.
 ; Returns #False if the client must be aborted.
 Procedure.i BakaShrot_NetClient_HandleReplicateMessages(*Client.BakaShrot_NetClient, *Packet, PacketSize.i)
 	Protected *View.MsgPackData, *Batch.BakaShrot_ReplicateMessages
 	Protected Pushed.BakaShrot_MessagePushed
 	Protected TopicId.i, NodeId.i, TopicRef.s, NodeRef.s, LastMessageId.q, IsStored.i, StoreError.String
+	Protected MaxAge.q, SkipBefore.q, Skipped.Integer
 	Protected *Answer, AnswerSize.Integer, Sent.i
 
 	*Batch = 0
@@ -960,8 +971,15 @@ Procedure.i BakaShrot_NetClient_HandleReplicateMessages(*Client.BakaShrot_NetCli
 		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The messages couldn't be stored")
 	EndIf
 
-	IsStored = InsertReplicatedMessages(TopicId, NodeId, *Batch\Messages(), @StoreError)
+	MaxAge = RetentionMaxAgeMs(*Client\Retention(), TopicId, TopicRef)
+	If MaxAge > 0
+		SkipBefore = BakaShrot_NowUtcMs() - MaxAge
+	EndIf
+	IsStored = InsertReplicatedMessages(TopicId, NodeId, *Batch\Messages(), @StoreError, SkipBefore, @Skipped)
 	FreeStructure(*Batch)
+	If #BakaShrot_Net_LogRequests And Skipped\i > 0
+		PrintN("[Net] Skipped " + Str(Skipped\i) + " messages of " + TopicRef + ":" + NodeRef + " from peer '" + *Client\PeerName + "', past their max age here")
+	EndIf
 	If Not IsStored
 		PrintN("[Net] Failed to store messages from peer '" + *Client\PeerName + "': " + StoreError\s)
 		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The messages couldn't be stored")

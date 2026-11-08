@@ -57,6 +57,12 @@ with kitchen:
 
     latest = kitchen.latest("logs", "kitchen")
     check("latest(): #250", latest is not None and latest.id == 250 and latest.json() == {"i": 250}, latest)
+    now_ms = int(time.time() * 1000)
+    check("latest().pushed_at: just now, UTC ms", latest is not None and now_ms - 60000 < latest.pushed_at <= now_ms + 1000,
+          f"{latest.pushed_at if latest else None} vs {now_ms}")
+    check("latest().pushed: the same, an aware datetime in UTC",
+          latest is not None and latest.pushed.tzinfo is not None and latest.pushed.utcoffset().total_seconds() == 0
+          and int(latest.pushed.timestamp() * 1000) == latest.pushed_at, latest.pushed if latest else None)
 
     topic_id, topic_name = kitchen.resolve_topic("logs")
     node_id, node_name = kitchen.resolve_node("kitchen")
@@ -70,6 +76,9 @@ with kitchen:
     first = page.messages[0]
     check("A message's fields", (first.topic, first.node, first.topic_id, first.node_id, first.data, first.json())
           == ("logs", "kitchen", 1, 5, '{"i":1}', {"i": 1}), first)
+    stamps = [m.pushed_at for m in page]
+    check("Each message of a page has its pushed_at, in push order", all(stamps) and stamps == sorted(stamps),
+          f"{stamps[0]} .. {stamps[-1]}")
 
     page = kitchen.get_messages("logs", "kitchen", after=200, limit=100)
     check("Last page: 201-250, no more", [m.id for m in page] == list(range(201, 251)) and not page.more,

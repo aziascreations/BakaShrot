@@ -32,6 +32,9 @@ Where things stand and what's next, as of 2026-11-08. The detailed docs are in
     `ReadTopics`. Topics and nodes by name or id, see below.
   - Links to its peers, retries when that fails, and replicates the missing
     messages in batches (`PeerBatchSize`).
+  - Stamps every push with the time it arrived (`pushed_at`, UTC ms), which
+    replication carries as is, and deletes each topic's messages past its
+    max age (`[BakaShrot.Retention]`, per server).
   - One thread per client and per peer, each with its own SQLite connection.
   - The root thread can stop every worker (restart, vacuum).
 - **Client:** a DLL with A/W string exports, PureBasic prototypes in
@@ -249,6 +252,94 @@ existing `data` means rebuilding the table. So: name tables, joined, no FKs.
 - **Left:** see `Design/Cryptography.md`'s "What's NOT done": per-message
   signatures for replication, keys in plain-text inis, rotation.
 
+## State on 2026-11-08: good, mid, bad
+
+As judged for the threat model below (internal tool, trusted machines).
+
+**Good**
+- The core works and is tested end to end: push, latest, runs of messages
+  and `--follow`, names and ids, filters and wildcards, raw read-only SQL,
+  per-client permissions; five suites, two `.pb` tests, the release's smoke
+  test (PB 6.40 C), all passing.
+- Fast: ~40,800 msg/s pushed across 4 servers (10 nodes each, PB 5.73),
+  fully replicated; ~9,000 msg/s from one Python connection.
+- Replication by name, each server with its own ids; restart catch-up is
+  designed in (nothing it needs lives only in memory).
+- Security beyond what's needed here: encrypted connections, both ends
+  proven, peer links verified.
+- Data: 16 MB messages, anything stored (`is_json`), errors of queries
+  surfaced; pushed times; retention per topic and server.
+- Clients: DLL for any language, CLI tools, dependency-free Python.
+- Packaging (runtime included) and docs that match the code.
+
+**Mid**
+- Replication: gaps aren't detected; two servers writing the same
+  topic/node pair can drift (fine with one writer per pair, a rule to
+  state); the sync state must fit in one packet.
+- `synchronous = NORMAL`: a power loss can lose the last commits (a killed
+  process loses nothing committed). Often fine internally, to decide.
+- Client: one connection per process, `--follow` polls, no reconnect.
+- Tests run by hand, on fixed ports, no runner, no CI.
+- Linux untested; keys in plain-text inis (file permissions are enough
+  here).
+
+**Bad**
+- The server can't run unattended: it needs a console, stops at once
+  without one, can't be stopped cleanly from a script, so no service. The
+  main blocker for deploying it.
+- Never run from the extracted zip, on a clean Windows, nor with two
+  release servers, nor restarted after a kill: designed to work, unchecked.
+- Nothing committed: everything since the initial commit (the deleted
+  `Core/` included) lives only in the working tree.
+
+Suggested order: commit; a stop file and running as a service; smoke-test
+items 1-3 (`Design/Release.md`); a single test runner, then CI.
+
+## Done: pushed times, retention (2026-11-08)
+
+- **`pushed_at`:** every message has the time it was pushed, in
+  milliseconds since 1970 UTC, set by the server it was pushed to when the
+  push arrived (its clock), and kept as is on every server it's replicated
+  to (`ReplicateMessages` carries it). Clients get it in `LatestMessage`
+  and `Messages`: `BakaShrot_GetMessagePushedAt()` in the DLL,
+  `Message.pushed_at` / `.pushed` (a UTC datetime) in Python,
+  `GetMessages --time`, and `GetLatestMessage` shows it. In SQL:
+  `data.pushed_at`, and `pushed_at` / `pushed_utc` (text) in the
+  `messages` view.
+- **Upgrade:** a database from before gets the column, every message
+  stamped with the time of the upgrade (their real time is unknown), so a
+  max age counts from then for them (schema v6, `db_schema_v6.dbml`).
+- **Protocol:** folded into version 3 (not released yet, like the
+  encryption); a v3 build from before today can't talk to this one.
+- **Retention:** `[BakaShrot.Retention]` in each server's config,
+  `topic = age` by name or id, pattern (`sensors.* = 12h`), or `*`; ages
+  like `30d`, `1d12h`, `forever`. Every `RetentionInterval` seconds
+  (`[BakaShrot.Server]`, default 60), `Server/Storage/Retention.pbi`
+  deletes what was pushed before now minus the age, 5000 at a time through
+  the writer, so pushes go on. Each server applies its own: a peer keeps
+  its copies by its own rules. An age without a unit refuses to start.
+- **What deleting keeps:** `node_heads`, so ids never go back (the writer's
+  next id now comes from it), and peers aren't sent again what a server
+  deleted.
+- **Skipped on arrival:** what a peer replicates already past this
+  server's max age for the topic isn't stored, but its head still goes up
+  to it, so the peer doesn't send it again (`InsertReplicatedMessages()`'s
+  `SkipBeforeMs`). Each peer's thread has its own copy of the rules. The file doesn't shrink, SQLite reuses the space; `vacuum`
+  gives it back.
+- **Cost:** a column and a `(topic_id, pushed_at)` index entry per message;
+  no slowdown measured (40,817 msg/s for 4 servers, PB 5.73,
+  `Tests/Bench/Bench-Replication.ps1 -Ramp 10x0 -Parts Ramp`).
+- **Tested:** `Tests/Retention-Test.ps1` (52 checks, ports 12408-12409):
+  the upgrade of an old database (needs Python), stamps within the push's
+  time, `--time`, the same `pushed_at` on both servers, deleting by name,
+  pattern and `*` on one server only, ids going on after it, nothing sent
+  again, skipped on arrival (B started late: its head goes up, nothing
+  stored, nothing sent again), the bad age refused. Python checks
+  `pushed_at` too.
+- **By topic only, on purpose:** no per-node max age.
+- **Removed:** the `archives` table, a leftover of the first schemas that
+  nothing ever used, dropped from existing databases at start.
+
 ## Threat model (2026-11-08)
 
 BakaShrot is an **internal tool, on trusted machines and a trusted
@@ -287,7 +378,7 @@ network**, not exposed to the internet. So:
    writer; document that as the rule. (`Design/ReplicationIssues.md` #1)
 5. **Gaps in a pair's ids aren't detected** on replication.
    (`Design/ReplicationIssues.md` #5)
-6. **No single test runner**, and fixed ports (12399, 12401-12407): every
+6. **No single test runner**, and fixed ports (12399, 12401-12409): every
    `Tests/*.ps1` and the two `.pb` tests are run by hand. Needed for CI.
    (`Design/Release.md`, "For CI/CD")
 7. **Is `DatabaseError()` per thread?** Messages could land in the wrong
