@@ -1,17 +1,18 @@
 ; ============================================================================
 ; BakaShrot Cryptography
 ;
-; Authenticates packets using Ed25519 signatures (via libsodium - this does
-; NOT reimplement any cryptographic primitive).
+; Ed25519 signatures via libsodium (this does NOT reimplement any
+; cryptographic primitive).
 ;
 ; EncodeData signs a buffer with the sending node's own private key.
 ; DecodeData checks that signature against the claimed sender's public key.
+; (Misnamed: they sign and verify, nothing is encoded or decoded.)
 ;
-; This buys integrity + authenticity, NOT confidentiality: anyone who can see
-; the packet can still read it, but they cannot forge one or tamper with one
-; without the signature check failing. That matches BakaShrot's
-; replication/broadcast model, where a message is meant to be read by every
-; peer in the group - encrypting it for a single recipient would defeat that.
+; The signatures prove each end's identity in the handshake. The sealed
+; boxes, key exchange and XChaCha20-Poly1305 below encrypt the connections:
+; Session.pbi and Cipher.pbi use them, nothing else should.
+; What's done, what isn't, and the plan to abstract it:
+; Design/Cryptography.md.
 ;
 ; Key material:
 ;   - Public key:  #BakaShrot_Ed25519_PublicKeySize  (32) raw bytes.
@@ -24,8 +25,9 @@
 ; file - see EncodeKeyToString()/DecodeKeyFromString() below.
 ;
 ; Setup required to build/run this:
-;   - Windows: the official libsodium release's "libsodium.lib" (import
-;     library) and "libsodium.dll" alongside the executable.
+;   - Windows: the official libsodium MSVC release's dynamic build, extracted
+;     to Libs/libsodium/<x64|x86>/ by Build.ps1, and "libsodium.dll"
+;     alongside the executable.
 ;   - Linux:   libsodium-dev (Debian/Ubuntu) or libsodium-devel (Fedora)
 ;              installed, so "-lsodium" resolves at link time and
 ;              libsodium.so.* is available at runtime.
@@ -38,9 +40,27 @@
 #BakaShrot_Ed25519_PrivateKeySize = 64
 #BakaShrot_Ed25519_SignatureSize  = 64
 
+; XChaCha20-Poly1305 (IETF), libsodium's crypto_aead_xchacha20poly1305_ietf_*:
+; encryption and authentication of a buffer with a shared key, used by
+; Commons/Cryptography/Cipher.pbi.
+#BakaShrot_XChaCha20Poly1305_KeySize   = 32
+#BakaShrot_XChaCha20Poly1305_NonceSize = 24
+#BakaShrot_XChaCha20Poly1305_TagSize   = 16
 
-CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-	ImportC "libsodium.lib"
+; X25519 (crypto_box_seal, crypto_kx_*): sealed Hellos and the key exchange,
+; used by Commons/Cryptography/Session.pbi.
+#BakaShrot_X25519_PublicKeySize = 32
+#BakaShrot_X25519_SecretKeySize = 32
+#BakaShrot_SealedBoxOverhead    = 48
+#BakaShrot_KxSessionKeySize     = 32
+
+
+; Windows: the dynamic build's import library, libsodium.dll must be next to
+; the program. Both are extracted from Libs/libsodium-*-msvc.zip by Build.ps1.
+CompilerIf #PB_Compiler_OS = #PB_OS_Windows And #PB_Compiler_Processor = #PB_Processor_x64
+	ImportC "../../Libs/libsodium/x64/libsodium.lib"
+CompilerElseIf #PB_Compiler_OS = #PB_OS_Windows
+	ImportC "../../Libs/libsodium/x86/libsodium.lib"
 CompilerElse
 	ImportC "-lsodium"
 CompilerEndIf
@@ -63,6 +83,58 @@ CompilerEndIf
 	; non-zero otherwise (forged, corrupted, or signed different data).
 	crypto_sign_verify_detached.l(*Signature, *Message, MessageLength.q, *PublicKey)
 
+	; Encrypts *Message (MessageLength bytes) into *Ciphertext (MessageLength +
+	; #BakaShrot_XChaCha20Poly1305_TagSize bytes, the tag at the end), with
+	; *Key (32 bytes) and *Nonce (24 bytes, never twice with the same key).
+	; *AdditionalData (AdLength bytes, may be 0) is authenticated, not
+	; encrypted. *Nsec is always 0. Always returns 0.
+	crypto_aead_xchacha20poly1305_ietf_encrypt.l(*Ciphertext, *CiphertextLength, *Message, MessageLength.q, *AdditionalData, AdLength.q, *Nsec, *Nonce, *Key)
+
+	; Checks and decrypts *Ciphertext (CiphertextLength bytes, tag included)
+	; into *Message (CiphertextLength - TagSize bytes). Returns 0 if it's
+	; genuine, -1 if it was tampered with, or made with another key, nonce or
+	; additional data: *Message must not be used then.
+	crypto_aead_xchacha20poly1305_ietf_decrypt.l(*Message, *MessageLength, *Nsec, *Ciphertext, CiphertextLength.q, *AdditionalData, AdLength.q, *Nonce, *Key)
+
+	; Fills *Key (32 bytes) with a random XChaCha20-Poly1305 key.
+	crypto_aead_xchacha20poly1305_ietf_keygen(*Key)
+
+	; Zeroes Length bytes at *Memory, in a way the compiler can't optimize out:
+	; for wiping keys.
+	sodium_memzero(*Memory, Length.i)
+
+	; Copies the public key embedded in *PrivateKey (64 bytes) into *PublicKey
+	; (32 bytes). Always returns 0.
+	crypto_sign_ed25519_sk_to_pk.l(*PublicKey, *PrivateKey)
+
+	; The X25519 key (32 bytes) matching an Ed25519 public key (32 bytes) or
+	; private key (64 bytes), so one identity key both signs and receives
+	; sealed boxes. The public one returns -1 if it isn't a valid key.
+	crypto_sign_ed25519_pk_to_curve25519.l(*X25519PublicKey, *Ed25519PublicKey)
+	crypto_sign_ed25519_sk_to_curve25519.l(*X25519SecretKey, *Ed25519PrivateKey)
+
+	; Encrypts *Message (MessageLength bytes) for the holder of *PublicKey
+	; (X25519) into *Ciphertext (MessageLength + 48 bytes), with a throwaway
+	; key pair: only *PublicKey's holder can open it, and it doesn't tell who
+	; sealed it. Returns 0, -1 on failure.
+	crypto_box_seal.l(*Ciphertext, *Message, MessageLength.q, *PublicKey)
+
+	; Opens *Ciphertext (CiphertextLength bytes) sealed for *PublicKey into
+	; *Message (CiphertextLength - 48 bytes). Returns 0, or -1 if it wasn't
+	; sealed for this key or was tampered with.
+	crypto_box_seal_open.l(*Message, *Ciphertext, CiphertextLength.q, *PublicKey, *SecretKey)
+
+	; Fills *PublicKey and *SecretKey (32 bytes each) with a fresh X25519 key
+	; pair, for one key exchange. Returns 0.
+	crypto_kx_keypair.l(*PublicKey, *SecretKey)
+
+	; Both ends of a key exchange get the same two 32-byte keys from their own
+	; key pair and the other end's public key: *Rx decrypts what this end
+	; receives, *Tx encrypts what it sends (the client's Tx is the server's
+	; Rx). Return -1 if the other end's public key isn't acceptable.
+	crypto_kx_client_session_keys.l(*Rx, *Tx, *ClientPublicKey, *ClientSecretKey, *ServerPublicKey)
+	crypto_kx_server_session_keys.l(*Rx, *Tx, *ServerPublicKey, *ServerSecretKey, *ClientPublicKey)
+
 EndImport
 
 
@@ -79,6 +151,14 @@ EndProcedure
 ; *PrivateKey to #BakaShrot_Ed25519_PrivateKeySize bytes.
 Procedure GenerateKeyPair(*PublicKey, *PrivateKey)
 	crypto_sign_keypair(*PublicKey, *PrivateKey)
+EndProcedure
+
+
+; Fills *PublicKey (#BakaShrot_Ed25519_PublicKeySize bytes) with the public
+; key matching *PrivateKey (#BakaShrot_Ed25519_PrivateKeySize bytes), so a
+; node only needs its private key in its config.
+Procedure GetPublicKeyFromPrivateKey(*PrivateKey, *PublicKey)
+	crypto_sign_ed25519_sk_to_pk(*PublicKey, *PrivateKey)
 EndProcedure
 
 

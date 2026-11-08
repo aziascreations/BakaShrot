@@ -1,0 +1,4 @@
+client should be a DLL that can connect in the back.
+And it should provide functions to the caller that lets it query or do shit on the server.
+
+When saying server, it will usually be a local process.

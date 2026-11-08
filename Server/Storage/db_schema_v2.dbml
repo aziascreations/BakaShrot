@@ -1,0 +1,45 @@
+// Changes from v1, on "data" only:
+//  - UNIQUE (group_id, node_id, message_id), so a message id can't be stored twice.
+//    Its index also serves (group_id, node_id) lookups, replacing v1's index on them.
+//  - is_json, set by SQLite on insert, for JSON queries on message_data.
+//
+// Needs SQLite 3.38+ with its JSON functions (json_valid, ->>), see Storage.pbi.
+
+table archives {
+	// UTC Unix Timestamp after which this archived message should be deleted.
+	delete_by integer [not null]
+
+	message_data text [not null]
+}
+
+table data {
+	group_id integer [not null]
+	node_id integer [not null]
+	message_id integer [not null]
+	message_data text [not null]
+
+	// 1 if message_data is well-formed JSON, 0 otherwise.
+	// Can't be written, SQLite computes it on insert and stores it.
+	is_json integer [not null, note: 'GENERATED ALWAYS AS (json_valid(message_data)) STORED']
+
+	indexes {
+		(group_id, node_id, message_id) [unique]
+		message_id
+	}
+}
+
+// Create it, but we'll implement this later.
+table attachements {
+	group_id integer [not null]
+	node_id integer [not null]
+	message_id integer [not null]
+	attachement_data blob [not null]
+
+	indexes {
+		(group_id, node_id)
+		message_id
+	}
+}
+
+// Note, ignore it
+// msg_type TEXT GENERATED ALWAYS AS (data ->> '$.messageData.MsgType') VIRTUAL

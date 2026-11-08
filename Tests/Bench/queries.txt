@@ -1,0 +1,30 @@
+# Query suite, run by BenchClient's "query" mode after every stage, see
+# Bench-Replication.ps1. One per line: Name | SQL
+# {TOPIC} and {NODE} are replaced by the topic id and the server's first node.
+# "@latest" is a GetLatestMessage of {NODE}, the regular read path.
+# Results must fit in one packet (64 KB) and 10000 rows.
+#
+# The messages look like:
+#   {"kind":"temp","node":101,"seq":12,"value":42.17,"ts":1700000012,"pad":"xxx"}
+# kind is "alert" for 1 in 50, the others are spread evenly.
+
+# Indexed, should stay flat as the data grows.
+latest_message   | @latest
+last_50_of_node  | SELECT message_id, message_data FROM data WHERE topic_id = {TOPIC} AND node_id = {NODE} ORDER BY message_id DESC LIMIT 50
+max_of_node      | SELECT MAX(message_id) FROM data WHERE topic_id = {TOPIC} AND node_id = {NODE}
+by_message_id    | SELECT topic_id, node_id FROM data WHERE message_id = 100
+recent_global    | SELECT topic_id, node_id, message_id FROM data ORDER BY rowid DESC LIMIT 100
+
+# Bounded JSON scan: newest alerts of one node, about 50 rows read per hit.
+json_alerts_node | SELECT message_id, message_data ->> '$.value' FROM data WHERE topic_id = {TOPIC} AND node_id = {NODE} AND is_json = 1 AND message_data ->> '$.kind' = 'alert' ORDER BY message_id DESC LIMIT 100
+
+# Index scans, grow with the data.
+count_node       | SELECT COUNT(*) FROM data WHERE topic_id = {TOPIC} AND node_id = {NODE}
+count_all        | SELECT COUNT(*) FROM data
+sync_state       | SELECT topic_id, node_id, MAX(message_id) FROM data GROUP BY topic_id, node_id ORDER BY topic_id, node_id
+sync_state_heads | SELECT topic_id, node_id, max_message_id FROM node_heads ORDER BY topic_id, node_id
+
+# Full table scans parsing every message's JSON, the ones that die first.
+json_count_all   | SELECT COUNT(*) FROM data WHERE is_json = 1 AND message_data ->> '$.kind' = 'alert'
+json_agg_all     | SELECT message_data ->> '$.kind', COUNT(*), ROUND(AVG(message_data ->> '$.value'), 2) FROM data WHERE is_json = 1 GROUP BY 1
+json_agg_node    | SELECT message_data ->> '$.kind', COUNT(*), ROUND(AVG(message_data ->> '$.value'), 2) FROM data WHERE topic_id = {TOPIC} AND node_id = {NODE} AND is_json = 1 GROUP BY 1

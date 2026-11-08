@@ -1,0 +1,13 @@
+# Queries run in a loop while pushing, in the "mixed" stage of
+# Bench-Replication.ps1, to see how reads hold up under write load, and how
+# much a long read slows the writes down (it used to block every commit,
+# before WAL).
+# Same format as queries.txt.
+
+latest_message   | @latest
+last_50_of_node  | SELECT message_id, message_data FROM data WHERE topic_id = {TOPIC} AND node_id = {NODE} ORDER BY message_id DESC LIMIT 50
+json_alerts_node | SELECT message_id, message_data ->> '$.value' FROM data WHERE topic_id = {TOPIC} AND node_id = {NODE} AND is_json = 1 AND message_data ->> '$.kind' = 'alert' ORDER BY message_id DESC LIMIT 100
+count_node       | SELECT COUNT(*) FROM data WHERE topic_id = {TOPIC} AND node_id = {NODE}
+sync_state       | SELECT topic_id, node_id, MAX(message_id) FROM data GROUP BY topic_id, node_id ORDER BY topic_id, node_id
+sync_state_heads | SELECT topic_id, node_id, max_message_id FROM node_heads ORDER BY topic_id, node_id
+json_count_all   | SELECT COUNT(*) FROM data WHERE is_json = 1 AND message_data ->> '$.kind' = 'alert'

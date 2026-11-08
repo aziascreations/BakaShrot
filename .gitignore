@@ -5,8 +5,19 @@
 # Build Artifacts
 *.exe
 *.dll
+# ... except the runtime redistributables the release packages, see Libs/redist/README.md
+!Libs/redist/**/*.dll
 *.so
 *.a
 *.pdb
 *.lib
 *.exp
+
+# Build output, holds generated private keys
+Build/
+
+# Release builds, see Release.ps1
+Release/
+
+# Python
+__pycache__/
