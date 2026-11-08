@@ -3,7 +3,8 @@
 ;
 ; Opens the SQLite database file that backs the node's local storage, and
 ; provides the basic read/write operations on top of it.
-; Schema: see db_schema_v6.dbml in this same folder.
+; Schema: see db_schema_v7.dbml in this same folder. Attachments: see
+; Attachments.pbi and Design/Attachments.md.
 ;
 ; Needs SQLite 3.38+ with its JSON functions (json_valid, ->>), which the one
 ; bundled with PureBasic 5.73 (3.33.0) doesn't have. On Windows, the official
@@ -36,12 +37,18 @@ CompilerElse
 CompilerEndIf
 
 
-; One row of the "data" table (see db_schema_v6.dbml).
+; One row of the "data" table (see db_schema_v7.dbml).
 ; PushedAt: when it was pushed, ms since 1970 UTC (Packets.pbi).
+; AttachmentSize: its attachment's size, 0 for none (the "attachments"
+; table), AttachmentReady #True once all of it is here, AttachmentSha256 its
+; SHA-256.
 Structure BakaShrot_Message
 	MessageId.q
 	PushedAt.q
 	JsonData.s
+	AttachmentSize.q
+	AttachmentReady.i
+	AttachmentSha256.a[#BakaShrot_Sha256Size]
 EndStructure
 
 
@@ -225,7 +232,7 @@ Procedure.i MigrateStoragePushedAt(DbId.i)
 EndProcedure
 
 
-; Creates the tables and indexes described by db_schema_v6.dbml, if they
+; Creates the tables and indexes described by db_schema_v7.dbml, if they
 ; don't exist yet. Plain "CREATE IF NOT EXISTS" for now - a real versioned
 ; upgrade mechanism (DbUpdater) will replace this later.
 ; Fails on a database made with an older schema, since it would be left as is.
@@ -293,19 +300,60 @@ Procedure.i SetupStorageDatabase(DbId.i)
 		ProcedureReturn #False
 	EndIf
 
-	; Not used yet, but created now so the on-disk schema already matches
-	; db_schema_v1.dbml.
-	If Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS attachements (" +
+	; The first schemas' placeholder, never used (and misspelled), replaced
+	; by the three tables below. Its indexes go with it.
+	If Not DatabaseUpdate(DbId, "DROP TABLE IF EXISTS attachements")
+		ProcedureReturn #False
+	EndIf
+
+	; Attachments, see Attachments.pbi and Design/Attachments.md.
+	; blobs: an attachment's data, being uploaded or replicated, or stored.
+	;   topic_id, node_id: an upload's, who may attach it (or the message's).
+	;   received: bytes stored so far, in blob_chunks.
+	;   state: 0 receiving, 1 complete (an upload waiting for its message),
+	;   2 attached to its message, 3 to delete (Retention.pbi deletes it).
+	;   created_at: ms since 1970 UTC, uploads left incomplete expire.
+	; blob_chunks: its parts, #BakaShrot_AttachmentChunkSize bytes each.
+	; attachments: a message's (one at most), with its size and SHA-256
+	;   from the start, its data in blob_id once any is here.
+	;   state: 0 missing (a replicated message, none of it here yet),
+	;   1 receiving, 2 ready, 3 not kept (bigger than this server takes).
+	If Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS blobs (" +
+	                             "blob_id INTEGER PRIMARY KEY, " +
+	                             "topic_id INTEGER NOT NULL, " +
+	                             "node_id INTEGER NOT NULL, " +
+	                             "size INTEGER NOT NULL, " +
+	                             "sha256 BLOB NOT NULL, " +
+	                             "received INTEGER NOT NULL DEFAULT 0, " +
+	                             "state INTEGER NOT NULL, " +
+	                             "created_at INTEGER NOT NULL)") Or
+	   Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS blob_chunks (" +
+	                             "blob_id INTEGER NOT NULL, " +
+	                             "chunk_index INTEGER NOT NULL, " +
+	                             "chunk_data BLOB NOT NULL, " +
+	                             "PRIMARY KEY (blob_id, chunk_index))") Or
+	   Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS attachments (" +
 	                             "topic_id INTEGER NOT NULL, " +
 	                             "node_id INTEGER NOT NULL, " +
 	                             "message_id INTEGER NOT NULL, " +
-	                             "attachement_data BLOB NOT NULL)")
+	                             "size INTEGER NOT NULL, " +
+	                             "sha256 BLOB NOT NULL, " +
+	                             "blob_id INTEGER, " +
+	                             "state INTEGER NOT NULL, " +
+	                             "PRIMARY KEY (topic_id, node_id, message_id)) WITHOUT ROWID") Or
+	   Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_blobs_state ON blobs (state)") Or
+	   Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_attachments_state ON attachments (state)")
 		ProcedureReturn #False
 	EndIf
-	If Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_attachements_topic_node ON attachements (topic_id, node_id)")
-		ProcedureReturn #False
-	EndIf
-	If Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_attachements_message_id ON attachements (message_id)")
+
+	; A message deleted (the retention) takes its attachment with it, and an
+	; attachment its data: marked, Retention.pbi deletes it a bit at a time.
+	If Not DatabaseUpdate(DbId, "CREATE TRIGGER IF NOT EXISTS trg_data_attachments AFTER DELETE ON data BEGIN " +
+	                             "DELETE FROM attachments WHERE topic_id = OLD.topic_id AND node_id = OLD.node_id AND message_id = OLD.message_id; " +
+	                             "END") Or
+	   Not DatabaseUpdate(DbId, "CREATE TRIGGER IF NOT EXISTS trg_attachments_blobs AFTER DELETE ON attachments WHEN OLD.blob_id IS NOT NULL BEGIN " +
+	                             "UPDATE blobs SET state = 3 WHERE blob_id = OLD.blob_id; " +
+	                             "END")
 		ProcedureReturn #False
 	EndIf
 
@@ -487,6 +535,18 @@ EndProcedure
 
 
 
+; Reads the attachment's size, state and SHA-256 (COALESCE(a.size, 0),
+; COALESCE(a.state, 0), a.sha256) from Column on into *Message.
+Procedure BakaShrot_ReadAttachmentColumns(DbId.i, Column.i, *Message.BakaShrot_Message)
+	*Message\AttachmentSize  = GetDatabaseQuad(DbId, Column)
+	*Message\AttachmentReady = Bool(*Message\AttachmentSize > 0 And GetDatabaseLong(DbId, Column + 1) = 2)
+	FillMemory(@*Message\AttachmentSha256[0], #BakaShrot_Sha256Size, 0)
+	If *Message\AttachmentSize > 0 And DatabaseColumnSize(DbId, Column + 2) = #BakaShrot_Sha256Size
+		GetDatabaseBlob(DbId, Column + 2, @*Message\AttachmentSha256[0], #BakaShrot_Sha256Size)
+	EndIf
+EndProcedure
+
+
 ; Fills *Message with the message that has the highest message_id for a
 ; topic_id/node_id pair.
 ; Returns #False if there's none, or if the query failed.
@@ -495,7 +555,9 @@ Procedure.i GetLatestMessage(DbId.i, TopicId.i, NodeId.i, *Message.BakaShrot_Mes
 
 	SetDatabaseLong(DbId, 0, TopicId)
 	SetDatabaseLong(DbId, 1, NodeId)
-	If Not DatabaseQuery(DbId, "SELECT message_id, message_data, pushed_at FROM data WHERE topic_id = ? AND node_id = ? ORDER BY message_id DESC LIMIT 1")
+	If Not DatabaseQuery(DbId, "SELECT d.message_id, d.message_data, d.pushed_at, COALESCE(a.size, 0), COALESCE(a.state, 0), a.sha256 " +
+	                           "FROM data d LEFT JOIN attachments a ON a.topic_id = d.topic_id AND a.node_id = d.node_id AND a.message_id = d.message_id " +
+	                           "WHERE d.topic_id = ? AND d.node_id = ? ORDER BY d.message_id DESC LIMIT 1")
 		ProcedureReturn #False
 	EndIf
 
@@ -504,6 +566,7 @@ Procedure.i GetLatestMessage(DbId.i, TopicId.i, NodeId.i, *Message.BakaShrot_Mes
 		*Message\MessageId = GetDatabaseQuad(DbId, 0)
 		*Message\JsonData  = GetDatabaseString(DbId, 1)
 		*Message\PushedAt  = GetDatabaseQuad(DbId, 2)
+		BakaShrot_ReadAttachmentColumns(DbId, 3, *Message)
 	EndIf
 	FinishDatabaseQuery(DbId)
 
@@ -755,7 +818,9 @@ Procedure.i GetMessagesAfter(DbId.i, TopicId.i, NodeId.i, AfterMessageId.q, Limi
 	SetDatabaseLong(DbId, 1, NodeId)
 	SetDatabaseQuad(DbId, 2, AfterMessageId)
 	SetDatabaseLong(DbId, 3, Limit + 1)
-	If Not DatabaseQuery(DbId, "SELECT message_id, message_data, pushed_at FROM data WHERE topic_id = ? AND node_id = ? AND message_id > ? ORDER BY message_id LIMIT ?")
+	If Not DatabaseQuery(DbId, "SELECT d.message_id, d.message_data, d.pushed_at, COALESCE(a.size, 0), COALESCE(a.state, 0), a.sha256 " +
+	                           "FROM data d LEFT JOIN attachments a ON a.topic_id = d.topic_id AND a.node_id = d.node_id AND a.message_id = d.message_id " +
+	                           "WHERE d.topic_id = ? AND d.node_id = ? AND d.message_id > ? ORDER BY d.message_id LIMIT ?")
 		ProcedureReturn #False
 	EndIf
 
@@ -768,6 +833,7 @@ Procedure.i GetMessagesAfter(DbId.i, TopicId.i, NodeId.i, AfterMessageId.q, Limi
 		Messages()\MessageId = GetDatabaseQuad(DbId, 0)
 		Messages()\JsonData  = GetDatabaseString(DbId, 1)
 		Messages()\PushedAt  = GetDatabaseQuad(DbId, 2)
+		BakaShrot_ReadAttachmentColumns(DbId, 3, @Messages())
 		Chars + Len(Messages()\JsonData)
 	Wend
 	FinishDatabaseQuery(DbId)
@@ -799,6 +865,9 @@ EndProcedure
 
 ; Every write: pushes (group commit), replicated batches, the WAL checkpoints.
 XIncludeFile "Writer.pbi"
+
+; Attachments: uploads, parts, reading them back, the replicated ones.
+XIncludeFile "Attachments.pbi"
 
 
 ; Usage example. Only compiled when this file is run directly (F5 in the

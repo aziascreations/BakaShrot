@@ -24,11 +24,14 @@ database:
   view with `is_json = 1`;
 - if `python` is on the PATH, reads them and pushes one with
   `python\bakashrot.py`;
+- pushes a 3 MB attachment with `PushMessage.exe -a` and reads it back
+  identical with `GetAttachment.exe`;
 - then force-kills the server and deletes everything.
 
 The end-to-end tests in `Tests/` cover much more (names, replication, big
-messages, GetMessages, the Python client), but against `Build\` (PB 5.73)
-and `BenchServer.exe`, not the release.
+messages, GetMessages, the Python client, retention, attachments and their
+edge cases), but against `Build\` (PB 5.73) and `BenchServer.exe`, not the
+release. The list is in `CLAUDE.md`.
 
 ## Fixed: the release needed the Visual C++ runtime
 
@@ -110,7 +113,7 @@ in `Tests/` already, to be pointed at the release instead.
 10. **Version hygiene**:
     - `-Version 1.0.0` refuses a dirty tree instead of appending `-dirty`;
     - the release commit is tagged (`v1.0.0`), the version comes from it;
-    - `VERSION.txt` gives the protocol version (3) and the runtime needed;
+    - `VERSION.txt` gives the protocol version (4) and the runtime needed;
     - the Python client is checked on the oldest version it claims (3.8),
       not only on the latest (3.14 here).
 
@@ -210,7 +213,7 @@ Notes for when the builds move to a pipeline.
   - `Build.ps1` ends by running the server, which waits on its console:
     needs a `-NoRun` switch. It also writes private keys into `Build\`,
     which must never be published as an artifact.
-  - The tests use fixed ports (12399 for the release, 12401-12409 for
+  - The tests use fixed ports (12399 for the release, 12401-12414 for
     `Tests/`): parallel jobs on one runner collide, make them parameters
     or pick free ones.
   - One entry point that runs every test (`Tests/*.ps1`, the handshake

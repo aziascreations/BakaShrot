@@ -10,10 +10,12 @@ XIncludeFile "../Packets.pbi"
 ;  "" for the topic of the client's authenticated identity. The client's
 ;  [BakaShrot.Client.<name>] PushTopics must allow it.
 ; The node is always the client's authenticated one, the client can't pick it.
+; UploadId: the attachment uploaded for it (UploadStart, all of it stored), 0 for none.
 ; Answered with a MessagePushed or a RequestRefused.
 Structure BakaShrot_PushMessage Extends BakaShrot_PacketBase
     Topic.s
     JsonData.s
+    UploadId.q
 EndStructure
 
 
@@ -41,6 +43,10 @@ Procedure.i BakaShrot_PushMessagePacket_Encode(*Push.BakaShrot_PushMessage, *Out
     EndIf
 
     If MsgPackWriteString(*MsgPackData, *Push\JsonData) <> #MsgPack_Error_Success
+        Goto EncodeFailed
+    EndIf
+
+    If *Push\UploadId < 0 Or MsgPackWriteInteger(*MsgPackData, *Push\UploadId) <> #MsgPack_Error_Success
         Goto EncodeFailed
     EndIf
 
@@ -89,6 +95,15 @@ Procedure.i BakaShrot_PushMessagePacket_Decode(*MsgPackData.MsgPackData)
     EndIf
     *Push\JsonData = MsgPackReadString(*MsgPackData)
     If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success
+        Goto DecodeFailed
+    EndIf
+
+    ; UploadId
+    If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+        Goto DecodeFailed
+    EndIf
+    *Push\UploadId = MsgPackReadInteger(*MsgPackData)
+    If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or *Push\UploadId < 0
         Goto DecodeFailed
     EndIf
 

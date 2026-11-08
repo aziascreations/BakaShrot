@@ -6,7 +6,8 @@
 ;   ClientIni    Identity and server to use, defaults to "client.ini".
 ;
 ; Prints the latest message stored for that topic/node, and when it was
-; pushed (UTC), then its data. The server refuses
+; pushed (UTC), its attachment if it has one (GetAttachment saves it), then
+; its data. The server refuses
 ; if the client's ReadTopics don't allow the topic, if either is unknown, or
 ; if there's no message.
 ; Compile as a console program, exits with 0 on success, 1 on failure.
@@ -57,6 +58,13 @@ EndIf
 
 PrintN("Message " + BakaShrot_GetMessageTopicString() + ":" + BakaShrot_GetMessageNodeString() + "#" + Str(BakaShrot_GetMessageId()) +
        " (ids " + Str(BakaShrot_GetMessageTopicId()) + ":" + Str(BakaShrot_GetMessageNodeId()) + "), pushed " + ToolClient_FormatUtc(BakaShrot_GetMessagePushedAt()))
+If BakaShrot_GetMessageAttachmentSize() > 0
+	If BakaShrot_IsMessageAttachmentReady()
+		PrintN("Attachment: " + Str(BakaShrot_GetMessageAttachmentSize()) + " bytes")
+	Else
+		PrintN("Attachment: " + Str(BakaShrot_GetMessageAttachmentSize()) + " bytes, not on this server yet")
+	EndIf
+EndIf
 PrintN(BakaShrot_GetMessageDataString())
 
 ToolClient_Close()

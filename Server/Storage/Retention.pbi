@@ -13,7 +13,12 @@
 ;   - deletes its messages pushed (pushed_at) before now minus that age,
 ;     #BakaShrot_Retention_BatchSize at a time through the writer
 ;     (DeleteStorageMessagesBefore(), Writer.pbi), so pushes go on between
-;     the batches.
+;     the batches;
+;   - then the attachments' leftovers (CleanUpStorageBlobs(),
+;     Attachments.pbi): those of the deleted messages, and uploads not
+;     pushed with a message within [BakaShrot.Server] UploadTimeout,
+;     #BakaShrot_Retention_ChunkBatchSize parts at a time.
+; It runs without any [BakaShrot.Retention] too, for the leftovers.
 ;
 ; Messages "may be" deleted past their max age: up to RetentionInterval
 ; later. Those a peer replicates here already past it aren't stored at all
@@ -33,6 +38,9 @@
 ; Most messages deleted in one statement, under the write mutex: a few ms.
 #BakaShrot_Retention_BatchSize = 5000
 
+; Most attachment parts (1 MB each) deleted in one statement.
+#BakaShrot_Retention_ChunkBatchSize = 32
+
 
 Structure BakaShrot_RetentionTopic
 	TopicId.i
@@ -43,6 +51,7 @@ Structure BakaShrot_RetentionState
 	ThreadId.i
 	StopRequested.i
 	IntervalMs.i
+	UploadTimeoutMs.q
 	DatabasePath.s
 	List Rules.BakaShrot_RetentionRule()
 EndStructure
@@ -53,6 +62,25 @@ Global BakaShrot_Retention.BakaShrot_RetentionState
 ; Ms (since 1970 UTC) as "2026-11-08T14:03:59Z", for the logs.
 Procedure.s BakaShrot_Retention_FormatUtc(Ms.q)
 	ProcedureReturn FormatDate("%yyyy-%mm-%ddT%hh:%ii:%ssZ", Ms / 1000)
+EndProcedure
+
+
+; Deletes the attachments' leftovers, a few parts at a time.
+Procedure BakaShrot_Retention_CleanUp()
+	Protected Deleted.i, Total.q, Error.String
+
+	Repeat
+		Deleted = CleanUpStorageBlobs(BakaShrot_NowUtcMs() - BakaShrot_Retention\UploadTimeoutMs, #BakaShrot_Retention_ChunkBatchSize, @Error)
+		If Deleted < 0
+			PrintN("[Storage] Retention: failed to delete the attachments' leftovers: " + Error\s)
+			Break
+		EndIf
+		Total + Deleted
+	Until Deleted < #BakaShrot_Retention_ChunkBatchSize Or BakaShrot_Retention\StopRequested
+
+	If Total > 0
+		PrintN("[Storage] Retention: deleted " + Str(Total) + " attachment parts (of deleted messages, or uploads never pushed)")
+	EndIf
 EndProcedure
 
 
@@ -105,6 +133,7 @@ Procedure.q BakaShrot_Retention_Pass(DbId.i)
 		EndIf
 	Next
 
+	BakaShrot_Retention_CleanUp()
 	ProcedureReturn Total
 EndProcedure
 
@@ -132,27 +161,22 @@ Procedure BakaShrot_Retention_Thread(Unused.i)
 EndProcedure
 
 
-; Starts deleting what's past *Config's [BakaShrot.Retention] max ages, once
-; the writer is open. Nothing to do (no thread) if every topic is kept
-; forever. Returns #False if the thread can't start.
+; Starts deleting what's past *Config's [BakaShrot.Retention] max ages, and
+; the attachments' leftovers, once the writer is open.
+; Returns #False if the thread can't start.
 Procedure.i StartStorageRetention(*Config.BakaShrot_CoreConfig)
-	Protected Deletes.i
-
 	With BakaShrot_Retention
 		ClearList(\Rules())
 		CopyList(*Config\Retention(), \Rules())
 		ForEach \Rules()
 			If \Rules()\MaxAgeMs > 0
-				Deletes = #True
 				PrintN("[Storage] Retention: " + \Rules()\Ref + " = " + \Rules()\AgeText + ", checked every " + Str(*Config\Server\RetentionInterval) + " s")
 			EndIf
 		Next
-		If Not Deletes
-			ProcedureReturn #True
-		EndIf
 
-		\DatabasePath  = *Config\Server\DatabasePath
-		\IntervalMs    = *Config\Server\RetentionInterval * 1000
+		\DatabasePath    = *Config\Server\DatabasePath
+		\IntervalMs      = *Config\Server\RetentionInterval * 1000
+		\UploadTimeoutMs = *Config\Server\UploadTimeout * 1000
 		\StopRequested = #False
 		\ThreadId      = CreateThread(@BakaShrot_Retention_Thread(), 0)
 		ProcedureReturn Bool(\ThreadId)

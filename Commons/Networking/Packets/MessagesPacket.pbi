@@ -11,6 +11,10 @@ Structure BakaShrot_MessagesEntry
     MessageId.q
     ; When it was pushed, see Packets.pbi.
     PushedAt.q
+    ; Its attachment's size in bytes, 0 for none, and whether this server has
+    ; all of it yet (a replicated one comes after its message).
+    AttachmentSize.q
+    AttachmentReady.l
     JsonData.s
 EndStructure
 
@@ -21,7 +25,7 @@ EndStructure
 ; Encoded size of the answer's own fields, and of each message on top of its
 ; JSON, rounded up. Used to stop an answer before it gets over #BakaShrot_MaxPacketSize.
 #BakaShrot_MessagesOverhead        = 64 + 2 * (#BakaShrot_MaxNameLength + 2)
-#BakaShrot_MessagesMessageOverhead = 25
+#BakaShrot_MessagesMessageOverhead = 40
 
 ; S2C, answers a GetMessages with the messages of that topic/node combination
 ; stored after the asked id, in message id order: as many as were asked for,
@@ -97,6 +101,12 @@ Procedure.i BakaShrot_MessagesPacket_Encode(*Answer.BakaShrot_Messages, *OutSize
             Goto EncodeFailed
         EndIf
         If MsgPackWriteString(*MsgPackData, *Answer\Messages()\JsonData) <> #MsgPack_Error_Success
+            Goto EncodeFailed
+        EndIf
+        If MsgPackWriteInteger(*MsgPackData, *Answer\Messages()\AttachmentSize) <> #MsgPack_Error_Success
+            Goto EncodeFailed
+        EndIf
+        If MsgPackWriteInteger(*MsgPackData, *Answer\Messages()\AttachmentReady) <> #MsgPack_Error_Success
             Goto EncodeFailed
         EndIf
     Next
@@ -220,6 +230,23 @@ Procedure.i BakaShrot_MessagesPacket_Decode(*MsgPackData.MsgPackData)
         EndIf
         *Answer\Messages()\JsonData = MsgPackReadString(*MsgPackData)
         If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success
+            Goto DecodeFailed
+        EndIf
+        ; AttachmentSize
+        If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+            Goto DecodeFailed
+        EndIf
+        *Answer\Messages()\AttachmentSize = MsgPackReadInteger(*MsgPackData)
+        If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or *Answer\Messages()\AttachmentSize < 0 Or *Answer\Messages()\AttachmentSize > #BakaShrot_MaxAttachmentSize
+            Goto DecodeFailed
+        EndIf
+
+        ; AttachmentReady
+        If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+            Goto DecodeFailed
+        EndIf
+        *Answer\Messages()\AttachmentReady = MsgPackReadInteger(*MsgPackData)
+        If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or *Answer\Messages()\AttachmentReady < 0 Or *Answer\Messages()\AttachmentReady > 1
             Goto DecodeFailed
         EndIf
     Next

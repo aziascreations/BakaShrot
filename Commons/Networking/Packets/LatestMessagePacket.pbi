@@ -17,6 +17,10 @@ Structure BakaShrot_LatestMessage Extends BakaShrot_PacketBase
     MessageId.q
     PushedAt.q
     JsonData.s
+    ; Its attachment's size in bytes, 0 for none, and whether this server has
+    ; all of it yet (a replicated one comes after its message).
+    AttachmentSize.q
+    AttachmentReady.l
 EndStructure
 
 
@@ -63,6 +67,12 @@ Procedure.i BakaShrot_LatestMessagePacket_Encode(*Latest.BakaShrot_LatestMessage
     EndIf
 
     If MsgPackWriteString(*MsgPackData, *Latest\JsonData) <> #MsgPack_Error_Success
+        Goto EncodeFailed
+    EndIf
+    If MsgPackWriteInteger(*MsgPackData, *Latest\AttachmentSize) <> #MsgPack_Error_Success
+        Goto EncodeFailed
+    EndIf
+    If MsgPackWriteInteger(*MsgPackData, *Latest\AttachmentReady) <> #MsgPack_Error_Success
         Goto EncodeFailed
     EndIf
 
@@ -159,6 +169,23 @@ Procedure.i BakaShrot_LatestMessagePacket_Decode(*MsgPackData.MsgPackData)
     EndIf
     *Latest\JsonData = MsgPackReadString(*MsgPackData)
     If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success
+        Goto DecodeFailed
+    EndIf
+    ; AttachmentSize
+    If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+        Goto DecodeFailed
+    EndIf
+    *Latest\AttachmentSize = MsgPackReadInteger(*MsgPackData)
+    If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or *Latest\AttachmentSize < 0 Or *Latest\AttachmentSize > #BakaShrot_MaxAttachmentSize
+        Goto DecodeFailed
+    EndIf
+
+    ; AttachmentReady
+    If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+        Goto DecodeFailed
+    EndIf
+    *Latest\AttachmentReady = MsgPackReadInteger(*MsgPackData)
+    If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or *Latest\AttachmentReady < 0 Or *Latest\AttachmentReady > 1
         Goto DecodeFailed
     EndIf
 

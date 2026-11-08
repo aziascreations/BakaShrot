@@ -34,6 +34,8 @@
 ; ============================================================================
 
 XIncludeFile "../../Commons/Networking/Names.pbi"
+; #BakaShrot_MaxAttachmentSize.
+XIncludeFile "../../Commons/Networking/Packets.pbi"
 
 
 ; Some topics or nodes, or all of them: what a topic list (or node list)
@@ -228,6 +230,16 @@ Structure BakaShrot_ServerConfig
 	; max age ([BakaShrot.Retention]). Default 60.
 	RetentionInterval.i
 
+	; Biggest attachment this server takes, in bytes: pushed with a message,
+	; or replicated (a bigger one's message is kept, not its attachment).
+	; Written with a unit: 500M, 1G (K M G T, 1024-based). Default 1G.
+	MaxAttachmentSize.q
+	MaxAttachmentSizeText.s
+
+	; Seconds an upload may take, before it's pushed with its message: past
+	; that it's deleted. Default 3600.
+	UploadTimeout.i
+
 EndStructure
 
 
@@ -283,6 +295,8 @@ Macro Ptr_BakaShrot_CoreConfig : i : EndMacro
 #BakaShrot_Config_DefaultPeerSyncInterval  = 5
 #BakaShrot_Config_DefaultPeerBatchSize     = 100
 #BakaShrot_Config_DefaultRetentionInterval = 60
+#BakaShrot_Config_DefaultMaxAttachmentSize = "1G"
+#BakaShrot_Config_DefaultUploadTimeout     = 3600
 
 ; What ReadPreferenceString() returns for a missing key, to tell it from an
 ; empty one: an empty PushTopics allows nothing, a missing one the default.
@@ -419,6 +433,38 @@ Procedure.q ParseRetentionAge(Text.s)
 		ProcedureReturn -1
 	EndIf
 	ProcedureReturn Total
+EndProcedure
+
+
+; A size as MaxAttachmentSize writes it ("500M", "1G", "1048576") in bytes,
+; -1 if it isn't one. Units are 1024-based: K M G T.
+Procedure.q ParseConfigSize(Text.s)
+	Protected Unit.q = 1, Digits.s, Last.s, i.i
+
+	Text = UCase(Trim(Text))
+	If Text = ""
+		ProcedureReturn -1
+	EndIf
+	Last = Right(Text, 1)
+	Select Last
+		Case "K" : Unit = 1024
+		Case "M" : Unit = 1024 * 1024
+		Case "G" : Unit = 1024 * 1024 * 1024
+		Case "T" : Unit = 1024 * 1024 * 1024 * 1024
+	EndSelect
+	Digits = Text
+	If Unit > 1
+		Digits = Left(Text, Len(Text) - 1)
+	EndIf
+	If Digits = "" Or Len(Digits) > 13
+		ProcedureReturn -1
+	EndIf
+	For i = 1 To Len(Digits)
+		If Mid(Digits, i, 1) < "0" Or Mid(Digits, i, 1) > "9"
+			ProcedureReturn -1
+		EndIf
+	Next
+	ProcedureReturn Val(Digits) * Unit
 EndProcedure
 
 
@@ -835,6 +881,17 @@ Procedure.Ptr_BakaShrot_CoreConfig LoadConfig(IniFilePath.s)
 		BakaShrot_ConfigError = "[BakaShrot.Server] RetentionInterval must be 1 second or more"
 		Goto LoadFailed
 	EndIf
+	*Config\Server\MaxAttachmentSizeText = Trim(ReadPreferenceString("MaxAttachmentSize", #BakaShrot_Config_DefaultMaxAttachmentSize))
+	*Config\Server\MaxAttachmentSize     = ParseConfigSize(*Config\Server\MaxAttachmentSizeText)
+	If *Config\Server\MaxAttachmentSize < 0 Or *Config\Server\MaxAttachmentSize > #BakaShrot_MaxAttachmentSize
+		BakaShrot_ConfigError = "[BakaShrot.Server] MaxAttachmentSize = '" + *Config\Server\MaxAttachmentSizeText + "' isn't a size up to 1T: bytes, or a number with K, M, G or T, like 500M (0: no attachments)"
+		Goto LoadFailed
+	EndIf
+	*Config\Server\UploadTimeout = ReadPreferenceLong("UploadTimeout", #BakaShrot_Config_DefaultUploadTimeout)
+	If *Config\Server\UploadTimeout < 10
+		BakaShrot_ConfigError = "[BakaShrot.Server] UploadTimeout must be 10 seconds or more"
+		Goto LoadFailed
+	EndIf
 	*Config\Server\ReplicatingTopicsText = ReadConfigKey("ReplicatingTopics", "ReplicatingTopicIds", "")
 	If Not ParseTopicSet(*Config, *Config\Server\ReplicatingTopicsText, @*Config\Server\ReplicatingTopics, "[BakaShrot.Server] ReplicatingTopics")
 		Goto LoadFailed
@@ -997,6 +1054,8 @@ Procedure.i SaveConfig(IniFilePath.s, *Config.BakaShrot_CoreConfig)
 	WritePreferenceLong("PeerSyncInterval", *Config\Server\PeerSyncInterval)
 	WritePreferenceLong("PeerBatchSize", *Config\Server\PeerBatchSize)
 	WritePreferenceLong("RetentionInterval", *Config\Server\RetentionInterval)
+	WritePreferenceString("MaxAttachmentSize", *Config\Server\MaxAttachmentSizeText)
+	WritePreferenceLong("UploadTimeout", *Config\Server\UploadTimeout)
 
 	PreferenceGroup("BakaShrot.Topics")
 	ForEach *Config\TopicNames()

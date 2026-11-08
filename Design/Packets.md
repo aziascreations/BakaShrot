@@ -20,13 +20,17 @@ Reference for working on BakaShrot's networking. Related docs:
 | Sealed Hello, key exchange; encrypting a buffer | `Commons/Cryptography/Session.pbi`, `Commons/Cryptography/Cipher.pbi` |
 | Client side of the handshake, on any connection | `Commons/Networking/Outbound.pbi` |
 | Server: listener, one thread per client, request handlers | `Server/Networking/Networking.pbi` |
-| Server: links to peers, check-ins, sending missing messages | `Server/Networking/Peers.pbi` |
+| Server: links to peers, check-ins, sending missing messages and attachments | `Server/Networking/Peers.pbi` |
+| Server: storing messages (the writer), attachments, deleting old ones | `Server/Storage/Writer.pbi`, `Attachments.pbi`, `Retention.pbi` |
+| Server: its config, and the example one | `Server/Config/Config.pbi`, `Server/Config/schema.ini` |
 | Server: the root thread, which stops and starts every worker (restart, vacuum) | `Server/Root.pbi` |
 | Client DLL (one connection) | `Client/BakaShrot_Client.pbi`, used through `BakaShrot_Client_Prototypes.pbi` |
 | Python client, over the DLL | `Interactors/Python/bakashrot.py` |
 | Tests of the packets alone, without sockets | `Tests/HandshakeTest.pb` |
 | Tests of the cipher and the session crypto, without sockets | `Tests/CipherTest.pb` |
 | What goes over the wire (a recording proxy) | `Tests/wire_check.py`, run by `Tests/Python-Test.ps1` |
+| A raw protocol client, for what the DLL never sends | `Tests/AttachmentEdgeClient.pb`, run by `Tests/AttachmentEdges-Test.ps1` |
+| Every end-to-end suite | `Tests/*.ps1`, listed in `CLAUDE.md` |
 
 ## Transport and framing
 
@@ -70,10 +74,10 @@ Reference for working on BakaShrot's networking. Related docs:
   array, read in order with PB-MessagePack:
   1. `Magic` (integer), always `#BakaShrot_ProtocolMagic` (`0x42534854`,
      "BSHT").
-  2. `Version` (integer), always `#BakaShrot_ProtocolVersion` (3: the
-     Hello sealed, a key per connection, everything after the
-     ChallengeRequest encrypted; 2 had topics and nodes by name, in plain
-     text; 1 had ids only).
+  2. `Version` (integer), always `#BakaShrot_ProtocolVersion` (4:
+     attachments; 3: the Hello sealed, a key per connection, everything
+     after the ChallengeRequest encrypted, times; 2 had topics and nodes by
+     name, in plain text; 1 had ids only).
   3. `PacketType` (integer), one of the ids below.
   4. The packet's own fields, in the order listed.
 - **Encodings:** strings are UTF-8 MessagePack strings, the nonce a
@@ -119,14 +123,14 @@ over its own link to another server.
 | 5 | ChallengeRequest | S→C | `ChallengeB64` str (32 bytes), `Nonce` bin (32 bytes), `ServerSessionKey` bin (32 bytes), `ServerSignature` bin (64 bytes, of the transcript). The last packet in plain text | ChallengeResponse |
 | 6 | ChallengeResponse | C→S | `ChallengeResponseB64` str (64-byte signature of the transcript), `Nonce` bin (32 bytes) | AuthAccepted |
 | 7 | AuthAccepted | S→C | None. | |
-| 8 | PushMessage | C→S | `Topic` str (ref, "" for the client's own), `JsonData` str | MessagePushed / RequestRefused |
+| 8 | PushMessage | C→S | `Topic` str (ref, "" for the client's own), `JsonData` str, `UploadId` int (its attachment, 0 for none) | MessagePushed / RequestRefused |
 | 9 | MessagePushed | S→C | `MessageId` int ≥ 1 | |
 | 10 | GetLatestMessage | C→S | `Topic` str (ref), `Node` str (ref) | LatestMessage / RequestRefused |
-| 11 | LatestMessage | S→C | `TopicId`, `NodeId` int 0-65535 (the server's), `TopicName`, `NodeName` str (names, or ids in digits), `MessageId` int ≥ 1, `PushedAt` int (time, see below), `JsonData` str | |
+| 11 | LatestMessage | S→C | `TopicId`, `NodeId` int 0-65535 (the server's), `TopicName`, `NodeName` str (names, or ids in digits), `MessageId` int ≥ 1, `PushedAt` int (time, see below), `JsonData` str, `AttachmentSize` int (0 for none), `AttachmentReady` int 0/1 | |
 | 12 | RequestRefused | S→C | `Reason` str, for logs and humans | |
 | 13 | SyncStateRequest | P→S | None. | SyncState / RequestRefused |
 | 14 | SyncState | S→P | `TopicCount` int, then each topic's `Id` int and `Name` str (the named topics S takes from P); `NodeCount` int, then each node's `Id` and `Name` (the named nodes S takes from P); `TopicPatternCount` int, then each pattern str; `NodePatternCount` int, then each pattern str (S's wildcards for P, `*` included); `PairCount` int, then each pair's `TopicId`, `NodeId`, `MessageId`. Ids are S's own, names are never digits | |
-| 15 | ReplicateMessages | P→S | `Topic` str, `Node` str (names, never digits), `Count` int 1-10000, then each message's `MessageId` int (≥ 1, strictly increasing), `PushedAt` int (as stored, from its origin) and `JsonData` str | MessagePushed (last id) / RequestRefused |
+| 15 | ReplicateMessages | P→S | `Topic` str, `Node` str (names, never digits), `Count` int 1-10000, then each message's `MessageId` int (≥ 1, strictly increasing), `PushedAt` int (as stored, from its origin), `JsonData` str, `AttachmentSize` int (0 for none) and `AttachmentSha256` bin (32 bytes, empty for none) | MessagePushed (last id) / RequestRefused |
 | 16 | QueryRequest | C→S | `Sql` str | QueryResult / RequestRefused |
 | 17 | QueryResult | S→C | `JsonResult` str: `{"columns":[...],"rows":[[...],...]}`, every value a string or null | |
 | 18 | ResolveName | C→S | `Kind` int (1 topic, 2 node), `Ref` str | NameResolved / RequestRefused |
@@ -134,7 +138,20 @@ over its own link to another server.
 | 20 | ListNames | C→S | `Kind` int (1 topics, 2 nodes) | NamesList |
 | 21 | NamesList | S→C | `Kind` int, `Truncated` int 0/1, `Count` int, then each entry's `Id` int, `Name` str ("" if unnamed), `Origin` str ("config", "id") | |
 | 22 | GetMessages | C→S | `Topic` str (ref), `Node` str (ref), `AfterMessageId` int ≥ 0, `Limit` int 1-10000 | Messages / RequestRefused |
-| 23 | Messages | S→C | `TopicId`, `NodeId` int 0-65535 (the server's), `TopicName`, `NodeName` str (names, or ids in digits), `More` int 0/1, `Count` int 0-10000, then each message's `MessageId` int (≥ 1, strictly increasing, above `AfterMessageId`), `PushedAt` int and `JsonData` str | |
+| 23 | Messages | S→C | `TopicId`, `NodeId` int 0-65535 (the server's), `TopicName`, `NodeName` str (names, or ids in digits), `More` int 0/1, `Count` int 0-10000, then each message's `MessageId` int (≥ 1, strictly increasing, above `AfterMessageId`), `PushedAt` int, `JsonData` str, `AttachmentSize` int (0 for none) and `AttachmentReady` int 0/1 | |
+| 24 | UploadStart | C→S | `Topic` str (ref, "" for the client's own), `Size` int 1-MaxAttachmentSize, `Sha256` bin (32 bytes) | UploadStarted / RequestRefused |
+| 25 | UploadStarted | S→C | `UploadId` int ≥ 1, `ChunkSize` int (1 MB) | |
+| 26 | UploadChunk | C→S | `UploadId` int, `ChunkIndex` int ≥ 0 (the next one), `Data` bin (1 MB, the last one what's left) | ChunkStored / RequestRefused |
+| 27 | ChunkStored | S→C, S→P | `Received` int (bytes so far), `Complete` int 0/1 (all of it, SHA-256 checked) | |
+| 28 | GetAttachment | C→S | `Topic`, `Node` str (refs), `MessageId` int ≥ 1, `ChunkIndex` int ≥ 0 | AttachmentChunk / RequestRefused |
+| 29 | AttachmentChunk | S→C | `TopicId`, `NodeId` int (the server's), `MessageId` int, `Size` int, `Sha256` bin (32 bytes), `ChunkIndex` int, `Data` bin | |
+| 30 | MissingAttachmentsRequest | P→S | None. | MissingAttachments / RequestRefused |
+| 31 | MissingAttachments | S→P | `Count` int 0-256, then each one's `Topic`, `Node` str (names), `MessageId` int, `NextChunk` int | |
+| 32 | ReplicateAttachmentChunk | P→S | `Topic`, `Node` str (names), `MessageId` int, `ChunkIndex` int (the next one), `Data` bin | ChunkStored / RequestRefused |
+
+**Attachments** (24-32, and the attachment fields): see
+`Design/Attachments.md`. At most one per message, in parts of 1 MB, checked
+with their SHA-256, replicated after their message.
 
 **Times** (`PushedAt`): milliseconds since 1970-01-01 00:00:00 UTC, 1 to
 `#BakaShrot_MaxTimestamp` (9999-12-31), anything else aborts. A message is
@@ -267,6 +284,11 @@ P -> S  ReplicateMessages   the topic and node names, the next missing messages
 S -> P  MessagePushed(id)   the batch stored in one transaction with
                             INSERT OR IGNORE, the last id echoed
         ... until caught up, or the first refusal for that pair
+        then the attachments of the messages S now has:
+P -> S  MissingAttachmentsRequest
+S -> P  MissingAttachments  what S lacks, among what it takes from P
+P -> S  ReplicateAttachmentChunk ... -> S -> P ChunkStored, per part
+                            (Design/Attachments.md)
 ```
 
 - **Batch size:** `PeerBatchSize` is set on the sending side, in

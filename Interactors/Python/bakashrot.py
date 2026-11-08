@@ -13,9 +13,15 @@ to the app (Message.json() helps).
             print(message.id, message.data)
         for message in client.follow("logs", "kitchen"):   # until stopped
             print(message.id, message.json())
+        photo_id = client.push({"kind": "photo"}, attachment="photo.jpg")
+        client.save_attachment("logs", "kitchen", photo_id, "copy.jpg")
 
 Topics and nodes are "refs": a name ("logs") or an id (12, or "12"), ids
 being the server's own.
+
+A message can have one attachment (a file, or bytes), of any size the
+server takes: uploaded in parts before the message is stored, read back in
+parts, checked with its SHA-256 (Design/Attachments.md).
 
 The connection only goes through to the server holding the private key of
 server_public_key (client.ini's ServerPublicKey, the server logs it when it
@@ -76,7 +82,10 @@ class Message:
     """A stored message. data is as stored: JSON or not (the server's
     is_json column tells which, json() parses it). pushed_at: when it was
     pushed, to whichever server it was pushed to, in milliseconds since
-    1970-01-01 UTC (pushed is the same as a datetime)."""
+    1970-01-01 UTC (pushed is the same as a datetime). attachment_size: its
+    attachment's, 0 for none; attachment_ready: whether all of it is on
+    this server (a replicated one comes after its message), see
+    Client.get_attachment() and save_attachment()."""
 
     id: int
     topic: str
@@ -85,6 +94,8 @@ class Message:
     node_id: int
     data: str
     pushed_at: int = 0
+    attachment_size: int = 0
+    attachment_ready: bool = False
 
     def json(self) -> Any:
         """The data parsed as JSON, raises ValueError if it isn't."""
@@ -191,6 +202,14 @@ class _Dll:
             "BakaShrot_HasMoreMessages": (I, []),
             "BakaShrot_GetMessageId": (Q, []),
             "BakaShrot_GetMessagePushedAt": (Q, []),
+            "BakaShrot_GetMessageAttachmentSize": (Q, []),
+            "BakaShrot_IsMessageAttachmentReady": (I, []),
+            "BakaShrot_PushMessageWithFileA": (Q, [P, P, P]),
+            "BakaShrot_PushMessageWithDataA": (Q, [P, P, S, Q]),
+            "BakaShrot_SaveAttachmentA": (Q, [P, P, Q, P]),
+            "BakaShrot_LoadAttachmentA": (Q, [P, P, Q]),
+            "BakaShrot_GetAttachmentData": (Q, [S, Q]),
+            "BakaShrot_FreeAttachmentData": (I, []),
             "BakaShrot_GetMessageTopicId": (L, []),
             "BakaShrot_GetMessageNodeId": (L, []),
             "BakaShrot_GetMessageTopicA": (I, [S, I]),
@@ -325,27 +344,73 @@ class Client:
 
     # --- Requests ----------------------------------------------------------
 
-    def push(self, data: Any, topic: Optional[Ref] = None) -> int:
+    def push(self, data: Any, topic: Optional[Ref] = None,
+             attachment: Union[None, bytes, bytearray, memoryview, str, os.PathLike] = None) -> int:
         """Pushes a message into topic (default: the client's own), under
         the client's node. data is stored as is if it's a str (JSON or not),
-        anything else is turned into JSON first. Returns its message id."""
+        anything else is turned into JSON first. Returns its message id.
+
+        attachment: bytes, or the path of a file, uploaded first (in parts,
+        any size the server's MaxAttachmentSize allows): the message is only
+        stored once all of it is."""
         if not isinstance(data, str):
             data = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         encoded = data.encode("utf-8")
         if len(encoded) > MAX_MESSAGE_SIZE:
             raise BakaShrotError(f"The message is too big: {len(encoded)} bytes, at most {MAX_MESSAGE_SIZE}")
+        topic_ref = b"" if topic is None else _ref(topic)
         with self._lock:
             self._check_connected()
-            message_id = self._dll.PushMessageToA(b"" if topic is None else _ref(topic), encoded)
+            if attachment is None:
+                message_id = self._dll.PushMessageToA(topic_ref, encoded)
+            elif isinstance(attachment, (bytes, bytearray, memoryview)):
+                raw = bytes(attachment)
+                if not raw:
+                    raise BakaShrotError("The attachment is empty")
+                buffer = ctypes.create_string_buffer(raw, len(raw))
+                message_id = self._dll.PushMessageWithDataA(topic_ref, encoded, ctypes.cast(buffer, ctypes.c_void_p), len(raw))
+            else:
+                path = os.fspath(attachment)
+                if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                    raise BakaShrotError(f"Can't attach {path!r}: no such file, or empty")
+                message_id = self._dll.PushMessageWithFileA(topic_ref, encoded, path.encode("utf-8"))
             if message_id < 1:
                 raise self._failed("Push")
             return message_id
+
+    def get_attachment(self, topic: Ref, node: Ref, message_id: int) -> bytes:
+        """The attachment of topic:node#message_id, all of it in memory
+        (save_attachment() for big ones), checked with its SHA-256. Raises
+        RefusedError if the message has none, or it isn't on this server
+        yet."""
+        with self._lock:
+            self._check_connected()
+            size = self._dll.LoadAttachmentA(_ref(topic), _ref(node), int(message_id))
+            if size < 0:
+                raise self._failed("Attachment")
+            try:
+                buffer = ctypes.create_string_buffer(size)
+                self._dll.GetAttachmentData(ctypes.cast(buffer, ctypes.c_void_p), size)
+                return buffer.raw[:size]
+            finally:
+                self._dll.FreeAttachmentData()
+
+    def save_attachment(self, topic: Ref, node: Ref, message_id: int, path: Union[str, os.PathLike]) -> int:
+        """Saves the attachment of topic:node#message_id to path (replaced),
+        a part at a time, checked with its SHA-256. Returns its size. A
+        failed one leaves no file."""
+        with self._lock:
+            self._check_connected()
+            size = self._dll.SaveAttachmentA(_ref(topic), _ref(node), int(message_id), os.fspath(path).encode("utf-8"))
+            if size < 0:
+                raise self._failed("Attachment")
+            return size
 
     def _current(self) -> Message:
         dll = self._dll
         return Message(dll.GetMessageId(), dll.string(dll.GetMessageTopicA), dll.string(dll.GetMessageNodeA),
                        dll.GetMessageTopicId(), dll.GetMessageNodeId(), dll.string(dll.GetMessageDataA),
-                       dll.GetMessagePushedAt())
+                       dll.GetMessagePushedAt(), dll.GetMessageAttachmentSize(), bool(dll.IsMessageAttachmentReady()))
 
     def latest(self, topic: Ref, node: Ref) -> Optional[Message]:
         """The latest message of topic/node, None if there's none yet."""

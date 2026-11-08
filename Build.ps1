@@ -172,12 +172,14 @@ try {
     # Example app using the DLL, run it from ./Build while the server runs.
     Invoke-Compiler "Client\BakaShrot_Client_Prototypes.pbi" "ClientExample.exe" @("/CONSOLE")
     # Tools using the DLL, same as the example:
-    #   PushMessage [-t <Topic>] <Json|@JsonFile> [ClientIni]
+    #   PushMessage [-t <Topic>] [-a <File>] <Json|@JsonFile> [ClientIni]
     #   GetLatestMessage <Topic> <Node> [ClientIni]
     Invoke-Compiler "Tools\PushMessage\PushMessage.pb"           "PushMessage.exe"       @("/CONSOLE")
     Invoke-Compiler "Tools\GetLatestMessage\GetLatestMessage.pb" "GetLatestMessage.exe"  @("/CONSOLE")
     #   GetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [ClientIni]
     Invoke-Compiler "Tools\GetMessages\GetMessages.pb"           "GetMessages.exe"       @("/CONSOLE")
+    #   GetAttachment <Topic> <Node> <MessageId> <OutFile> [ClientIni]
+    Invoke-Compiler "Tools\GetAttachment\GetAttachment.pb"       "GetAttachment.exe"     @("/CONSOLE")
     #   Query <Sql|@SqlFile> [ClientIni]
     Invoke-Compiler "Tools\Query\Query.pb"                       "Query.exe"             @("/CONSOLE")
     #   Resolve <topic|node> <NameOrId> [ClientIni]

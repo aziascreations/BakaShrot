@@ -1,0 +1,126 @@
+// Changes from v6 (Design/Attachments.md):
+//  - attachments, blobs, blob_chunks: a message's attachment (one at most),
+//    its data, in 1 MB parts. Replace the placeholder "attachements" table,
+//    dropped.
+//  - Triggers: deleting a message deletes its attachment row, which marks
+//    its blob to delete (Retention.pbi deletes the parts).
+//
+// Needs SQLite 3.38+ with its JSON functions (json_valid, ->>), see Storage.pbi.
+// The database is in WAL mode, see Storage.pbi and Writer.pbi.
+
+table data {
+	topic_id integer [not null]
+	node_id integer [not null]
+	message_id integer [not null]
+	message_data text [not null]
+
+	// 1 if message_data is well-formed JSON, 0 otherwise.
+	// Can't be written, SQLite computes it on insert and stores it.
+	is_json integer [not null, note: 'GENERATED ALWAYS AS (json_valid(message_data)) STORED']
+
+	// When it was pushed to its origin, ms since 1970-01-01 UTC.
+	pushed_at integer [not null, default: 0]
+
+	indexes {
+		(topic_id, node_id, message_id) [unique]
+		message_id
+		(topic_id, pushed_at)
+	}
+}
+
+// One row per topic/node id that has ever had messages: deleting messages
+// (the retention) leaves it as is, so ids never go back.
+// AFTER INSERT ON data: INSERT ... ON CONFLICT DO UPDATE SET
+//   max_message_id = MAX(max_message_id, excluded.max_message_id)
+// Only fires for rows actually inserted (not the ones INSERT OR IGNORE drops).
+table node_heads [note: 'WITHOUT ROWID'] {
+	topic_id integer [not null]
+	node_id integer [not null]
+	max_message_id integer [not null]
+
+	indexes {
+		(topic_id, node_id) [pk]
+	}
+}
+
+// A message's attachment (Design/Attachments.md). Its size and SHA-256 come
+// with it (pushed, or replicated), its data in blob_id once any is here.
+// state: 0 missing (replicated, none here yet), 1 receiving, 2 ready,
+//        3 not kept (bigger than this server's MaxAttachmentSize).
+// AFTER DELETE ON data deletes it, AFTER DELETE ON attachments marks its
+// blob to delete (state 3).
+table attachments [note: 'WITHOUT ROWID'] {
+	topic_id integer [not null]
+	node_id integer [not null]
+	message_id integer [not null]
+	size integer [not null]
+	sha256 blob [not null]
+	blob_id integer
+	state integer [not null]
+
+	indexes {
+		(topic_id, node_id, message_id) [pk]
+		state
+	}
+}
+
+// The data of one attachment, being received (an upload, or replicated) or
+// stored. topic_id, node_id: an upload's owner, or the message's pair.
+// received: bytes stored so far. created_at: ms since 1970 UTC, an upload
+// not pushed with its message within UploadTimeout is deleted.
+// state: 0 receiving, 1 complete (an upload waiting for its message),
+//        2 attached, 3 to delete.
+table blobs {
+	blob_id integer [pk]
+	topic_id integer [not null]
+	node_id integer [not null]
+	size integer [not null]
+	sha256 blob [not null]
+	received integer [not null, default: 0]
+	state integer [not null]
+	created_at integer [not null]
+
+	indexes {
+		state
+	}
+}
+
+// Its parts, #BakaShrot_AttachmentChunkSize (1 MB) each, the last one
+// what's left.
+table blob_chunks {
+	blob_id integer [not null]
+	chunk_index integer [not null]
+	chunk_data blob [not null]
+
+	indexes {
+		(blob_id, chunk_index) [pk]
+	}
+}
+
+// origin: "config" (named in [BakaShrot.Topics]), "id" (unnamed, name is
+// the id in digits).
+table topics {
+	topic_id integer [pk]
+	name text [not null, unique, note: 'COLLATE NOCASE']
+	origin text [not null]
+}
+
+// origin: "config" (named in [BakaShrot.Nodes]), "id" (unnamed), "peer"
+// (only in databases from the short-lived version that added peer nodes).
+table nodes {
+	node_id integer [pk]
+	name text [not null, unique, note: 'COLLATE NOCASE']
+	origin text [not null]
+}
+
+// View messages:
+//   SELECT t.name AS topic, n.name AS node, d.message_id, d.message_data,
+//          d.is_json, d.topic_id, d.node_id, d.pushed_at,
+//          strftime('%Y-%m-%dT%H:%M:%fZ', d.pushed_at / 1000.0, 'unixepoch') AS pushed_utc
+//   FROM data d JOIN topics t ON t.topic_id = d.topic_id
+//               JOIN nodes n ON n.node_id = d.node_id
+// WHERE topic = ... AND node = ... goes through the name indexes, then
+// data's (topic_id, node_id, message_id) one.
+
+// Note, ignore it
+// msg_type TEXT GENERATED ALWAYS AS (data ->> '$.messageData.MsgType') VIRTUAL

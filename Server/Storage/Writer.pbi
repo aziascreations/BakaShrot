@@ -110,6 +110,8 @@ Structure BakaShrot_PushJob
 	JsonData.s
 	; When it arrived, ms since 1970 UTC.
 	PushedAt.q
+	; Its attachment, a complete upload (blobs), 0 for none.
+	BlobId.q
 
 	; Filled in by whoever writes it, under the write mutex.
 	MessageId.q
@@ -641,6 +643,77 @@ Procedure BakaShrot_Writer_LogStats()
 EndProcedure
 
 
+; Claims a complete upload (blobs state 1) of TopicId/NodeId for a message:
+; state 2. Returns #False if it isn't one, someone else's, or attached already.
+Procedure.i BakaShrot_Writer_ClaimBlob(BlobId.q, TopicId.i, NodeId.i)
+	Protected DbId.i = BakaShrot_Storage_Writer\DbId
+	SetDatabaseQuad(DbId, 0, BlobId)
+	SetDatabaseLong(DbId, 1, TopicId)
+	SetDatabaseLong(DbId, 2, NodeId)
+	If Not DatabaseUpdate(DbId, "UPDATE blobs SET state = 2 WHERE blob_id = ? AND topic_id = ? AND node_id = ? AND state = 1")
+		BakaShrot_Storage_Writer\LastError = DatabaseError()
+		ProcedureReturn #False
+	EndIf
+	If AffectedDatabaseRows(DbId) <> 1
+		BakaShrot_Storage_Writer\LastError = "the upload isn't complete, or isn't this client's for that topic"
+		ProcedureReturn #False
+	EndIf
+	ProcedureReturn #True
+EndProcedure
+
+; Gives a claimed upload back (state 1), its message couldn't be stored.
+Procedure BakaShrot_Writer_UnclaimBlob(BlobId.q)
+	Protected DbId.i = BakaShrot_Storage_Writer\DbId
+	SetDatabaseQuad(DbId, 0, BlobId)
+	DatabaseUpdate(DbId, "UPDATE blobs SET state = 1 WHERE blob_id = ?")
+EndProcedure
+
+; The attachments row of a pushed message, from its claimed upload.
+Procedure.i BakaShrot_Writer_LinkBlob(TopicId.i, NodeId.i, MessageId.q, BlobId.q)
+	Protected DbId.i = BakaShrot_Storage_Writer\DbId
+	SetDatabaseLong(DbId, 0, TopicId)
+	SetDatabaseLong(DbId, 1, NodeId)
+	SetDatabaseQuad(DbId, 2, MessageId)
+	SetDatabaseQuad(DbId, 3, BlobId)
+	If Not DatabaseUpdate(DbId, "INSERT INTO attachments (topic_id, node_id, message_id, size, sha256, blob_id, state) " +
+	                            "SELECT ?, ?, ?, size, sha256, blob_id, 2 FROM blobs WHERE blob_id = ?") Or AffectedDatabaseRows(DbId) <> 1
+		BakaShrot_Storage_Writer\LastError = "can't attach the upload: " + DatabaseError()
+		ProcedureReturn #False
+	EndIf
+	ProcedureReturn #True
+EndProcedure
+
+; Deletes a message just inserted in this transaction, its attachment failed.
+Procedure BakaShrot_Writer_DropMessage(TopicId.i, NodeId.i, MessageId.q)
+	Protected DbId.i = BakaShrot_Storage_Writer\DbId
+	SetDatabaseLong(DbId, 0, TopicId)
+	SetDatabaseLong(DbId, 1, NodeId)
+	SetDatabaseQuad(DbId, 2, MessageId)
+	DatabaseUpdate(DbId, "DELETE FROM data WHERE topic_id = ? AND node_id = ? AND message_id = ?")
+EndProcedure
+
+; The attachments row of a replicated message: its data comes later
+; (Attachments.pbi), state 0 (missing), or 3 (not kept here) past MaxSize.
+Procedure.i BakaShrot_Writer_AddReplicatedAttachment(TopicId.i, NodeId.i, *Message.BakaShrot_ReplicatedMessage, MaxSize.q)
+	Protected DbId.i = BakaShrot_Storage_Writer\DbId
+	SetDatabaseLong(DbId, 0, TopicId)
+	SetDatabaseLong(DbId, 1, NodeId)
+	SetDatabaseQuad(DbId, 2, *Message\MessageId)
+	SetDatabaseQuad(DbId, 3, *Message\AttachmentSize)
+	SetDatabaseBlob(DbId, 4, @*Message\AttachmentSha256[0], #BakaShrot_Sha256Size)
+	If *Message\AttachmentSize > MaxSize
+		SetDatabaseLong(DbId, 5, 3)
+	Else
+		SetDatabaseLong(DbId, 5, 0)
+	EndIf
+	If Not DatabaseUpdate(DbId, "INSERT OR IGNORE INTO attachments (topic_id, node_id, message_id, size, sha256, blob_id, state) VALUES (?, ?, ?, ?, ?, NULL, ?)")
+		BakaShrot_Storage_Writer\LastError = DatabaseError()
+		ProcedureReturn #False
+	EndIf
+	ProcedureReturn #True
+EndProcedure
+
+
 ; Writes queued pushes in one transaction, filling in their MessageId (-1 and
 ; Error if that one failed) and setting Done. Holding the write mutex.
 Procedure BakaShrot_Writer_WriteJobs(List Jobs.i())
@@ -656,12 +729,28 @@ Procedure BakaShrot_Writer_WriteJobs(List Jobs.i())
 		Key = Str(*Job\TopicId) + ":" + Str(*Job\NodeId)
 		MessageId = BakaShrot_Writer_NextId(Key, *Job\TopicId, *Job\NodeId)
 		JsonData  = *Job\JsonData
+		*Job\MessageId = -1
+
+		; Its upload first: nothing is stored if it can't be claimed.
+		If MessageId > 0 And *Job\BlobId And Not BakaShrot_Writer_ClaimBlob(*Job\BlobId, *Job\TopicId, *Job\NodeId)
+			MessageId = -1
+		EndIf
+
 		If MessageId > 0 And BakaShrot_Writer_InsertRow(BakaShrot_Storage_Writer\Insert, *Job\TopicId, *Job\NodeId, MessageId, JsonData, *Job\PushedAt) = 1
-			*Job\MessageId = MessageId
+			If *Job\BlobId And Not BakaShrot_Writer_LinkBlob(*Job\TopicId, *Job\NodeId, MessageId, *Job\BlobId)
+				BakaShrot_Writer_DropMessage(*Job\TopicId, *Job\NodeId, MessageId)
+				BakaShrot_Writer_UnclaimBlob(*Job\BlobId)
+			Else
+				*Job\MessageId = MessageId
+			EndIf
+			; Taken either way: node_heads went up.
 			BakaShrot_Storage_Writer\NextIds(Key) = MessageId + 1
-		Else
-			*Job\MessageId = -1
-			*Job\Error     = BakaShrot_Storage_Writer\LastError
+		ElseIf MessageId > 0 And *Job\BlobId
+			BakaShrot_Writer_UnclaimBlob(*Job\BlobId)
+		EndIf
+
+		If *Job\MessageId < 1
+			*Job\Error = BakaShrot_Storage_Writer\LastError
 		EndIf
 	Next
 
@@ -685,9 +774,12 @@ EndProcedure
 
 ; Inserts one JSON message for a topic_id/node_id pair, with the next
 ; message_id for that pair, starting at 1, grouped with the other pushes
-; arriving meanwhile. Stamped with the time it got here (pushed_at). Returns the new message's id once committed, or -1 with
+; arriving meanwhile. Stamped with the time it got here (pushed_at).
+; BlobId: its attachment, a complete upload of this topic and node
+; (Attachments.pbi), 0 for none: attached in the same transaction.
+; Returns the new message's id once committed, or -1 with
 ; the reason in *Error\s.
-Procedure.q InsertNextMessage(TopicId.i, NodeId.i, JsonData.s, *Error.String)
+Procedure.q InsertNextMessage(TopicId.i, NodeId.i, JsonData.s, *Error.String, BlobId.q = 0)
 	Protected Job.BakaShrot_PushJob
 	Protected NewList Jobs.i()
 	Protected StartTicks.q
@@ -696,6 +788,7 @@ Procedure.q InsertNextMessage(TopicId.i, NodeId.i, JsonData.s, *Error.String)
 	Job\NodeId    = NodeId
 	Job\JsonData  = JsonData
 	Job\PushedAt  = BakaShrot_NowUtcMs()
+	Job\BlobId    = BlobId
 	Job\MessageId = -1
 
 	LockMutex(BakaShrot_Storage_QueueMutex)
@@ -761,8 +854,10 @@ EndProcedure
 ; past this server's max age for the topic already: not stored, but the
 ; pair's head still goes up to them, so the peer doesn't send them again.
 ; *Skipped\i, if given, gets how many.
+; A message's attachment gets its row, its data comes later (Attachments.pbi),
+; unless it's bigger than MaxAttachmentSize: not kept here then.
 ; Returns #False with the reason in *Error\s, the transaction is rolled back.
-Procedure.i InsertReplicatedMessages(TopicId.i, NodeId.i, List Messages.BakaShrot_ReplicatedMessage(), *Error.String, SkipBeforeMs.q = 0, *Skipped.Integer = 0)
+Procedure.i InsertReplicatedMessages(TopicId.i, NodeId.i, List Messages.BakaShrot_ReplicatedMessage(), *Error.String, SkipBeforeMs.q = 0, *Skipped.Integer = 0, MaxAttachmentSize.q = #BakaShrot_MaxAttachmentSize)
 	Protected Stored.i, Inserted.i, Key.s, JsonData.s, Skipped.i, LastMessageId.q
 
 	Key = Str(TopicId) + ":" + Str(NodeId)
@@ -787,6 +882,10 @@ Procedure.i InsertReplicatedMessages(TopicId.i, NodeId.i, List Messages.BakaShro
 			JsonData = Messages()\JsonData
 			Inserted = BakaShrot_Writer_InsertRow(BakaShrot_Storage_Writer\InsertOrIgnore, TopicId, NodeId, Messages()\MessageId, JsonData, Messages()\PushedAt)
 			If Inserted < 0
+				Stored = #False
+				Break
+			EndIf
+			If Inserted = 1 And Messages()\AttachmentSize > 0 And Not BakaShrot_Writer_AddReplicatedAttachment(TopicId, NodeId, @Messages(), MaxAttachmentSize)
 				Stored = #False
 				Break
 			EndIf

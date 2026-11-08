@@ -6,8 +6,8 @@
 #   BakaShrot_Server.exe                the server
 #   BakaShrot_Client.dll                the client DLL, with
 #   BakaShrot_Client_Prototypes.pbi     its PureBasic prototypes
-#   PushMessage.exe, GetLatestMessage.exe, GetMessages.exe, Query.exe,
-#   Resolve.exe, ListNames.exe, KeyGen.exe   the tools
+#   PushMessage.exe, GetLatestMessage.exe, GetMessages.exe, GetAttachment.exe,
+#   Query.exe, Resolve.exe, ListNames.exe, KeyGen.exe   the tools
 #   libsodium.dll, sqlite3.dll          what they need next to them
 #   vcruntime140.dll                    what libsodium.dll needs (Libs\redist)
 #   python\bakashrot.py, example.py     the Python client, over the DLL
@@ -115,6 +115,7 @@ $Targets = @(
     @("Tools\PushMessage\PushMessage.pb",     "PushMessage.exe",      @("/CONSOLE")),
     @("Tools\GetLatestMessage\GetLatestMessage.pb", "GetLatestMessage.exe", @("/CONSOLE")),
     @("Tools\GetMessages\GetMessages.pb",     "GetMessages.exe",      @("/CONSOLE")),
+    @("Tools\GetAttachment\GetAttachment.pb", "GetAttachment.exe",    @("/CONSOLE")),
     @("Tools\Query\Query.pb",                 "Query.exe",            @("/CONSOLE")),
     @("Tools\Resolve\Resolve.pb",             "Resolve.exe",          @("/CONSOLE")),
     @("Tools\ListNames\ListNames.pb",         "ListNames.exe",        @("/CONSOLE")),
@@ -169,9 +170,10 @@ Run the server:  BakaShrot_Server.exe config.ini
   Topics and nodes go by name ([BakaShrot.Topics], [BakaShrot.Nodes]) or id,
   each server has its own ids for the same names.
 Tools, next to BakaShrot_Client.dll, with a client.ini:
-  PushMessage [-t <Topic>] <Json|@JsonFile> [ClientIni]
+  PushMessage [-t <Topic>] [-a <File>] <Json|@JsonFile> [ClientIni]
   GetLatestMessage <Topic> <Node> [ClientIni]
-  GetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [--interval <Ms>] [ClientIni]
+  GetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [--interval <Ms>] [--time] [ClientIni]
+  GetAttachment <Topic> <Node> <MessageId> <OutFile> [ClientIni]
   Resolve <topic|node> <NameOrId> [ClientIni]
   ListNames [topics|nodes|all] [ClientIni] [--json]
   Query <Sql|@SqlFile> [ClientIni]     e.g. SELECT * FROM messages WHERE topic = 'logs'
@@ -310,6 +312,19 @@ ServerPublicKey = $($ServerKeys.PublicKey)
         else {
             Write-Host "  No python on the PATH, the Python client wasn't checked"
         }
+
+        # An attachment of 3 parts and a bit, up and back.
+        $Attach = Join-Path $TestDir "attach.bin"
+        $Bytes = New-Object byte[] (3 * 1024 * 1024 + 17)
+        (New-Object System.Random 5).NextBytes($Bytes)
+        [IO.File]::WriteAllBytes($Attach, $Bytes)
+        $Pushed = Invoke-Tool "PushMessage.exe" @("-a", $Attach, "@$(Join-Path $TestDir 'message.json')", $ClientIni)
+        if ($Pushed -notmatch "message #(\d+), with an attachment of 3145745 bytes") { throw "Unexpected push with an attachment: $Pushed" }
+        $AttachedId = $Matches[1]
+        $Copy = Join-Path $TestDir "attach-copy.bin"
+        $Saved = Invoke-Tool "GetAttachment.exe" @("releasetest", "tester", $AttachedId, $Copy, $ClientIni)
+        if ($Saved -notmatch "Saved 3145745 bytes" -or (Get-FileHash $Attach).Hash -ne (Get-FileHash $Copy).Hash) { throw "Unexpected attachment read back: $Saved" }
+        Write-Host "  Pushed and read back an attachment: OK"
     }
     finally {
         if ($Server -and -not $Server.HasExited) {

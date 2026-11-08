@@ -20,7 +20,8 @@ EndStructure
 ; 3: the Hello sealed for the server, a key per connection, everything after
 ;    the ChallengeRequest encrypted (Connections.pbi). Messages carry when
 ;    they were pushed (PushedAt).
-#BakaShrot_ProtocolVersion = 3
+; 4: attachments (Design/Attachments.md).
+#BakaShrot_ProtocolVersion = 4
 
 ; Size in bytes of the nonce sent in a challenge request and echoed in its response.
 ; It MUST be filled with CryptRandomData(), never reused, and be checked against the one the
@@ -48,6 +49,32 @@ EndStructure
 
 Procedure.i BakaShrot_IsValidTimestamp(Timestamp.q)
 	ProcedureReturn Bool(Timestamp >= 1 And Timestamp <= #BakaShrot_MaxTimestamp)
+EndProcedure
+
+; Attachments (Design/Attachments.md): at most one per message, sent and
+; stored in parts of #BakaShrot_AttachmentChunkSize bytes (the last one what's
+; left), checked with their SHA-256. #BakaShrot_MaxAttachmentSize is the
+; protocol's limit, each server sets its own ([BakaShrot.Server]
+; MaxAttachmentSize).
+#BakaShrot_AttachmentChunkSize = 1048576
+#BakaShrot_MaxAttachmentSize   = 1099511627776
+#BakaShrot_MaxAttachmentChunks = #BakaShrot_MaxAttachmentSize / #BakaShrot_AttachmentChunkSize
+#BakaShrot_Sha256Size          = 32
+
+; How many parts Size bytes take.
+Procedure.q BakaShrot_AttachmentChunkCount(Size.q)
+	ProcedureReturn (Size + #BakaShrot_AttachmentChunkSize - 1) / #BakaShrot_AttachmentChunkSize
+EndProcedure
+
+; How big part Index of Size bytes is, 0 if there's no such part.
+Procedure.i BakaShrot_AttachmentChunkBytes(Size.q, Index.q)
+	Protected Left.q = Size - Index * #BakaShrot_AttachmentChunkSize
+	If Index < 0 Or Left <= 0
+		ProcedureReturn 0
+	ElseIf Left > #BakaShrot_AttachmentChunkSize
+		ProcedureReturn #BakaShrot_AttachmentChunkSize
+	EndIf
+	ProcedureReturn Left
 EndProcedure
 
 ; Biggest packet accepted on the wire once authenticated, anything bigger
@@ -97,6 +124,20 @@ Enumeration BakaShrot_PacketTypes
 	; A run of messages of a topic/node, only accepted once authenticated.
 	#BakaShrot_PacketType_GetMessages       = 22
 	#BakaShrot_PacketType_Messages          = 23
+
+	; Attachments, only accepted once authenticated: uploading one (before
+	; its PushMessage), and reading one, in parts.
+	#BakaShrot_PacketType_UploadStart       = 24
+	#BakaShrot_PacketType_UploadStarted     = 25
+	#BakaShrot_PacketType_UploadChunk       = 26
+	#BakaShrot_PacketType_ChunkStored       = 27
+	#BakaShrot_PacketType_GetAttachment     = 28
+	#BakaShrot_PacketType_AttachmentChunk   = 29
+
+	; Replicating attachments, only accepted from peers, once their messages are.
+	#BakaShrot_PacketType_MissingAttachmentsRequest = 30
+	#BakaShrot_PacketType_MissingAttachments        = 31
+	#BakaShrot_PacketType_ReplicateAttachmentChunk  = 32
 EndEnumeration
 
 

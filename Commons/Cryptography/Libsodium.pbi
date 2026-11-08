@@ -135,6 +135,14 @@ CompilerEndIf
 	crypto_kx_client_session_keys.l(*Rx, *Tx, *ClientPublicKey, *ClientSecretKey, *ServerPublicKey)
 	crypto_kx_server_session_keys.l(*Rx, *Tx, *ServerPublicKey, *ServerSecretKey, *ClientPublicKey)
 
+	; SHA-256, a piece at a time: _init() a state (crypto_hash_sha256_statebytes()
+	; bytes), _update() it with each piece, _final() writes the 32-byte hash.
+	; For the attachments' checksums, see BakaShrot_Sha256_* below.
+	crypto_hash_sha256_statebytes.i()
+	crypto_hash_sha256_init.l(*State)
+	crypto_hash_sha256_update.l(*State, *Data, DataLength.q)
+	crypto_hash_sha256_final.l(*State, *Hash)
+
 EndImport
 
 
@@ -180,6 +188,34 @@ EndProcedure
 ; packet outright - do not process it, do not fall back to trusting it.
 Procedure.i DecodeData(*Data, DataLength.i, *PublicKey, *Signature)
 	ProcedureReturn Bool(crypto_sign_verify_detached(*Signature, *Data, DataLength, *PublicKey) = 0)
+EndProcedure
+
+
+; SHA-256 of data given a piece at a time (an attachment's parts): Start, Add
+; each piece, then Finish writes the 32-byte hash.
+#BakaShrot_Sha256_HashSize = 32
+
+Structure BakaShrot_Sha256
+	; crypto_hash_sha256_state is 104 bytes, checked by Start.
+	State.a[128]
+EndStructure
+
+; Returns #False if libsodium's state doesn't fit (a libsodium change).
+Procedure.i BakaShrot_Sha256_Start(*Hash.BakaShrot_Sha256)
+	If crypto_hash_sha256_statebytes() > SizeOf(BakaShrot_Sha256)
+		ProcedureReturn #False
+	EndIf
+	ProcedureReturn Bool(crypto_hash_sha256_init(*Hash) = 0)
+EndProcedure
+
+Procedure BakaShrot_Sha256_Add(*Hash.BakaShrot_Sha256, *Data, Size.i)
+	If Size > 0
+		crypto_hash_sha256_update(*Hash, *Data, Size)
+	EndIf
+EndProcedure
+
+Procedure BakaShrot_Sha256_Finish(*Hash.BakaShrot_Sha256, *Out)
+	crypto_hash_sha256_final(*Hash, *Out)
 EndProcedure
 
 

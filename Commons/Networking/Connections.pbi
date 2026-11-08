@@ -31,6 +31,10 @@
 ;   C->S QueryRequest       -> S->C QueryResult or RequestRefused
 ;   C->S ResolveName        -> S->C NameResolved or RequestRefused
 ;   C->S ListNames          -> S->C NamesList
+;   C->S UploadStart        -> S->C UploadStarted or RequestRefused
+;   C->S UploadChunk        -> S->C ChunkStored or RequestRefused
+;        then a PushMessage with the UploadId attaches it to the message
+;   C->S GetAttachment      -> S->C AttachmentChunk or RequestRefused
 ; Topics and nodes are given by name or id, see Names.pbi.
 ; A refusal keeps the connection open, a malformed or unexpected packet
 ; still aborts it.
@@ -39,6 +43,9 @@
 ; link it opened to the server:
 ;   P->S SyncStateRequest   -> S->P SyncState or RequestRefused
 ;   P->S ReplicateMessages  -> S->P MessagePushed (last id) or RequestRefused
+;   once the messages are caught up:
+;   P->S MissingAttachmentsRequest -> S->P MissingAttachments or RequestRefused
+;   P->S ReplicateAttachmentChunk  -> S->P ChunkStored or RequestRefused
 ;
 ;
 ; Framing: every packet is sent as its size (4 bytes, little-endian),
@@ -73,6 +80,15 @@ XIncludeFile "Packets/ListNamesPacket.pbi"
 XIncludeFile "Packets/NamesListPacket.pbi"
 XIncludeFile "Packets/GetMessagesPacket.pbi"
 XIncludeFile "Packets/MessagesPacket.pbi"
+XIncludeFile "Packets/UploadStartPacket.pbi"
+XIncludeFile "Packets/UploadStartedPacket.pbi"
+XIncludeFile "Packets/UploadChunkPacket.pbi"
+XIncludeFile "Packets/ChunkStoredPacket.pbi"
+XIncludeFile "Packets/GetAttachmentPacket.pbi"
+XIncludeFile "Packets/AttachmentChunkPacket.pbi"
+XIncludeFile "Packets/MissingAttachmentsRequestPacket.pbi"
+XIncludeFile "Packets/MissingAttachmentsPacket.pbi"
+XIncludeFile "Packets/ReplicateAttachmentChunkPacket.pbi"
 
 
 ; Reads the type of a received packet, to know which decoder to use.

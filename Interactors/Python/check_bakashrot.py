@@ -6,7 +6,10 @@ Usage: python check_bakashrot.py <DllPath> <KitchenIni> <LoungeIni>
 Expects an empty database. Prints PASS/FAIL per check, exits 1 if any failed.
 """
 
+import hashlib
+import os
 import sys
+import tempfile
 import threading
 import time
 
@@ -158,6 +161,44 @@ with kitchen:
     check("follow(after='latest') from another thread: only the 5 new ones",
           not thread.is_alive() and not errors and [m.id for m in followed] == new_ids,
           f"{[m.id for m in followed]} vs {new_ids}, errors {errors}")
+
+    # --- Attachments (in secret, the other checks count logs) -------------------
+    blob = os.urandom(3 * 1024 * 1024 + 7)
+    started = time.perf_counter()
+    blob_id = kitchen.push({"kind": "blob"}, topic="secret", attachment=blob)
+    up = time.perf_counter() - started
+    message = kitchen.latest("secret", "kitchen")
+    check("push(attachment=bytes): the message has it, ready",
+          message is not None and message.id == blob_id and message.attachment_size == len(blob) and message.attachment_ready,
+          message)
+    started = time.perf_counter()
+    data = kitchen.get_attachment("secret", "kitchen", blob_id)
+    down = time.perf_counter() - started
+    check("get_attachment(): the same bytes", data == blob, f"{len(data)} bytes, {up * 1000:.0f} ms up, {down * 1000:.0f} ms down")
+
+    folder = tempfile.mkdtemp()
+    source = os.path.join(folder, "source.bin")
+    with open(source, "wb") as file:
+        file.write(os.urandom(1500 * 1024))
+    file_id = kitchen.push("from a file", topic="secret", attachment=source)
+    copy = os.path.join(folder, "copy.bin")
+    size = kitchen.save_attachment("secret", "kitchen", file_id, copy)
+    with open(source, "rb") as a, open(copy, "rb") as b:
+        same = hashlib.sha256(a.read()).digest() == hashlib.sha256(b.read()).digest()
+    check("push(attachment=path), save_attachment(): the same file", size == os.path.getsize(source) and same, size)
+
+    plain_id = kitchen.push("no attachment", topic="secret")
+    page = kitchen.get_messages("secret", "kitchen", after=blob_id - 1)
+    sizes = [(m.id, m.attachment_size, m.attachment_ready) for m in page]
+    check("get_messages(): each message's attachment",
+          sizes == [(blob_id, len(blob), True), (file_id, os.path.getsize(source), True), (plain_id, 0, False)], sizes)
+    ok, detail = raises(lambda: kitchen.get_attachment("secret", "kitchen", plain_id), RefusedError, "No attachment")
+    check("get_attachment() of a message without: RefusedError", ok, detail)
+    ok, detail = raises(lambda: kitchen.push("x", topic="secret", attachment=b""), BakaShrotError, "empty")
+    check("An empty attachment: refused before sending", ok, detail)
+    ok, detail = raises(lambda: kitchen.push("x", topic="secret", attachment=os.path.join(folder, "missing.bin")), BakaShrotError, "no such file")
+    check("A missing file: refused before sending", ok, detail)
+    check("Still connected", kitchen.connected)
 
 check("close(): disconnected", not kitchen.connected)
 ok, detail = raises(lambda: kitchen.push("x"), ConnectionLostError)

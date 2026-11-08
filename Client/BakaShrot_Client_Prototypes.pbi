@@ -50,6 +50,14 @@ PrototypeC.l BakaShrot_GetMessages_Prototype(Topic.p-unicode, Node.p-unicode, Af
 PrototypeC.l BakaShrot_GetMessageCount_Prototype()
 PrototypeC.i BakaShrot_SelectMessage_Prototype(Index.l)
 PrototypeC.i BakaShrot_HasMoreMessages_Prototype()
+PrototypeC.q BakaShrot_PushMessageWithFile_Prototype(Topic.p-unicode, JsonData.p-unicode, FilePath.p-unicode)
+PrototypeC.q BakaShrot_PushMessageWithData_Prototype(Topic.p-unicode, JsonData.p-unicode, *Data, Size.q)
+PrototypeC.q BakaShrot_SaveAttachment_Prototype(Topic.p-unicode, Node.p-unicode, MessageId.q, FilePath.p-unicode)
+PrototypeC.q BakaShrot_LoadAttachment_Prototype(Topic.p-unicode, Node.p-unicode, MessageId.q)
+PrototypeC.q BakaShrot_GetAttachmentData_Prototype(*Buffer, BufferSize.q)
+PrototypeC.i BakaShrot_FreeAttachmentData_Prototype()
+PrototypeC.q BakaShrot_GetMessageAttachmentSize_Prototype()
+PrototypeC.i BakaShrot_IsMessageAttachmentReady_Prototype()
 
 
 Global BakaShrot_SetPrivateKey.BakaShrot_SetPrivateKey_Prototype
@@ -86,6 +94,14 @@ Global BakaShrot_GetMessages.BakaShrot_GetMessages_Prototype
 Global BakaShrot_GetMessageCount.BakaShrot_GetMessageCount_Prototype
 Global BakaShrot_SelectMessage.BakaShrot_SelectMessage_Prototype
 Global BakaShrot_HasMoreMessages.BakaShrot_HasMoreMessages_Prototype
+Global BakaShrot_PushMessageWithFile.BakaShrot_PushMessageWithFile_Prototype
+Global BakaShrot_PushMessageWithData.BakaShrot_PushMessageWithData_Prototype
+Global BakaShrot_SaveAttachment.BakaShrot_SaveAttachment_Prototype
+Global BakaShrot_LoadAttachment.BakaShrot_LoadAttachment_Prototype
+Global BakaShrot_GetAttachmentData.BakaShrot_GetAttachmentData_Prototype
+Global BakaShrot_FreeAttachmentData.BakaShrot_FreeAttachmentData_Prototype
+Global BakaShrot_GetMessageAttachmentSize.BakaShrot_GetMessageAttachmentSize_Prototype
+Global BakaShrot_IsMessageAttachmentReady.BakaShrot_IsMessageAttachmentReady_Prototype
 
 Global BakaShrot_ClientLibrary.i = 0
 
@@ -146,6 +162,14 @@ Procedure.i BakaShrot_LoadClient(DllPath.s)
 	BakaShrot_GetMessageCount    = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_GetMessageCount")
 	BakaShrot_SelectMessage      = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_SelectMessage")
 	BakaShrot_HasMoreMessages    = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_HasMoreMessages")
+	BakaShrot_PushMessageWithFile = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_PushMessageWithFileW")
+	BakaShrot_PushMessageWithData = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_PushMessageWithDataW")
+	BakaShrot_SaveAttachment = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_SaveAttachmentW")
+	BakaShrot_LoadAttachment = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_LoadAttachmentW")
+	BakaShrot_GetAttachmentData = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_GetAttachmentData")
+	BakaShrot_FreeAttachmentData = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_FreeAttachmentData")
+	BakaShrot_GetMessageAttachmentSize = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_GetMessageAttachmentSize")
+	BakaShrot_IsMessageAttachmentReady = GetFunction(BakaShrot_ClientLibrary, "BakaShrot_IsMessageAttachmentReady")
 
 	If Not BakaShrot_SetPrivateKey Or Not BakaShrot_SetPublicKey Or Not BakaShrot_SetServerPublicKey Or Not BakaShrot_SetTopicId Or Not BakaShrot_SetNodeId Or Not BakaShrot_Connect Or Not BakaShrot_IsConnected Or Not BakaShrot_Disconnect
 		BakaShrot_UnloadClient()
@@ -171,6 +195,11 @@ Procedure.i BakaShrot_LoadClient(DllPath.s)
 	EndIf
 
 	If Not BakaShrot_GetMessages Or Not BakaShrot_GetMessageCount Or Not BakaShrot_SelectMessage Or Not BakaShrot_HasMoreMessages
+		BakaShrot_UnloadClient()
+		ProcedureReturn #False
+	EndIf
+
+	If Not BakaShrot_PushMessageWithFile Or Not BakaShrot_PushMessageWithData Or Not BakaShrot_SaveAttachment Or Not BakaShrot_LoadAttachment Or Not BakaShrot_GetAttachmentData Or Not BakaShrot_FreeAttachmentData Or Not BakaShrot_GetMessageAttachmentSize Or Not BakaShrot_IsMessageAttachmentReady
 		BakaShrot_UnloadClient()
 		ProcedureReturn #False
 	EndIf

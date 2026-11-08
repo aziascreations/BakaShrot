@@ -1,11 +1,13 @@
 # BakaShrot - working notes
 
-Where things stand and what's next, as of 2026-11-08. The detailed docs are in
-`Design/`:
+Where things stand and what's next, as of 2026-11-08. A new session: read
+`CLAUDE.md` first (how to build, test, and the traps), then "Open items"
+below. The detailed docs are in `Design/`:
 
 | Doc | About |
 |---|---|
 | `Design/Packets.md` | The protocol: framing, every packet, flows, conventions, how to add a packet. |
+| `Design/Attachments.md` | Attachments: one per message, in 1 MB parts, uploaded before the message, replicated after it. |
 | `Design/Cryptography.md` | What libsodium is used for: the handshake proving both ends, the connections' encryption. What isn't done, and ideas for abstracting it. |
 | `Design/ReplicationIssues.md` | Known replication problems, with benchmarks. |
 | `Design/StorageConcurrency.md` | One connection per thread, WAL, the write mutex and the writer (done), and what's left. |
@@ -24,7 +26,8 @@ Where things stand and what's next, as of 2026-11-08. The detailed docs are in
 - **Server:**
   - Every connection is encrypted, and both ends prove who they are: the
     client with an Ed25519 challenge, the server by signing the handshake
-    with the key its clients know (protocol 3, `Design/Cryptography.md`).
+    with the key its clients know (since protocol 3, `Design/Cryptography.md`;
+    the protocol is at 4, with attachments).
   - Clients can push messages (usually JSON, anything is stored, flagged
     in `is_json`), read the latest one of a topic/node pair or a run of
     them after an id, resolve names, and run raw read-only SQL, each depending on
@@ -35,12 +38,16 @@ Where things stand and what's next, as of 2026-11-08. The detailed docs are in
   - Stamps every push with the time it arrived (`pushed_at`, UTC ms), which
     replication carries as is, and deletes each topic's messages past its
     max age (`[BakaShrot.Retention]`, per server).
+  - A message can have one attachment of any size up to `MaxAttachmentSize`
+    (default 1G), sent in 1 MB parts, replicated after its message
+    (`Design/Attachments.md`).
   - One thread per client and per peer, each with its own SQLite connection.
   - The root thread can stop every worker (restart, vacuum).
 - **Client:** a DLL with A/W string exports, PureBasic prototypes in
   `Client/BakaShrot_Client_Prototypes.pbi`, and tools in `Tools/`:
-  `PushMessage`, `GetLatestMessage`, `GetMessages` (with `--follow`),
-  `Resolve`, `ListNames`, `Query`, `KeyGen`.
+  `PushMessage` (`-a` to attach a file), `GetLatestMessage`, `GetMessages`
+  (with `--follow`), `GetAttachment`, `Resolve`, `ListNames`, `Query`,
+  `KeyGen`.
 - **Python:** `Interactors/Python/bakashrot.py`, over the DLL with ctypes,
   no dependencies, and `example.py`.
 - **Release:** `Release.ps1` builds with PB 6.40's C backend into
@@ -174,9 +181,8 @@ existing `data` means rebuilding the table. So: name tables, joined, no FKs.
   s), over it refused, non-JSON stored with is_json = 0 (10 edge cases), replicated intact to the
   other server, a 16 MB read back from it (0.5 s), small ones still
   batched. `Names-Test.ps1` and the handshake test still pass.
-- **Left:** attachments for real files (the unused `attachements` table:
-  the message references a blob sent in chunks, only when wanted), if more
-  than 16 MB is ever needed. Memory: an authenticated connection can hold
+- **Left:** attachments for real files, if more than 16 MB is ever needed:
+  done since, see `Design/Attachments.md`. Memory: an authenticated connection can hold
   up to ~32 MB of inbox (64 MB in the worst case of the growth), plus the
   packet being handled.
 
@@ -259,8 +265,9 @@ As judged for the threat model below (internal tool, trusted machines).
 **Good**
 - The core works and is tested end to end: push, latest, runs of messages
   and `--follow`, names and ids, filters and wildcards, raw read-only SQL,
-  per-client permissions; five suites, two `.pb` tests, the release's smoke
-  test (PB 6.40 C), all passing.
+  per-client permissions, retention, attachments; eight `Tests/*.ps1`
+  suites, two `.pb` tests, the release's smoke test (PB 6.40 C), all
+  passing (see `CLAUDE.md` for the list).
 - Fast: ~40,800 msg/s pushed across 4 servers (10 nodes each, PB 5.73),
   fully replicated; ~9,000 msg/s from one Python connection.
 - Replication by name, each server with its own ids; restart catch-up is
@@ -268,7 +275,8 @@ As judged for the threat model below (internal tool, trusted machines).
 - Security beyond what's needed here: encrypted connections, both ends
   proven, peer links verified.
 - Data: 16 MB messages, anything stored (`is_json`), errors of queries
-  surfaced; pushed times; retention per topic and server.
+  surfaced; pushed times; retention per topic and server; one attachment
+  per message, any size, flat memory (512 MB with the server at 15 MB).
 - Clients: DLL for any language, CLI tools, dependency-free Python.
 - Packaging (runtime included) and docs that match the code.
 
@@ -289,11 +297,16 @@ As judged for the threat model below (internal tool, trusted machines).
   main blocker for deploying it.
 - Never run from the extracted zip, on a clean Windows, nor with two
   release servers, nor restarted after a kill: designed to work, unchecked.
-- Nothing committed: everything since the initial commit (the deleted
-  `Core/` included) lives only in the working tree.
+- A corrupted stored attachment is re-sent to peers forever (open item 3).
 
-Suggested order: commit; a stop file and running as a service; smoke-test
-items 1-3 (`Design/Release.md`); a single test runner, then CI.
+Commits (at this writing, check `git log`): `master` has everything up to
+protocol 3 (`12fbe5f`); branch `timestamps-retention` adds timestamps and
+retention (`9caf816`); attachments and their tests were left uncommitted on
+that branch, waiting for the owner to ask.
+
+Suggested order: a stop file and running as a service; smoke-test items
+1-3 (`Design/Release.md`); the corrupted-attachment fix; a single test
+runner, then CI.
 
 ## Done: pushed times, retention (2026-11-08)
 
@@ -340,6 +353,48 @@ items 1-3 (`Design/Release.md`); a single test runner, then CI.
 - **Removed:** the `archives` table, a leftover of the first schemas that
   nothing ever used, dropped from existing databases at start.
 
+## Done: attachments (2026-11-08)
+
+- **One per message**, optional: bytes of any size up to the server's
+  `MaxAttachmentSize` (default 1G, at most 1T), no name or type (the JSON
+  says what it is), a size and a SHA-256. Protocol version 4, schema v7.
+- **Pushing:** uploaded first in 1 MB parts (UploadStart, UploadChunk), the
+  server checks the SHA-256, then the PushMessage carries the upload's id:
+  the message and its attachment are stored in the same transaction, so
+  readers never see one without the other. Uploads not pushed within
+  `UploadTimeout` (default 3600 s) are deleted.
+- **Reading:** a part per request (GetAttachment), checked by the client.
+  Messages tell `AttachmentSize` and `AttachmentReady`.
+- **Replication:** separate from the messages, after them: the message
+  carries the size and SHA-256, then at each check-in the peer lists what
+  it's missing (MissingAttachments), the sender sends the parts, from where
+  the peer stopped. Over the receiver's `MaxAttachmentSize`: the message
+  comes, the attachment is marked not kept and never asked for.
+- **Deleted with its message** (retention): triggers mark the data, the
+  retention thread deletes its parts 32 at a time. It now always runs.
+- **Clients:** DLL `BakaShrot_PushMessageWithFile/WithData()`,
+  `_SaveAttachment()`, `_LoadAttachment()` + `_GetAttachmentData()`,
+  `_GetMessageAttachmentSize()`, `_IsMessageAttachmentReady()`; Python
+  `push(..., attachment=bytes or path)`, `get_attachment()`,
+  `save_attachment()`, `Message.attachment_size/_ready`; tools
+  `PushMessage -a`, `GetAttachment`.
+- **Measured:** 512 MB up in 8.5 s, down in 3.9 s, identical, the server
+  peaking at 15 MB of memory. The push benchmark isn't affected (messages
+  without attachments only gain a LEFT JOIN on reads).
+- **Tested:** `Tests/Attachments-Test.ps1` (39 checks, ports 12410-12411),
+  Python's checks (55 in all now); every other suite still passes.
+- **Edge cases tested:** `Tests/AttachmentEdges-Test.ps1` (51 checks, a raw
+  protocol client): wrong SHA-256, parts out of order / wrong size /
+  repeated, others' uploads, wrong topic, attached twice, too big, uploads
+  expiring past `UploadTimeout`, replication resuming after the receiver
+  was killed mid-transfer, a corrupted stored copy. All hold.
+- **Found:** a server whose own copy is corrupted re-sends it to its peers
+  at every check-in, forever, and serves it to clients (who refuse it).
+  Not fixed: open item 3 below has the details and the proposed fix.
+- **Left:** resuming an upload after a dropped connection (replication
+  does resume); several parts in flight for high-latency links.
+  See `Design/Attachments.md`.
+
 ## Threat model (2026-11-08)
 
 BakaShrot is an **internal tool, on trusted machines and a trusted
@@ -370,58 +425,92 @@ network**, not exposed to the internet. So:
    replication between two release servers, restart catch-up (designed to
    work, never tested: kill a server, check ids continue and peers catch
    up). (`Design/Release.md`, items 1-3)
-3. **`synchronous = NORMAL`:** the last commits can be lost on a power loss
+3. **A corrupted stored attachment is re-sent to peers forever.** Found
+   by `Tests/AttachmentEdges-Test.ps1` part 4 (a byte flipped in the
+   sender's `blob_chunks`, `flip.py`).
+   - What happens: the peer checks the SHA-256 once all parts are in,
+     drops its copy (`FinishReplicatedAttachment(..., #False)`), refuses the
+     last part ("The attachment doesn't match its SHA-256, send it again"),
+     and lists it as missing again. At the next check-in the sender sends
+     all of it again: every `PeerSyncInterval` (6 times in 6 s in the test),
+     1 GB each time for a 1 GB attachment. Forever.
+   - The sender never notices: it also serves the damaged parts to clients
+     (`GetAttachment`), who refuse them by their SHA-256 (the DLL checks at
+     the end of `BakaShrot_Download()`).
+   - Proposed fix, in `BakaShrot_PeerLink_SendAttachment()`
+     (`Server/Networking/Peers.pbi`): when the peer refuses with "doesn't
+     match", check this server's own copy with `HashStorageBlob()`
+     (`Server/Storage/Attachments.pbi`, the link's own `DbId`). If it's
+     damaged, `FinishReplicatedAttachment(TopicId, NodeId, MessageId,
+     BlobId, #False)` already does the rest: drops the blob, marks the
+     attachment missing (state 0), so this server stops sending it and asks
+     its own peers for a good copy (`MissingAttachments`), and stops
+     serving it. Log it loudly. If its copy is fine (the damage was in
+     transit), sending again is right.
+   - Better than matching the refusal's text: a distinct answer for "the
+     data doesn't match", e.g. a `ChunkStored` with `Complete = 0` and
+     `Received = 0` after the last part, or a new field.
+   - The origin (where it was pushed) has no other source: its attachment
+     then stays missing ("isn't here yet"), better than serving bad data;
+     maybe a "lost" state (4) so `GetAttachment` says so.
+   - Optional, to catch it on reads too: a SHA-256 per part in
+     `blob_chunks`, checked by `ReadStorageBlobChunk()`, at ~3 s/GB.
+   - Test: part 4 of `AttachmentEdges-Test.ps1` then expects the sender to
+     log its copy as damaged and the re-sends to stop (today it only prints
+     an INFO line with the count); its own `attachments` row goes to 0.
+4. **`synchronous = NORMAL`:** the last commits can be lost on a power loss
    or OS crash (not on a killed process). Decide, or switch to `FULL`.
    (`Design/StorageConcurrency.md`)
-4. **Drift between servers** when one topic/node pair is written to on two
+5. **Drift between servers** when one topic/node pair is written to on two
    servers: only partially resynced. Accepted while each pair has a single
    writer; document that as the rule. (`Design/ReplicationIssues.md` #1)
-5. **Gaps in a pair's ids aren't detected** on replication.
+6. **Gaps in a pair's ids aren't detected** on replication.
    (`Design/ReplicationIssues.md` #5)
-6. **No single test runner**, and fixed ports (12399, 12401-12409): every
+7. **No single test runner**, and fixed ports (12399, 12401-12414): every
    `Tests/*.ps1` and the two `.pb` tests are run by hand. Needed for CI.
    (`Design/Release.md`, "For CI/CD")
-7. **Is `DatabaseError()` per thread?** Messages could land in the wrong
+8. **Is `DatabaseError()` per thread?** Messages could land in the wrong
    thread's log or refusal; Windows queries no longer depend on it.
    (`Design/StorageConcurrency.md`)
-8. **Limits:** the sync state must fit in one packet (65536 topic/node
+9. **Limits:** the sync state must fit in one packet (65536 topic/node
    pairs); `ReplicatingTopicIds` ranges are expanded to every id they cover.
    (`Design/ReplicationIssues.md` #7)
 
 ### Client side
 
-9. **One connection per process** (the DLL's globals): a handle-based API
+10. **One connection per process** (the DLL's globals): a handle-based API
    for several. No reconnect in `GetMessages --follow` / `follow()`, polling
    rather than server-pushed subscriptions.
-10. **Breaking with protocol 3:** every client config needs
-    `ServerPublicKey`; older clients can't connect. Fine while it's all
+11. **Breaking with protocols 3 and 4:** every client config needs
+    `ServerPublicKey`; older clients and servers can't connect (any
+    version difference refuses the connection). Fine while it's all
     built from this repo, worth a line in the release notes of the first
     real release.
 
 ### Security, low priority under the threat model
 
-11. **Peers are trusted completely:** messages aren't signed by the node
+12. **Peers are trusted completely:** messages aren't signed by the node
     that first wrote them, a peer can replicate anything in what we accept
     from it. (`Design/ReplicationIssues.md` #3)
-12. **Private keys sit in plain-text ini files**, readable by whoever can
+13. **Private keys sit in plain-text ini files**, readable by whoever can
     read the config. On trusted machines: file permissions are enough.
-13. **No key rotation or revocation**, other than editing configs and
+14. **No key rotation or revocation**, other than editing configs and
     restarting; a server can't announce a new key, clients pin one.
-14. **The handshake costs the server work before the client proved
+15. **The handshake costs the server work before the client proved
     anything** (a sealed box, a key pair, a signature): no rate limit, only
     the 4 KB handshake limit and the 10 s timeout.
-15. **Small ones:** the DLL doesn't wipe its private key; one identity key
+16. **Small ones:** the DLL doesn't wipe its private key; one identity key
     both signs and opens sealed boxes; `EncodeData`/`DecodeData` are
     misnamed (they sign/verify). (`Design/Cryptography.md`)
 
 ### Housekeeping
 
-16. **Review.md rules** not checked against the newer code (`.i` in
+17. **Review.md rules** not checked against the newer code (`.i` in
     networking structures, explicit enumeration values), see below. The
     file itself says to ignore it for now.
-17. **Linux is untested** (libsodium via `-lsodium`, the query error check
+18. **Linux is untested** (libsodium via `-lsodium`, the query error check
     falls back to `DatabaseError()`).
-18. **Console commands can't be scripted** (see 1).
+19. **Console commands can't be scripted** (see 1).
 
 ### Done recently (details in the sections above and `Design/`)
 
@@ -432,6 +521,10 @@ network**, not exposed to the internet. So:
 - GetMessages, `--follow`, the Python client; big messages (16 MB) and
   `is_json`; names, filters and wildcards; speed: ~34,300 msg/s for 4
   servers (2026-11-07/08).
+- `pushed_at` timestamps, carried by replication; retention per topic and
+  server, skipping on arrival what's past its age (2026-11-08).
+- Attachments, protocol 4: one per message, in 1 MB parts, replicated after
+  their message, resumable; edge cases tested (2026-11-08).
 
 ## To check against Review.md
 
@@ -457,3 +550,13 @@ network**, not exposed to the internet. So:
 - **Don't trust timestamps** from PowerShell's `Register-ObjectEvent`: lines
   queue up during `Start-Sleep`. PureBasic's console output into a pipe is
   also buffered until exit. Trust the order, not the times.
+- **JSON on a tool's command line loses its double quotes** (PowerShell 5
+  and PureBasic's `ProgramParameter()`): the tests write it to a file and
+  pass `@file`.
+- **Things only a raw client can do** (a wrong SHA-256, abandoned uploads):
+  `Tests/AttachmentEdgeClient.pb`, over `Commons/Networking/Outbound.pbi`.
+  Copy its `Exchange()` / `Refusal()` helpers for new protocol tests.
+- **Corrupting or seeding a database** from a test: Python's `sqlite3`,
+  with the server stopped through its stop file (its WAL is checkpointed
+  then), see `Retention-Test.ps1` (an old schema) and
+  `AttachmentEdges-Test.ps1` (`flip.py`).

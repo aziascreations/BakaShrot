@@ -18,6 +18,8 @@
 ;        BakaShrot_GetLatestMessage(TopicId, NodeId), then
 ;          BakaShrot_GetMessageId(), BakaShrot_GetMessageData(),
 ;          BakaShrot_GetMessagePushedAt() (ms since 1970 UTC),
+;          BakaShrot_GetMessageAttachmentSize() (0 for none) and
+;          BakaShrot_IsMessageAttachmentReady(),
 ;          BakaShrot_GetMessageTopic() / BakaShrot_GetMessageNode() (names)
 ;          and BakaShrot_GetMessageTopicId() / BakaShrot_GetMessageNodeId()
 ;        BakaShrot_GetMessages(Topic, Node, AfterMessageId, Limit): the
@@ -32,6 +34,13 @@
 ;          id and name, then BakaShrot_GetNamesList() as JSON
 ;        BakaShrot_Query(Sql), raw read-only SQL, then
 ;          BakaShrot_GetQueryResult()
+;        Attachments, one per message at most (Design/Attachments.md):
+;        BakaShrot_PushMessageWithFile(Topic, JsonData, FilePath) or
+;          BakaShrot_PushMessageWithData(Topic, JsonData, *Data, Size): the
+;          attachment is uploaded first, the message stored once it all is
+;        BakaShrot_SaveAttachment(Topic, Node, MessageId, FilePath), or
+;          BakaShrot_LoadAttachment(Topic, Node, MessageId) then
+;          BakaShrot_GetAttachmentData(*Buffer, Size): checked with its SHA-256
 ;      If the server refuses a request, the connection stays open and
 ;      BakaShrot_GetRefusalReason() tells why.
 ;   4. BakaShrot_IsConnected(), BakaShrot_Disconnect()
@@ -88,6 +97,8 @@ Global BakaShrot_Outbound.BakaShrot_Outbound
 ; Filled by the requests, see BakaShrot_GetLatestMessage() and BakaShrot_GetRefusalReasonA/W().
 Global BakaShrot_MessageId.q      = 0
 Global BakaShrot_MessagePushedAt.q = 0
+Global BakaShrot_MessageAttachmentSize.q  = 0
+Global BakaShrot_MessageAttachmentReady.i = #False
 Global BakaShrot_MessageData.s    = ""
 Global BakaShrot_MessageTopicId.l = -1
 Global BakaShrot_MessageNodeId.l  = -1
@@ -394,10 +405,11 @@ EndProcedure
 ; is_json column) into Topic (a name or an id, "" for the client's own
 ; topic), the server stores it under that topic and this client's node, with
 ; the next message id. The client's PushTopics on the server must allow it.
+; UploadId: its attachment, uploaded with BakaShrot_Upload(), 0 for none.
 ; Returns the new message's id (1 or more), or -1 on failure.
 ; On -1, BakaShrot_IsConnected() tells if the server refused it (still
 ; connected, see BakaShrot_GetRefusalReason()) or if the connection failed.
-Procedure.q BakaShrot_PushMessageToString(Topic.s, JsonData.s)
+Procedure.q BakaShrot_PushMessageToString(Topic.s, JsonData.s, UploadId.q = 0)
 	Protected Push.BakaShrot_PushMessage
 	Protected *Pushed.BakaShrot_MessagePushed
 	Protected *Request, RequestSize.Integer, *Answer, AnswerSize.Integer
@@ -421,6 +433,7 @@ Procedure.q BakaShrot_PushMessageToString(Topic.s, JsonData.s)
 
 	Push\Topic    = Topic
 	Push\JsonData = JsonData
+	Push\UploadId = UploadId
 	*Request = BakaShrot_PushMessagePacket_Encode(@Push, @RequestSize)
 	If Not *Request
 		ProcedureReturn -1
@@ -514,6 +527,8 @@ Procedure.i BakaShrot_GetLatestMessageOfString(Topic.s, Node.s)
 	BakaShrot_RefusalReason = ""
 	BakaShrot_MessageId     = 0
 	BakaShrot_MessagePushedAt = 0
+	BakaShrot_MessageAttachmentSize  = 0
+	BakaShrot_MessageAttachmentReady = #False
 	BakaShrot_MessageData   = ""
 	BakaShrot_MessageTopicId = -1
 	BakaShrot_MessageNodeId  = -1
@@ -568,6 +583,8 @@ Procedure.i BakaShrot_GetLatestMessageOfString(Topic.s, Node.s)
 	If IsExpected
 		BakaShrot_MessageId      = *Latest\MessageId
 		BakaShrot_MessagePushedAt = *Latest\PushedAt
+		BakaShrot_MessageAttachmentSize  = *Latest\AttachmentSize
+		BakaShrot_MessageAttachmentReady = *Latest\AttachmentReady
 		BakaShrot_MessageData    = *Latest\JsonData
 		BakaShrot_MessageTopicId = *Latest\TopicId
 		BakaShrot_MessageNodeId  = *Latest\NodeId
@@ -576,6 +593,8 @@ Procedure.i BakaShrot_GetLatestMessageOfString(Topic.s, Node.s)
 		AddElement(BakaShrot_Messages())
 		BakaShrot_Messages()\MessageId = *Latest\MessageId
 		BakaShrot_Messages()\PushedAt  = *Latest\PushedAt
+		BakaShrot_Messages()\AttachmentSize  = *Latest\AttachmentSize
+		BakaShrot_Messages()\AttachmentReady = *Latest\AttachmentReady
 		BakaShrot_Messages()\JsonData  = *Latest\JsonData
 	EndIf
 	FreeStructure(*Latest)
@@ -633,6 +652,8 @@ Procedure.l BakaShrot_GetMessagesString(Topic.s, Node.s, AfterMessageId.q, Limit
 	BakaShrot_RefusalReason  = ""
 	BakaShrot_MessageId      = 0
 	BakaShrot_MessagePushedAt = 0
+	BakaShrot_MessageAttachmentSize  = 0
+	BakaShrot_MessageAttachmentReady = #False
 	BakaShrot_MessageData    = ""
 	BakaShrot_MessageTopicId = -1
 	BakaShrot_MessageNodeId  = -1
@@ -716,6 +737,8 @@ Procedure.l BakaShrot_GetMessagesString(Topic.s, Node.s, AfterMessageId.q, Limit
 	If FirstElement(BakaShrot_Messages())
 		BakaShrot_MessageId   = BakaShrot_Messages()\MessageId
 		BakaShrot_MessagePushedAt = BakaShrot_Messages()\PushedAt
+		BakaShrot_MessageAttachmentSize  = BakaShrot_Messages()\AttachmentSize
+		BakaShrot_MessageAttachmentReady = BakaShrot_Messages()\AttachmentReady
 		BakaShrot_MessageData = BakaShrot_Messages()\JsonData
 	EndIf
 	ProcedureReturn Count
@@ -751,6 +774,8 @@ ProcedureCDLL.i BakaShrot_SelectMessage(Index.l)
 	SelectElement(BakaShrot_Messages(), Index)
 	BakaShrot_MessageId   = BakaShrot_Messages()\MessageId
 	BakaShrot_MessagePushedAt = BakaShrot_Messages()\PushedAt
+	BakaShrot_MessageAttachmentSize  = BakaShrot_Messages()\AttachmentSize
+	BakaShrot_MessageAttachmentReady = BakaShrot_Messages()\AttachmentReady
 	BakaShrot_MessageData = BakaShrot_Messages()\JsonData
 	ProcedureReturn #True
 EndProcedure
@@ -1109,4 +1134,453 @@ EndProcedure
 
 ProcedureCDLL.i BakaShrot_GetQueryResultW(*Buffer, BufferSize.i)
 	ProcedureReturn BakaShrot_CopyString(BakaShrot_QueryResult, *Buffer, BufferSize, #PB_Unicode)
+EndProcedure
+
+
+; --- Attachments -----------------------------------------------------------------
+; At most one per message, of any size the server takes (its
+; MaxAttachmentSize), sent and read in parts of 1 MB, checked with their
+; SHA-256 (Design/Attachments.md). The message is only stored once all of its
+; attachment is: readers never see it without.
+
+; What BakaShrot_LoadAttachment() read, for BakaShrot_GetAttachmentData().
+Global *BakaShrot_AttachmentData = 0
+Global BakaShrot_AttachmentDataSize.q = 0
+
+
+; Sends *Request and returns the answer if it's a packet of AnswerType, its
+; size in *AnswerSize\i. Returns 0 if the server refused it (the reason in
+; BakaShrot_RefusalReason, still connected), or anything else went wrong
+; (the connection is closed then).
+Procedure.i BakaShrot_RequestExpecting(*Request, RequestSize.i, AnswerType.i, *AnswerSize.Integer)
+	Protected *Answer, Type.i, IsRefusal.i
+
+	*Answer = BakaShrot_SendRequest(*Request, RequestSize, *AnswerSize)
+	If Not *Answer
+		ProcedureReturn 0
+	EndIf
+
+	Type = BakaShrot_GetPacketType(*Answer, *AnswerSize\i)
+	If Type = #BakaShrot_PacketType_RequestRefused
+		IsRefusal = BakaShrot_ReadRefusal(*Answer, *AnswerSize\i)
+		FreeMemory(*Answer)
+		If Not IsRefusal
+			BakaShrot_AbortConnection()
+		EndIf
+		ProcedureReturn 0
+	EndIf
+	If Type <> AnswerType
+		FreeMemory(*Answer)
+		BakaShrot_AbortConnection()
+		ProcedureReturn 0
+	EndIf
+	ProcedureReturn *Answer
+EndProcedure
+
+
+; Uploads Size bytes, read from FileId (from its start) or else from *Memory,
+; as the attachment of a message about to be pushed to Topic ("" for the
+; client's own). Its SHA-256 is computed first, so the file is read twice.
+; Returns the upload id for BakaShrot_PushMessageToString(), 0 on failure.
+Procedure.q BakaShrot_Upload(Topic.s, FileId.i, *Memory, Size.q)
+	Protected Start.BakaShrot_UploadStart, *Started.BakaShrot_UploadStarted
+	Protected Chunk.BakaShrot_UploadChunk, *Stored.BakaShrot_ChunkStored
+	Protected Hash.BakaShrot_Sha256, *Buffer, Index.q, Count.q, Bytes.i, UploadId.q, Received.q, Complete.i
+	Protected *Request, RequestSize.Integer, *Answer, AnswerSize.Integer, *View.MsgPackData
+
+	BakaShrot_RefusalReason = ""
+	If Not BakaShrot_Outbound\ConnectionId Or BakaShrot_Outbound\Metadata\Status <> #BakaShrot_ConnectionStatus_Authenticated
+		ProcedureReturn 0
+	EndIf
+	If Topic <> "" And Not BakaShrot_IsValidRef(Topic)
+		ProcedureReturn 0
+	EndIf
+	If Size < 1
+		BakaShrot_RefusalReason = "The attachment is empty"
+		ProcedureReturn 0
+	EndIf
+	If Size > #BakaShrot_MaxAttachmentSize
+		BakaShrot_RefusalReason = "The attachment is too big: " + Str(Size) + " bytes, at most " + Str(#BakaShrot_MaxAttachmentSize)
+		ProcedureReturn 0
+	EndIf
+
+	*Buffer = AllocateMemory(#BakaShrot_AttachmentChunkSize, #PB_Memory_NoClear)
+	If Not *Buffer Or Not BakaShrot_Sha256_Start(@Hash)
+		If *Buffer : FreeMemory(*Buffer) : EndIf
+		ProcedureReturn 0
+	EndIf
+	Count = BakaShrot_AttachmentChunkCount(Size)
+
+	; 1. Its SHA-256.
+	If FileId
+		FileSeek(FileId, 0)
+		For Index = 0 To Count - 1
+			Bytes = BakaShrot_AttachmentChunkBytes(Size, Index)
+			If ReadData(FileId, *Buffer, Bytes) <> Bytes
+				BakaShrot_RefusalReason = "The file couldn't be read"
+				FreeMemory(*Buffer)
+				ProcedureReturn 0
+			EndIf
+			BakaShrot_Sha256_Add(@Hash, *Buffer, Bytes)
+		Next
+		FileSeek(FileId, 0)
+	Else
+		BakaShrot_Sha256_Add(@Hash, *Memory, Size)
+	EndIf
+	BakaShrot_Sha256_Finish(@Hash, @Start\Sha256[0])
+
+	; 2. The server makes room for it.
+	Start\Topic = Topic
+	Start\Size  = Size
+	*Request = BakaShrot_UploadStartPacket_Encode(@Start, @RequestSize)
+	If Not *Request
+		FreeMemory(*Buffer)
+		ProcedureReturn 0
+	EndIf
+	*Answer = BakaShrot_RequestExpecting(*Request, RequestSize\i, #BakaShrot_PacketType_UploadStarted, @AnswerSize)
+	FreeMemory(*Request)
+	If Not *Answer
+		FreeMemory(*Buffer)
+		ProcedureReturn 0
+	EndIf
+	*Started = 0
+	*View = MsgPackWrapMsgBuffer(*Answer, AnswerSize\i)
+	If *View
+		*Started = BakaShrot_UploadStartedPacket_Decode(*View)
+		MsgPackFree(*View, #False)
+	EndIf
+	FreeMemory(*Answer)
+	If Not *Started Or *Started\ChunkSize <> #BakaShrot_AttachmentChunkSize
+		If *Started : FreeStructure(*Started) : EndIf
+		FreeMemory(*Buffer)
+		BakaShrot_AbortConnection()
+		ProcedureReturn 0
+	EndIf
+	UploadId = *Started\UploadId
+	FreeStructure(*Started)
+
+	; 3. Its parts, in order.
+	Chunk\UploadId = UploadId
+	For Index = 0 To Count - 1
+		Bytes = BakaShrot_AttachmentChunkBytes(Size, Index)
+		If FileId
+			If ReadData(FileId, *Buffer, Bytes) <> Bytes
+				BakaShrot_RefusalReason = "The file couldn't be read"
+				FreeMemory(*Buffer)
+				ProcedureReturn 0
+			EndIf
+			Chunk\Data = *Buffer
+		Else
+			Chunk\Data = *Memory + Index * #BakaShrot_AttachmentChunkSize
+		EndIf
+		Chunk\ChunkIndex = Index
+		Chunk\DataSize   = Bytes
+		*Request = BakaShrot_UploadChunkPacket_Encode(@Chunk, @RequestSize)
+		If Not *Request
+			FreeMemory(*Buffer)
+			ProcedureReturn 0
+		EndIf
+		*Answer = BakaShrot_RequestExpecting(*Request, RequestSize\i, #BakaShrot_PacketType_ChunkStored, @AnswerSize)
+		FreeMemory(*Request)
+		If Not *Answer
+			FreeMemory(*Buffer)
+			ProcedureReturn 0
+		EndIf
+		*Stored = 0
+		*View = MsgPackWrapMsgBuffer(*Answer, AnswerSize\i)
+		If *View
+			*Stored = BakaShrot_ChunkStoredPacket_Decode(*View)
+			MsgPackFree(*View, #False)
+		EndIf
+		FreeMemory(*Answer)
+		If Not *Stored
+			FreeMemory(*Buffer)
+			BakaShrot_AbortConnection()
+			ProcedureReturn 0
+		EndIf
+		Received = *Stored\Received
+		Complete = *Stored\Complete
+		FreeStructure(*Stored)
+		; Complete exactly with the last part.
+		If Received <> Index * #BakaShrot_AttachmentChunkSize + Bytes Or Bool(Complete) <> Bool(Index = Count - 1)
+			FreeMemory(*Buffer)
+			BakaShrot_AbortConnection()
+			ProcedureReturn 0
+		EndIf
+	Next
+
+	FreeMemory(*Buffer)
+	ProcedureReturn UploadId
+EndProcedure
+
+
+; Pushes a message with the file at FilePath as its attachment, see
+; BakaShrot_PushMessageToString(): the file is uploaded first, the message
+; only stored once all of it is on the server.
+; Returns the new message's id, or -1 on failure (refused, see
+; BakaShrot_GetRefusalReason(), or the connection failed).
+Procedure.q BakaShrot_PushMessageWithFileString(Topic.s, JsonData.s, FilePath.s)
+	Protected FileId.i, UploadId.q
+
+	BakaShrot_RefusalReason = ""
+	If StringByteLength(JsonData, #PB_UTF8) > #BakaShrot_MaxMessageSize
+		BakaShrot_RefusalReason = "The message is too big: " + Str(StringByteLength(JsonData, #PB_UTF8)) + " bytes, at most " + Str(#BakaShrot_MaxMessageSize)
+		ProcedureReturn -1
+	EndIf
+	FileId = ReadFile(#PB_Any, FilePath, #PB_File_SharedRead)
+	If Not FileId
+		BakaShrot_RefusalReason = "Can't open '" + FilePath + "'"
+		ProcedureReturn -1
+	EndIf
+	UploadId = BakaShrot_Upload(Topic, FileId, 0, Lof(FileId))
+	CloseFile(FileId)
+	If Not UploadId
+		ProcedureReturn -1
+	EndIf
+	ProcedureReturn BakaShrot_PushMessageToString(Topic, JsonData, UploadId)
+EndProcedure
+
+; A null *Topic is the client's own topic, a null *JsonData an empty message.
+ProcedureCDLL.q BakaShrot_PushMessageWithFileA(*Topic, *JsonData, *FilePath)
+	Protected Topic.s, JsonData.s
+	If Not *FilePath
+		ProcedureReturn -1
+	EndIf
+	If *Topic : Topic = PeekS(*Topic, -1, #PB_UTF8) : EndIf
+	If *JsonData : JsonData = PeekS(*JsonData, -1, #PB_UTF8) : EndIf
+	ProcedureReturn BakaShrot_PushMessageWithFileString(Topic, JsonData, PeekS(*FilePath, -1, #PB_UTF8))
+EndProcedure
+
+ProcedureCDLL.q BakaShrot_PushMessageWithFileW(*Topic, *JsonData, *FilePath)
+	Protected Topic.s, JsonData.s
+	If Not *FilePath
+		ProcedureReturn -1
+	EndIf
+	If *Topic : Topic = PeekS(*Topic, -1, #PB_Unicode) : EndIf
+	If *JsonData : JsonData = PeekS(*JsonData, -1, #PB_Unicode) : EndIf
+	ProcedureReturn BakaShrot_PushMessageWithFileString(Topic, JsonData, PeekS(*FilePath, -1, #PB_Unicode))
+EndProcedure
+
+
+; Same, the attachment being Size bytes at *Data.
+Procedure.q BakaShrot_PushMessageWithDataString(Topic.s, JsonData.s, *Data, Size.q)
+	Protected UploadId.q
+
+	BakaShrot_RefusalReason = ""
+	If StringByteLength(JsonData, #PB_UTF8) > #BakaShrot_MaxMessageSize
+		BakaShrot_RefusalReason = "The message is too big: " + Str(StringByteLength(JsonData, #PB_UTF8)) + " bytes, at most " + Str(#BakaShrot_MaxMessageSize)
+		ProcedureReturn -1
+	EndIf
+	If Not *Data
+		BakaShrot_RefusalReason = "The attachment is empty"
+		ProcedureReturn -1
+	EndIf
+	UploadId = BakaShrot_Upload(Topic, 0, *Data, Size)
+	If Not UploadId
+		ProcedureReturn -1
+	EndIf
+	ProcedureReturn BakaShrot_PushMessageToString(Topic, JsonData, UploadId)
+EndProcedure
+
+ProcedureCDLL.q BakaShrot_PushMessageWithDataA(*Topic, *JsonData, *Data, Size.q)
+	Protected Topic.s, JsonData.s
+	If *Topic : Topic = PeekS(*Topic, -1, #PB_UTF8) : EndIf
+	If *JsonData : JsonData = PeekS(*JsonData, -1, #PB_UTF8) : EndIf
+	ProcedureReturn BakaShrot_PushMessageWithDataString(Topic, JsonData, *Data, Size)
+EndProcedure
+
+ProcedureCDLL.q BakaShrot_PushMessageWithDataW(*Topic, *JsonData, *Data, Size.q)
+	Protected Topic.s, JsonData.s
+	If *Topic : Topic = PeekS(*Topic, -1, #PB_Unicode) : EndIf
+	If *JsonData : JsonData = PeekS(*JsonData, -1, #PB_Unicode) : EndIf
+	ProcedureReturn BakaShrot_PushMessageWithDataString(Topic, JsonData, *Data, Size)
+EndProcedure
+
+
+; Reads the attachment of Topic:Node#MessageId, a part at a time, into FileId
+; (from its start) or else into memory (*BakaShrot_AttachmentData), and
+; checks its SHA-256.
+; Returns its size, -1 on failure: refused (no attachment, not on this server
+; yet...), a SHA-256 mismatch (refusal reason set), or the connection failed.
+Procedure.q BakaShrot_Download(Topic.s, Node.s, MessageId.q, FileId.i)
+	Protected Request.BakaShrot_GetAttachment, *Chunk.BakaShrot_AttachmentChunk
+	Protected Hash.BakaShrot_Sha256, Index.q, Count.q, Size.q, *Memory, IsValid.i
+	Protected Dim Expected.a(#BakaShrot_Sha256Size - 1), Dim Result.a(#BakaShrot_Sha256Size - 1)
+	Protected *Request, RequestSize.Integer, *Answer, AnswerSize.Integer, *View.MsgPackData
+
+	BakaShrot_RefusalReason = ""
+	If Not BakaShrot_Outbound\ConnectionId Or BakaShrot_Outbound\Metadata\Status <> #BakaShrot_ConnectionStatus_Authenticated
+		ProcedureReturn -1
+	EndIf
+	If Not BakaShrot_IsValidRef(Topic) Or Not BakaShrot_IsValidRef(Node) Or MessageId < 1 Or Not BakaShrot_Sha256_Start(@Hash)
+		ProcedureReturn -1
+	EndIf
+
+	Request\Topic     = Topic
+	Request\Node      = Node
+	Request\MessageId = MessageId
+	Index = 0
+	Count = 1
+	While Index < Count
+		Request\ChunkIndex = Index
+		*Request = BakaShrot_GetAttachmentPacket_Encode(@Request, @RequestSize)
+		If Not *Request
+			Goto DownloadFailed
+		EndIf
+		*Answer = BakaShrot_RequestExpecting(*Request, RequestSize\i, #BakaShrot_PacketType_AttachmentChunk, @AnswerSize)
+		FreeMemory(*Request)
+		If Not *Answer
+			Goto DownloadFailed
+		EndIf
+		*Chunk = 0
+		*View = MsgPackWrapMsgBuffer(*Answer, AnswerSize\i)
+		If *View
+			*Chunk = BakaShrot_AttachmentChunkPacket_Decode(*View)
+			MsgPackFree(*View, #False)
+		EndIf
+		FreeMemory(*Answer)
+		If Not *Chunk
+			BakaShrot_AbortConnection()
+			Goto DownloadFailed
+		EndIf
+
+		; The first part tells the size and SHA-256, every other must agree.
+		If Index = 0
+			Size  = *Chunk\Size
+			Count = BakaShrot_AttachmentChunkCount(Size)
+			CopyMemory(@*Chunk\Sha256[0], @Expected(0), #BakaShrot_Sha256Size)
+			If Not FileId
+				*Memory = AllocateMemory(Size, #PB_Memory_NoClear)
+				If Not *Memory
+					BakaShrot_AttachmentChunkPacket_Free(*Chunk)
+					BakaShrot_RefusalReason = "Out of memory for " + Str(Size) + " bytes"
+					Goto DownloadFailed
+				EndIf
+			EndIf
+		EndIf
+		If *Chunk\MessageId <> MessageId Or *Chunk\ChunkIndex <> Index Or *Chunk\Size <> Size Or Not CompareMemory(@*Chunk\Sha256[0], @Expected(0), #BakaShrot_Sha256Size) Or *Chunk\DataSize <> BakaShrot_AttachmentChunkBytes(Size, Index)
+			BakaShrot_AttachmentChunkPacket_Free(*Chunk)
+			BakaShrot_AbortConnection()
+			Goto DownloadFailed
+		EndIf
+
+		BakaShrot_Sha256_Add(@Hash, *Chunk\Data, *Chunk\DataSize)
+		If FileId
+			If WriteData(FileId, *Chunk\Data, *Chunk\DataSize) <> *Chunk\DataSize
+				BakaShrot_AttachmentChunkPacket_Free(*Chunk)
+				BakaShrot_RefusalReason = "The file couldn't be written"
+				Goto DownloadFailed
+			EndIf
+		Else
+			CopyMemory(*Chunk\Data, *Memory + Index * #BakaShrot_AttachmentChunkSize, *Chunk\DataSize)
+		EndIf
+		BakaShrot_AttachmentChunkPacket_Free(*Chunk)
+		Index + 1
+	Wend
+
+	BakaShrot_Sha256_Finish(@Hash, @Result(0))
+	If Not CompareMemory(@Result(0), @Expected(0), #BakaShrot_Sha256Size)
+		BakaShrot_RefusalReason = "The attachment doesn't match its SHA-256"
+		Goto DownloadFailed
+	EndIf
+
+	If Not FileId
+		If *BakaShrot_AttachmentData
+			FreeMemory(*BakaShrot_AttachmentData)
+		EndIf
+		*BakaShrot_AttachmentData     = *Memory
+		BakaShrot_AttachmentDataSize = Size
+	EndIf
+	ProcedureReturn Size
+
+	DownloadFailed:
+	If *Memory
+		FreeMemory(*Memory)
+	EndIf
+	ProcedureReturn -1
+EndProcedure
+
+
+; Saves the attachment of Topic:Node#MessageId to FilePath (replaced),
+; checked with its SHA-256. A failed one leaves no file.
+; Returns its size, -1 on failure, see BakaShrot_Download().
+Procedure.q BakaShrot_SaveAttachmentString(Topic.s, Node.s, MessageId.q, FilePath.s)
+	Protected FileId.i, Size.q
+
+	FileId = CreateFile(#PB_Any, FilePath)
+	If Not FileId
+		BakaShrot_RefusalReason = "Can't create '" + FilePath + "'"
+		ProcedureReturn -1
+	EndIf
+	Size = BakaShrot_Download(Topic, Node, MessageId, FileId)
+	CloseFile(FileId)
+	If Size < 0
+		DeleteFile(FilePath)
+	EndIf
+	ProcedureReturn Size
+EndProcedure
+
+ProcedureCDLL.q BakaShrot_SaveAttachmentA(*Topic, *Node, MessageId.q, *FilePath)
+	If Not *Topic Or Not *Node Or Not *FilePath
+		ProcedureReturn -1
+	EndIf
+	ProcedureReturn BakaShrot_SaveAttachmentString(PeekS(*Topic, -1, #PB_UTF8), PeekS(*Node, -1, #PB_UTF8), MessageId, PeekS(*FilePath, -1, #PB_UTF8))
+EndProcedure
+
+ProcedureCDLL.q BakaShrot_SaveAttachmentW(*Topic, *Node, MessageId.q, *FilePath)
+	If Not *Topic Or Not *Node Or Not *FilePath
+		ProcedureReturn -1
+	EndIf
+	ProcedureReturn BakaShrot_SaveAttachmentString(PeekS(*Topic, -1, #PB_Unicode), PeekS(*Node, -1, #PB_Unicode), MessageId, PeekS(*FilePath, -1, #PB_Unicode))
+EndProcedure
+
+
+; Reads the attachment of Topic:Node#MessageId into memory, checked with its
+; SHA-256, for BakaShrot_GetAttachmentData(). All of it is held at once:
+; BakaShrot_SaveAttachment() for big ones.
+; Returns its size, -1 on failure, see BakaShrot_Download().
+ProcedureCDLL.q BakaShrot_LoadAttachmentA(*Topic, *Node, MessageId.q)
+	If Not *Topic Or Not *Node
+		ProcedureReturn -1
+	EndIf
+	ProcedureReturn BakaShrot_Download(PeekS(*Topic, -1, #PB_UTF8), PeekS(*Node, -1, #PB_UTF8), MessageId, 0)
+EndProcedure
+
+ProcedureCDLL.q BakaShrot_LoadAttachmentW(*Topic, *Node, MessageId.q)
+	If Not *Topic Or Not *Node
+		ProcedureReturn -1
+	EndIf
+	ProcedureReturn BakaShrot_Download(PeekS(*Topic, -1, #PB_Unicode), PeekS(*Node, -1, #PB_Unicode), MessageId, 0)
+EndProcedure
+
+; Copies what the last successful BakaShrot_LoadAttachment() read into
+; *Buffer, if BufferSize is enough. Returns its size (0 if none): call it
+; with a null *Buffer first.
+ProcedureCDLL.q BakaShrot_GetAttachmentData(*Buffer, BufferSize.q)
+	If *Buffer And *BakaShrot_AttachmentData And BufferSize >= BakaShrot_AttachmentDataSize
+		CopyMemory(*BakaShrot_AttachmentData, *Buffer, BakaShrot_AttachmentDataSize)
+	EndIf
+	ProcedureReturn BakaShrot_AttachmentDataSize
+EndProcedure
+
+; Frees what BakaShrot_LoadAttachment() read.
+ProcedureCDLL.i BakaShrot_FreeAttachmentData()
+	If *BakaShrot_AttachmentData
+		FreeMemory(*BakaShrot_AttachmentData)
+	EndIf
+	*BakaShrot_AttachmentData     = 0
+	BakaShrot_AttachmentDataSize = 0
+	ProcedureReturn #True
+EndProcedure
+
+
+; Size in bytes of the selected message's attachment, 0 if it has none.
+ProcedureCDLL.q BakaShrot_GetMessageAttachmentSize()
+	ProcedureReturn BakaShrot_MessageAttachmentSize
+EndProcedure
+
+; #True if all of the selected message's attachment is on this server: a
+; replicated one comes after its message.
+ProcedureCDLL.i BakaShrot_IsMessageAttachmentReady()
+	ProcedureReturn BakaShrot_MessageAttachmentReady
 EndProcedure
