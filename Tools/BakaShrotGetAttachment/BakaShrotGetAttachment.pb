@@ -1,7 +1,7 @@
 ; ============================================================================
-; BakaShrot GetAttachment
+; BakaShrotGetAttachment
 ;
-; Usage: GetAttachment <Topic> <Node> <MessageId> <OutFile> [ClientIni]
+; Usage: BakaShrotGetAttachment <Topic> <Node> <MessageId> <OutFile> [ClientIni]
 ;   Topic, Node  Whose message, each a name or an id.
 ;   MessageId    Which message.
 ;   OutFile      Where to save its attachment (replaced).
@@ -26,22 +26,22 @@ Define Topic.s, Node.s, MessageText.s, OutFile.s, IniPath.s, MessageId.q, Size.q
 OpenConsole()
 
 If CountProgramParameters() < 4
-	PrintN("Usage: GetAttachment <Topic> <Node> <MessageId> <OutFile> [ClientIni]")
+	PrintN("Usage: BakaShrotGetAttachment <Topic> <Node> <MessageId> <OutFile> [ClientIni]")
 	PrintN("  Topic and Node are names or ids.")
-	End 1
+	ToolConsole_End(1)
 EndIf
 
 Topic = ProgramParameter(0)
 Node  = ProgramParameter(1)
 If Not BakaShrot_IsValidRef(Topic) Or Not BakaShrot_IsValidRef(Node)
 	PrintN("Invalid topic or node, expected names or ids 0-65535")
-	End 1
+	ToolConsole_End(1)
 EndIf
 MessageText = ProgramParameter(2)
 MessageId   = Val(MessageText)
 If MessageId < 1 Or Str(MessageId) <> MessageText
 	PrintN("Invalid message id '" + MessageText + "'")
-	End 1
+	ToolConsole_End(1)
 EndIf
 OutFile = ProgramParameter(3)
 
@@ -51,7 +51,7 @@ If CountProgramParameters() > 4
 EndIf
 
 If Not ToolClient_Connect(IniPath)
-	End 1
+	ToolConsole_End(1)
 EndIf
 
 StartTime = ElapsedMilliseconds()
@@ -59,10 +59,10 @@ Size = BakaShrot_SaveAttachment(Topic, Node, MessageId, OutFile)
 If Size < 0
 	ToolClient_PrintFailure()
 	ToolClient_Close()
-	End 1
+	ToolConsole_End(1)
 EndIf
 
 PrintN("Saved " + Str(Size) + " bytes to '" + OutFile + "' in " + Str(ElapsedMilliseconds() - StartTime) + " ms")
 
 ToolClient_Close()
-End 0
+ToolConsole_End(0)

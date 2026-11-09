@@ -141,7 +141,7 @@ Procedure.i BakaShrot_PeerLink_LogRefusal(*Link.BakaShrot_PeerLink, *Answer, Ans
 		ProcedureReturn #False
 	EndIf
 
-	PrintN("[Peer] '" + *Link\Name + "' refused: " + *Refused\Reason)
+	PrintN("[Peer] '" + *Link\Name + "' refused (" + BakaShrot_ErrorName(*Refused\Code) + "): " + *Refused\Reason)
 	FreeStructure(*Refused)
 	ProcedureReturn #True
 EndProcedure
@@ -665,7 +665,6 @@ Procedure.i BakaShrot_PeerLinks_Start(*Config.BakaShrot_CoreConfig)
 	GetPublicKeyFromPrivateKey(@*Links\PrivateKey[0], @*Links\PublicKey[0])
 
 	; By name: the peer has its own ids for them.
-	*Links\Identity\Topic      = BakaShrot_Names_TopicRef(*Config\TopicId)
 	*Links\Identity\Node       = BakaShrot_Names_NodeRef(*Config\NodeId)
 	*Links\Identity\PublicKey  = EncodeKeyToString(@*Links\PublicKey[0], #BakaShrot_Ed25519_PublicKeySize)
 	*Links\Identity\PrivateKey = @*Links\PrivateKey[0]

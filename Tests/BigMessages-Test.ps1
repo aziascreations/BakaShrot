@@ -21,7 +21,7 @@ $MaxPacketSize  = 16 * 1024 * 1024
 $MaxMessageSize = $MaxPacketSize - 4096
 
 function New-KeyPair {
-    $L = & (Join-Path $Build "KeyGen.exe")
+    $L = & (Join-Path $Build "BakaShrotGenerateKeyPairs.exe")
     @{ Priv = $L[0] -replace "^PrivateKey = ", ""; Pub = $L[1] -replace "^PublicKey = ", "" }
 }
 function Test-Port($P) {
@@ -63,7 +63,7 @@ function Wait-Port($Port, $S) {
 }
 function Query($Sql, $Ini) {
     $F = Join-Path $Dir "q.sql"; Set-Content $F -Encoding Ascii -Value $Sql
-    Tool "Query.exe" @("@$F", $Ini)
+    Tool "BakaShrotQuery.exe" @("@$F", $Ini)
 }
 # Waits until Sql answers something matching Pattern, for up to Seconds.
 function Wait-Query($Sql, $Ini, $Pattern, $Seconds = 30) {
@@ -75,7 +75,7 @@ function Wait-Query($Sql, $Ini, $Pattern, $Seconds = 30) {
     } while ((Get-Date) -lt $D)
     $R
 }
-# A JSON message of exactly Size bytes, in a file, as PushMessage's @File.
+# A JSON message of exactly Size bytes, in a file, as BakaShrotPushMessage's @File.
 function New-Message($Name, [int]$Size) {
     $P = Join-Path $Dir "$Name.json"
     $Head = '{"n":"' + $Name + '","pad":"'
@@ -112,7 +112,6 @@ $A = New-KeyPair; $B = New-KeyPair; $K = New-KeyPair
 Set-Content (Join-Path $Dir "a.ini") -Encoding Ascii -Value @"
 [BakaShrot]
 PrivateKey = $($A.Priv)
-Topic = logs
 Node = serverA
 
 [BakaShrot.Topics]
@@ -134,17 +133,18 @@ PeerRetryDelay = 1
 [BakaShrot.Peer.b]
 Host = 127.0.0.1
 Port = 12404
-Topic = logs
 Node = serverB
 PublicKey = $($B.Pub)
 
 [BakaShrot.Client.b]
 PublicKeys = $($B.Pub)
-Identities = logs:serverB
+Node = serverB
+DefaultTopic = logs
 
 [BakaShrot.Client.kitchen]
 PublicKeys = $($K.Pub)
-Identities = logs:kitchen
+Node = kitchen
+DefaultTopic = logs
 ReadTopics = *
 AllowQuery = 1
 "@
@@ -152,7 +152,6 @@ AllowQuery = 1
 Set-Content (Join-Path $Dir "b.ini") -Encoding Ascii -Value @"
 [BakaShrot]
 PrivateKey = $($B.Priv)
-Topic = logs
 Node = serverB
 
 [BakaShrot.Topics]
@@ -174,17 +173,18 @@ PeerRetryDelay = 1
 [BakaShrot.Peer.a]
 Host = 127.0.0.1
 Port = 12403
-Topic = logs
 Node = serverA
 PublicKey = $($A.Pub)
 
 [BakaShrot.Client.a]
 PublicKeys = $($A.Pub)
-Identities = logs:serverA
+Node = serverA
+DefaultTopic = logs
 
 [BakaShrot.Client.kitchen]
 PublicKeys = $($K.Pub)
-Identities = logs:kitchen
+Node = kitchen
+DefaultTopic = logs
 ReadTopics = *
 AllowQuery = 1
 "@
@@ -192,7 +192,7 @@ AllowQuery = 1
 $ServerKeys = @{ 12403 = $A.Pub; 12404 = $B.Pub }
 function Client-Ini($Name, $Port) {
     $P = Join-Path $Dir "$Name.ini"
-    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($K.Priv)`r`nPublicKey = $($K.Pub)`r`nTopic = logs`r`nNode = kitchen`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($ServerKeys[$Port])"
+    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($K.Priv)`r`nPublicKey = $($K.Pub)`r`nNode = kitchen`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($ServerKeys[$Port])"
     $P
 }
 $OnA = Client-Ini "kitchen-a" 12403
@@ -222,15 +222,15 @@ try {
     $Id = 0
     foreach ($N in $Sizes.Keys) {
         $Id++
-        $T = Measure-Command { $R = Tool "PushMessage.exe" @($Files[$N], $OnA) }
+        $T = Measure-Command { $R = Tool "BakaShrotPushMessage.exe" @($Files[$N], $OnA) }
         Expect ("push of {0:N0} bytes ({1:N0} ms)" -f $Sizes[$N], $T.TotalMilliseconds) $R "message #$Id"
     }
-    Expect "a push 1 byte over the cap is refused" (Tool "PushMessage.exe" @($Over, $OnA)) "too big" 1
+    Expect "a push 1 byte over the cap is refused" (Tool "BakaShrotPushMessage.exe" @($Over, $OnA)) "too big" 1
     $Id++
-    Expect "a small push after them" (Tool "PushMessage.exe" @($Small, $OnA)) "message #$Id"
+    Expect "a small push after them" (Tool "BakaShrotPushMessage.exe" @($Small, $OnA)) "message #$Id"
 
     "--- Read back"
-    $T = Measure-Command { $O = & (Join-Path $Build "GetLatestMessage.exe") "logs" "kitchen" $OnA 2>&1 }
+    $T = Measure-Command { $O = & (Join-Path $Build "BakaShrotGetLatestMessage.exe") "logs" "kitchen" $OnA 2>&1 }
     $Code = $LASTEXITCODE
     Check "latest is the small one" ($Code -eq 0 -and ($O -join "") -match '"n":"small"') ($O -join " | ")
     $R = Query "SELECT message_id, length(message_data) FROM data WHERE node_id = 2 ORDER BY message_id" $OnA
@@ -245,25 +245,25 @@ try {
     "--- Read back the biggest, from B"
     # Pushed after the small one, so it's the latest.
     $Id++
-    Expect "push the biggest again" (Tool "PushMessage.exe" @($Files["mmax"], $OnA)) "message #$Id"
+    Expect "push the biggest again" (Tool "BakaShrotPushMessage.exe" @($Files["mmax"], $OnA)) "message #$Id"
     $null = Wait-Query "SELECT max(message_id) FROM data WHERE node_id = 30" $OnB "`"$Id`"" 60
-    $T = Measure-Command { $O = & (Join-Path $Build "GetLatestMessage.exe") "logs" "kitchen" $OnB 2>&1 }
+    $T = Measure-Command { $O = & (Join-Path $Build "BakaShrotGetLatestMessage.exe") "logs" "kitchen" $OnB 2>&1 }
     $Code = $LASTEXITCODE
     $Json = if ($O.Count -ge 2) { [string]$O[1] } else { "" }
-    Check ("GetLatestMessage of {0:N0} bytes from B ({1:N0} ms)" -f $MaxMessageSize, $T.TotalMilliseconds) ($Code -eq 0 -and $Json.Length -eq $MaxMessageSize -and $Json -eq [IO.File]::ReadAllText($Files["mmax"].Substring(1))) ("[$Code] " + [string]$O[0] + ", " + $Json.Length + " chars")
+    Check ("BakaShrotGetLatestMessage of {0:N0} bytes from B ({1:N0} ms)" -f $MaxMessageSize, $T.TotalMilliseconds) ($Code -eq 0 -and $Json.Length -eq $MaxMessageSize -and $Json -eq [IO.File]::ReadAllText($Files["mmax"].Substring(1))) ("[$Code] " + [string]$O[0] + ", " + $Json.Length + " chars")
 
     "--- Many small ones still go in batches"
-    1..30 | ForEach-Object { $null = Tool "PushMessage.exe" @($Small, $OnA) }
+    1..30 | ForEach-Object { $null = Tool "BakaShrotPushMessage.exe" @($Small, $OnA) }
     $R = Wait-Query "SELECT count(*) FROM data WHERE node_id = 30" $OnB '"35"' 30
     Expect "35 on B" $R '\[\["35"\]\]'
 
     "--- Not JSON: stored as is, flagged"
-    Expect "1 MB of broken JSON is stored" (Tool "PushMessage.exe" @("@$Broken", $OnA)) "message #36"
-    Expect "plain text is stored" (Tool "PushMessage.exe" @("@$Text", $OnA)) "message #37"
+    Expect "1 MB of broken JSON is stored" (Tool "BakaShrotPushMessage.exe" @("@$Broken", $OnA)) "message #36"
+    Expect "plain text is stored" (Tool "BakaShrotPushMessage.exe" @("@$Text", $OnA)) "message #37"
     Expect "flagged is_json = 0 on A, the rest 1" (Query "SELECT message_id, is_json, length(message_data) FROM data WHERE node_id = 2 AND message_id >= 35 ORDER BY message_id" $OnA) '\[\["35","1","40"\],\["36","0","1000000"\],\["37","0","24"\]\]'
     $R = Wait-Query "SELECT message_id, is_json, length(message_data) FROM data WHERE node_id = 30 AND message_id >= 35 ORDER BY message_id" $OnB '"37"' 30
     Expect "replicated and flagged the same on B" $R '\[\["35","1","40"\],\["36","0","1000000"\],\["37","0","24"\]\]'
-    $O = & (Join-Path $Build "GetLatestMessage.exe") "logs" "kitchen" $OnB 2>&1
+    $O = & (Join-Path $Build "BakaShrotGetLatestMessage.exe") "logs" "kitchen" $OnB 2>&1
     Check "read back as is from B" ($LASTEXITCODE -eq 0 -and [string]$O[1] -eq "just some text, not JSON") ($O -join " | ")
 
     "--- is_json for the edge cases (SQLite's json_valid(), RFC 8259)"
@@ -275,7 +275,7 @@ try {
         $Id++
         $F = Join-Path $Dir "case$Id.txt"
         [IO.File]::WriteAllText($F, $C[0])
-        $R = Tool "PushMessage.exe" @("@$F", $OnA)
+        $R = Tool "BakaShrotPushMessage.exe" @("@$F", $OnA)
         $Q = Query "SELECT is_json FROM data WHERE node_id = 2 AND message_id = $Id" $OnA
         Check ("'{0}' stored, is_json = {1}" -f $C[0], $C[1]) ($R.Out -match "message #$Id" -and $Q.Out -match ('"rows":\[\["{0}"\]\]' -f $C[1])) ($R.Out + " / " + $Q.Out)
     }
@@ -303,7 +303,7 @@ function Read-Log($Name) {
     $L = @(Get-Content (Join-Path $Dir "$Name.log"))
     $End = [array]::IndexOf($L, "Stopping...")
     if ($End -lt 0) { $End = $L.Count }
-    while ($End -gt 0 -and $L[$End - 1] -match "Lost the link|Retrying|disconnected|aborted|didn't answer") { $End-- }
+    while ($End -gt 0 -and $L[$End - 1] -match "Lost the link|Dropping the link|Retrying|disconnected|aborted|didn't answer") { $End-- }
     ($L[0..([math]::Max($End - 1, 0))]) -join "`n"
 }
 $LogA = Read-Log "a"

@@ -35,7 +35,7 @@
 ;   FirstNode, MaxNodes     Its nodes are FirstNode to FirstNode+MaxNodes-1,
 ;                           all of them are monitored.
 ;   NodeCount               How many of them push in this stage, from FirstNode.
-;   MonitorNode, QueryNode  Identities used by the sampler and the queries.
+;   MonitorNode, QueryNode  Nodes used by the sampler and the queries.
 ;   QueryLoad, Query        0/1, see above.
 ;
 ; Query file: one query per line, "Name | SQL", # starts a comment.
@@ -312,7 +312,6 @@ EndProcedure
 Procedure.i Bench_Connect(*Outbound.BakaShrot_Outbound, *Server.BenchServer, NodeId.i)
 	Protected Identity.BakaShrot_OutboundIdentity
 
-	Identity\Topic      = Str(Bench_TopicId)
 	Identity\Node       = Str(NodeId)
 	Identity\PublicKey  = Bench_PublicKey
 	Identity\PrivateKey = @Bench_PrivateKey(0)

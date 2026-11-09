@@ -1,8 +1,8 @@
 # End-to-end test of pushed_at and [BakaShrot.Retention]:
 #   - a database from before pushed_at gets it (the time of the upgrade), and
 #     its ids go on;
-#   - a push is stamped with the time it arrived (UTC), GetMessages --time
-#     and GetLatestMessage show it, replication carries it as is;
+#   - a push is stamped with the time it arrived (UTC), BakaShrotGetMessages
+#     --time and BakaShrotGetLatestMessage show it, replication carries it as is;
 #   - each server deletes a topic's messages past its own max age (by name,
 #     by pattern, "*"), only its own: the peer keeps its copies;
 #   - after deleting, ids go on, and the peer doesn't send them again;
@@ -27,7 +27,7 @@ $Server = Join-Path $Build "Bench\BenchServer.exe"
 $Fails = 0
 
 function New-KeyPair {
-    $L = & (Join-Path $Build "KeyGen.exe")
+    $L = & (Join-Path $Build "BakaShrotGenerateKeyPairs.exe")
     @{ Priv = $L[0] -replace "^PrivateKey = ", ""; Pub = $L[1] -replace "^PublicKey = ", "" }
 }
 function Test-Port($P) {
@@ -68,7 +68,7 @@ function Wait-Port($Port, $S) {
 }
 function Query($Sql, $Ini) {
     $F = Join-Path $Dir "q.sql"; Set-Content $F -Encoding Ascii -Value $Sql
-    Tool "Query.exe" @("@$F", $Ini)
+    Tool "BakaShrotQuery.exe" @("@$F", $Ini)
 }
 # Waits until Sql answers something matching Pattern, for up to Seconds.
 function Wait-Query($Sql, $Ini, $Pattern, $Seconds = 20) {
@@ -90,7 +90,7 @@ function Push($Data, $Ini, [string]$Topic = "") {
     [IO.File]::WriteAllText($F, $Data, (New-Object System.Text.UTF8Encoding $false))
     $A = @()
     if ($Topic) { $A += @("-t", $Topic) }
-    Tool "PushMessage.exe" ($A + @("@$F", $Ini))
+    Tool "BakaShrotPushMessage.exe" ($A + @("@$F", $Ini))
 }
 
 $A = New-KeyPair; $B = New-KeyPair; $K = New-KeyPair
@@ -99,7 +99,6 @@ $A = New-KeyPair; $B = New-KeyPair; $K = New-KeyPair
 Set-Content (Join-Path $Dir "a.ini") -Encoding Ascii -Value @"
 [BakaShrot]
 PrivateKey = $($A.Priv)
-Topic = logs
 Node = serverA
 
 [BakaShrot.Topics]
@@ -128,17 +127,18 @@ RetentionInterval = 1
 [BakaShrot.Peer.b]
 Host = 127.0.0.1
 Port = 12409
-Topic = logs
 Node = serverB
 PublicKey = $($B.Pub)
 
 [BakaShrot.Client.b]
 PublicKeys = $($B.Pub)
-Identities = logs:serverB
+Node = serverB
+DefaultTopic = logs
 
 [BakaShrot.Client.kitchen]
 PublicKeys = $($K.Pub)
-Identities = logs:kitchen
+Node = kitchen
+DefaultTopic = logs
 PushTopics = logs;short;keep;late
 ReadTopics = *
 AllowQuery = 1
@@ -148,7 +148,6 @@ AllowQuery = 1
 Set-Content (Join-Path $Dir "b.ini") -Encoding Ascii -Value @"
 [BakaShrot]
 PrivateKey = $($B.Priv)
-Topic = logs
 Node = serverB
 
 [BakaShrot.Topics]
@@ -180,17 +179,18 @@ RetentionInterval = 1
 [BakaShrot.Peer.a]
 Host = 127.0.0.1
 Port = 12408
-Topic = logs
 Node = serverA
 PublicKey = $($A.Pub)
 
 [BakaShrot.Client.a]
 PublicKeys = $($A.Pub)
-Identities = logs:serverA
+Node = serverA
+DefaultTopic = logs
 
 [BakaShrot.Client.kitchen]
 PublicKeys = $($K.Pub)
-Identities = logs:kitchen
+Node = kitchen
+DefaultTopic = logs
 ReadTopics = *
 AllowQuery = 1
 "@
@@ -198,7 +198,7 @@ AllowQuery = 1
 $ServerKeys = @{ 12408 = $A.Pub; 12409 = $B.Pub }
 function Client-Ini($Name, $Port) {
     $P = Join-Path $Dir "$Name.ini"
-    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($K.Priv)`r`nPublicKey = $($K.Pub)`r`nTopic = logs`r`nNode = kitchen`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($ServerKeys[$Port])"
+    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($K.Priv)`r`nPublicKey = $($K.Pub)`r`nNode = kitchen`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($ServerKeys[$Port])"
     $P
 }
 $OnA = Client-Ini "kitchen-a" 12408
@@ -253,17 +253,17 @@ try {
     $Expected = [DateTimeOffset]::FromUnixTimeMilliseconds($Stamp).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
     Check "the view's pushed_utc is the same, as text" ($Utc -eq $Expected) "$Utc, expected $Expected"
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "2", "--time", $OnA)
-    Check "GetMessages --time: id, time, data" ($R.Code -eq 0 -and $R.Lines.Count -eq 1 -and $R.Lines[0] -eq "3`t$Expected`t{`"n`":`"stamped`"}") $R.Out
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "2", $OnA)
-    Check "GetMessages without --time: as before" ($R.Code -eq 0 -and $R.Lines.Count -eq 1 -and $R.Lines[0] -eq "3`t{`"n`":`"stamped`"}") $R.Out
-    Expect "GetLatestMessage shows it" (Tool "GetLatestMessage.exe" @("logs", "kitchen", $OnA)) ("#3 \(ids 1:2\), pushed " + [regex]::Escape($Expected))
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "2", "--time", $OnA)
+    Check "BakaShrotGetMessages --time: id, time, data" ($R.Code -eq 0 -and $R.Lines.Count -eq 1 -and $R.Lines[0] -eq "3`t$Expected`t{`"n`":`"stamped`"}") $R.Out
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "2", $OnA)
+    Check "BakaShrotGetMessages without --time: as before" ($R.Code -eq 0 -and $R.Lines.Count -eq 1 -and $R.Lines[0] -eq "3`t{`"n`":`"stamped`"}") $R.Out
+    Expect "BakaShrotGetLatestMessage shows it" (Tool "BakaShrotGetLatestMessage.exe" @("logs", "kitchen", $OnA)) ("#3 \(ids 1:2\), pushed " + [regex]::Escape($Expected))
 
     $Sql = "SELECT message_id, pushed_at FROM messages WHERE topic = 'logs' AND node = 'kitchen' ORDER BY message_id"
     $OnAStamps = (Query $Sql $OnA).Out
     $R = Wait-Query $Sql $OnB '"3","\d+"'
     Check "replicated with the same pushed_at, every one" ($R.Out -eq $OnAStamps) "A $OnAStamps | B $($R.Out)"
-    Expect "GetLatestMessage on B: the same time" (Tool "GetLatestMessage.exe" @("logs", "kitchen", $OnB)) ("#3 \(ids 300:30\), pushed " + [regex]::Escape($Expected))
+    Expect "BakaShrotGetLatestMessage on B: the same time" (Tool "BakaShrotGetLatestMessage.exe" @("logs", "kitchen", $OnB)) ("#3 \(ids 300:30\), pushed " + [regex]::Escape($Expected))
 
     "--- Retention on A (short = 3s), not on B (short = forever)"
     foreach ($i in 1..3) { Expect "push short #$i" (Push "{`"short`":$i}" $OnA "short") "message #$i" }
@@ -273,7 +273,7 @@ try {
     Check "A deleted them past 3 s" ($R.Out -match '\[\["0"\]\]') $R.Out
     Expect "A kept logs (no max age)" (Query (Count "logs") $OnA) '\[\["3"\]\]'
     Expect "B kept them (its own rules)" (Query (Count "short") $OnB) '\[\["3"\]\]'
-    Expect "A: no message left in short" (Tool "GetLatestMessage.exe" @("short", "kitchen", $OnA)) "No message" 1
+    Expect "A: no message left in short" (Tool "BakaShrotGetLatestMessage.exe" @("short", "kitchen", $OnA)) "No message" 1
     Expect "A's ids go on after deleting: #4" (Push '{"short":4}' $OnA "short") "message #4"
     $R = Wait-Query (Count "short") $OnB '\[\["4"\]\]' 10
     Check "B got #4" ($R.Out -match '\[\["4"\]\]') $R.Out
@@ -290,7 +290,7 @@ try {
     Expect "push keep #3" (Push '{"keep":3}' $OnA "keep") "message #3"
     $R = Wait-Query (Count "keep") $OnB '\[\["1"\]\]' 10
     Check "B only got #3, not #1 and #2 again" ($R.Out -match '\[\["1"\]\]') $R.Out
-    Expect "B: it's #3" (Tool "GetLatestMessage.exe" @("keep", "kitchen", $OnB)) "keep:kitchen#3"
+    Expect "B: it's #3" (Tool "BakaShrotGetLatestMessage.exe" @("keep", "kitchen", $OnB)) "keep:kitchen#3"
     Expect "B's * = 1h keeps logs" (Query (Count "logs") $OnB) '\[\["3"\]\]'
 
     "--- Replicated already past the max age (B: late = 3s)"

@@ -1,8 +1,8 @@
 # BakaShrot - working notes
 
-Where things stand and what's next, as of 2026-11-08. A new session: read
-`CLAUDE.md` first (how to build, test, and the traps), then "Open items"
-below. The detailed docs are in `Design/`:
+Where things stand and what's next, as of 2026-11-09. A new session: read
+`CLAUDE.md` first (how to build, test, and the traps), then "Right now" and
+"Open items" below. The detailed docs are in `Design/`:
 
 | Doc | About |
 |---|---|
@@ -13,6 +13,21 @@ below. The detailed docs are in `Design/`:
 | `Design/StorageConcurrency.md` | One connection per thread, WAL, the write mutex and the writer (done), and what's left. |
 | `Design/Suggestions.md` | Improvements not done yet: pipelined pushes, faster replication, smaller ones. |
 | `Design/Release.md` | The release smoke test, what's missing for 1.0.0, the (fixed) silent query failure, notes for CI/CD. |
+
+## Right now (2026-11-09)
+
+- **Nothing since `df61ef9` is committed**, on `timestamps-retention`: the
+  tool renames, protocols 5 and 6 (node identities, error codes), names-only
+  configs, `Synchronous`, schema v8 (`browse`), `Examples/`,
+  `Restart-Test.ps1`. Every suite passes on it (8, see `CLAUDE.md`), it
+  compiles with 5.73 and 6.40, the push bench gives ~17,000 msg/s for 4
+  servers with `Synchronous = FULL`.
+- **`Release\20261109-df61ef9-dirty\` is out of date** (before
+  `Synchronous`, `browse` and the error codes): commit, then
+  `Release.ps1` again.
+- **Suggested next** (not decided by the owner): the server without a
+  console (item 1), then whatever the real-world test shows. The run on a
+  clean Windows is the owner's, not an item here.
 
 ## Where things stand
 
@@ -27,7 +42,18 @@ below. The detailed docs are in `Design/`:
   - Every connection is encrypted, and both ends prove who they are: the
     client with an Ed25519 challenge, the server by signing the handshake
     with the key its clients know (since protocol 3, `Design/Cryptography.md`;
-    the protocol is at 4, with attachments).
+    the protocol is at 6: attachments in 4, node-only identities in 5,
+    refusal codes in 6).
+  - A client authenticates as a node (`[BakaShrot.Client.<name>] Node`,
+    one per section, a key may be in several); its pushes go to that
+    section's `DefaultTopic` unless they name one.
+  - Topics are listed by name (`[BakaShrot.Topics]`), the server gives the
+    ids and keeps them; nodes come from the sections that use them,
+    `[BakaShrot.Nodes]` is optional, peers' nodes are taken as they come
+    (`AcceptNodes = *` by default).
+  - `[BakaShrot.Server] Synchronous = FULL` (default, every acknowledged
+    push on disk) or `NORMAL` (faster, a power loss can lose the last
+    second).
   - Clients can push messages (usually JSON, anything is stored, flagged
     in `is_json`), read the latest one of a topic/node pair or a run of
     them after an id, resolve names, and run raw read-only SQL, each depending on
@@ -43,11 +69,20 @@ below. The detailed docs are in `Design/`:
     (`Design/Attachments.md`).
   - One thread per client and per peer, each with its own SQLite connection.
   - The root thread can stop every worker (restart, vacuum).
+- **Errors:** every refusal carries a code, every client failure too
+  (`Client/BakaShrot_ErrorCodes.pbi`): `BakaShrot_GetLastError()` in the
+  DLL, `error.code` in Python, the name in the tools' messages. Nothing
+  reconnects by itself; delivery is at least once.
+- **Database tools:** the `messages` view (by names), and `browse` /
+  `browse_messages` to pick a topic from a dropdown in SQLiteStudio.
+- **Example:** `Examples/SingleServer/`, a server and a client with scripts
+  (its keys committed on purpose, public).
 - **Client:** a DLL with A/W string exports, PureBasic prototypes in
   `Client/BakaShrot_Client_Prototypes.pbi`, and tools in `Tools/`:
-  `PushMessage` (`-a` to attach a file), `GetLatestMessage`, `GetMessages`
-  (with `--follow`), `GetAttachment`, `Resolve`, `ListNames`, `Query`,
-  `KeyGen`.
+  `BakaShrotPushMessage` (`-a` to attach a file),
+  `BakaShrotGetLatestMessage`, `BakaShrotGetMessages` (with `--follow`),
+  `BakaShrotGetAttachment`, `BakaShrotResolveIds`, `BakaShrotList`,
+  `BakaShrotQuery`, `BakaShrotGenerateKeyPairs`.
 - **Python:** `Interactors/Python/bakashrot.py`, over the DLL with ctypes,
   no dependencies, and `example.py`.
 - **Release:** `Release.ps1` builds with PB 6.40's C backend into
@@ -88,8 +123,9 @@ below. The detailed docs are in `Design/`:
   (`BakaShrot_Names_Ingest()`): highest free id counting down from 65535,
   origin "peer". So `AcceptNodes = kitchen-*` saves listing every kitchen
   node on every server. Clients still can't create topics by name.
-- **A peer authenticates by name:** its own topic and node must be named the
-  same on the servers it links to (it sends its name when it has one).
+- **A peer authenticates by name:** its own node must be named the same
+  on the servers it links to (it sends its name when it has one). It sent
+  a topic too before protocol 5.
 - **Everywhere a topic or node goes, a name or an id:** config, the Hello,
   requests, tools, client.ini. Keys: `Topic`, `Node`, `ReplicatingTopics`
   (`TopicId`, `NodeId`, `ReplicatingTopicIds` still read when the new ones
@@ -97,13 +133,13 @@ below. The detailed docs are in `Design/`:
 - **Filters:** per client `PushTopics` / `ReadTopics` (default: its
   identities' topics, as before), per peer `SendTopics` / `AcceptTopics`
   (default: `ReplicatingTopics`). `*` = every topic. A push picks its topic
-  (`PushMessage -t sensors`), never its node.
+  (`BakaShrotPushMessage -t sensors`), never its node.
 - **The config wins at start,** except when it would move a name to another
   id than the one its messages are under: the server then refuses to start
   and says which id to use (`Server/Storage/Names.pbi`).
 - **Seeing the names:** the server's `names` console command, the
-  `ListNames` tool (`BakaShrot_ListTopics/Nodes()` + `BakaShrot_GetNamesList()`
-  as JSON, request `ListNames`), `Resolve` for one.
+  `BakaShrotList` tool (`BakaShrot_ListTopics/Nodes()` + `BakaShrot_GetNamesList()`
+  as JSON, request `ListNames`), `BakaShrotResolveIds` for one.
 - **Clients:** `BakaShrot_ResolveTopic/Node()`, `BakaShrot_PushMessageTo()`,
   `BakaShrot_GetLatestMessageOf()`, the answer's names and ids. Raw
   queries: `SELECT * FROM messages WHERE topic = 'logs' AND node =
@@ -204,8 +240,8 @@ existing `data` means rebuilding the table. So: name tables, joined, no FKs.
   `BakaShrot_HasMoreMessages()`. GetLatestMessage fills the same list (one
   message). The DLL checks the answer is about what it asked, no more than
   asked, after the asked id.
-- **Tool:** `GetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>]
-  [--follow] [--interval <Ms>] [ClientIni]`: one line per message, id, tab,
+- **Tool:** `BakaShrotGetMessages <Topic> <Node> [--after <Id|latest>]
+  [--limit <N>] [--follow] [--interval <Ms>] [ClientIni]`: one line per message, id, tab,
   data as stored. `--follow` polls every 500 ms once caught up, exits 1 when
   the connection fails. Polling, not pushed by the server: fine for a few
   followers, a subscription would be the next step if many follow.
@@ -217,8 +253,8 @@ existing `data` means rebuilding the table. So: name tables, joined, no FKs.
   `ConnectionLostError`. Uses the DLL's UTF-8 exports, a lock serializes
   calls. **One connection per process** (the DLL's globals): a second
   Client can't connect while one is. ~9,600 pushes/s on one connection,
-  against ~75/s launching `PushMessage.exe` each time.
-- **Released:** `GetMessages.exe` and `python\` (bakashrot.py, example.py),
+  against ~75/s launching `BakaShrotPushMessage.exe` each time.
+- **Released:** `BakaShrotGetMessages.exe` and `python\` (bakashrot.py, example.py),
   the smoke test reads both messages back with the tool and with Python
   (if `python` is on the PATH).
 - **Tested:** `Tests/GetMessages-Test.ps1` (27 checks: limits, after an id /
@@ -316,7 +352,7 @@ runner, then CI.
   to (`ReplicateMessages` carries it). Clients get it in `LatestMessage`
   and `Messages`: `BakaShrot_GetMessagePushedAt()` in the DLL,
   `Message.pushed_at` / `.pushed` (a UTC datetime) in Python,
-  `GetMessages --time`, and `GetLatestMessage` shows it. In SQL:
+  `BakaShrotGetMessages --time`, and `BakaShrotGetLatestMessage` shows it. In SQL:
   `data.pushed_at`, and `pushed_at` / `pushed_utc` (text) in the
   `messages` view.
 - **Upgrade:** a database from before gets the column, every message
@@ -377,7 +413,7 @@ runner, then CI.
   `_GetMessageAttachmentSize()`, `_IsMessageAttachmentReady()`; Python
   `push(..., attachment=bytes or path)`, `get_attachment()`,
   `save_attachment()`, `Message.attachment_size/_ready`; tools
-  `PushMessage -a`, `GetAttachment`.
+  `BakaShrotPushMessage -a`, `BakaShrotGetAttachment`.
 - **Measured:** 512 MB up in 8.5 s, down in 3.9 s, identical, the server
   peaking at 15 MB of memory. The push benchmark isn't affected (messages
   without attachments only gain a LEFT JOIN on reads).
@@ -394,6 +430,219 @@ runner, then CI.
 - **Left:** resuming an upload after a dropped connection (replication
   does resume); several parts in flight for high-latency links.
   See `Design/Attachments.md`.
+
+## Renamed: the tools (2026-11-08)
+
+Every tool is prefixed with `BakaShrot` (no `_`, the server keeps
+`BakaShrot_Server`), folder, source and exe alike, three renamed too:
+
+| Before | Now |
+|---|---|
+| KeyGen | BakaShrotGenerateKeyPairs |
+| ListNames | BakaShrotList |
+| Resolve | BakaShrotResolveIds |
+| PushMessage, GetLatestMessage, GetMessages, GetAttachment, Query | BakaShrotPushMessage, BakaShrotGetLatestMessage, ... |
+
+The packets and DLL functions keep their names (`ListNames`,
+`GetMessages`, `BakaShrot_ResolveTopic()`...). Older sections below
+still say the old names where they tell what was done then.
+
+## Done: tools wait for Enter when started from Explorer (2026-11-08)
+
+- **Every tool** ends through `ToolConsole_End()` (`Tools/Common/ToolConsole.pbi`,
+  included by `ToolClient.pbi`, and by BakaShrotGenerateKeyPairs directly): started directly
+  (a double-click, a shortcut), it prints "Press Enter to close..." and
+  waits, so what it printed (the usage, BakaShrotGenerateKeyPairs' keys) can be read before
+  its console closes.
+- **Started directly** = alone on its console (`GetConsoleProcessList`, as
+  [PB-Template-Win32-CliApp](https://github.com/aziascreations/PB-Template-Win32-CliApp)
+  does it) **and** its input and output are a console: a redirected tool
+  never waits, even alone on a new hidden console (the `--follow` test's
+  `Start-Process -WindowStyle Hidden -RedirectStandardOutput`). Never
+  waits outside of Windows.
+- **Checked:** from a shell, from Python's `subprocess`, hidden and
+  redirected: no wait; `Start-Process` in a new window: waits. Every suite
+  still passes; compiles with 5.73 and 6.40.
+
+## Done: error codes, protocol 6 (2026-11-09)
+
+- **Every failure has a code**, in `Client/BakaShrot_ErrorCodes.pbi`
+  (shipped next to the prototypes, which include it), with what to do about
+  each in its header:
+  - 1-99, sent by the server with each refusal (`RequestRefused` got a
+    `Code`, protocol 5 -> 6): NotAllowed, UnknownName, NotFound, NotReady,
+    TooBig, NoDefaultTopic, InvalidRequest, DataMismatch, QueryFailed,
+    ServerError. Each of the server's 64 refusals has one.
+  - 100+, the client's own: NotConnected, ConnectFailed, AuthRejected,
+    ServerNotVerified, ConnectionLost, ProtocolError, InvalidArgument,
+    FileError, AttachmentMismatch, AlreadyConnected, Internal. The
+    handshake (`Outbound.pbi`) tells where it failed: unreachable, closed
+    by the server (wrong ServerPublicKey, key or node not allowed, another
+    version), the server's signature wrong.
+- **DLL:** `BakaShrot_GetLastError()` after any call that can fail (0 when
+  it succeeded); `BakaShrot_ErrorName()` names a code. Set where it
+  happens (`BakaShrot_Fail()`), the lost connection, refusals and
+  unexpected answers in one place each.
+- **Python:** `ErrorCode` (IntEnum, the same numbers), `error.code` on every
+  exception; `RefusedError` (1-99), `ConnectionLostError` (not connected,
+  unreachable, lost, protocol error: connect again), the new `AuthError`
+  (rejected or unverified: fix the config). `latest()` tells "no message"
+  by its code, not its text.
+- **Tools:** failures print the code's name, "Refused by the server
+  (UnknownName): Unknown topic 'nope'", "Failed to connect and
+  authenticate to host:port (AuthRejected): ..."; exit codes unchanged (1).
+  `BakaShrotGetMessages --after latest` only starts from the start on
+  NotFound, any other refusal is told.
+- **Nothing reconnects by itself**, decided: apps act on the codes. A push
+  whose answer was lost may be stored twice if retried: at least once,
+  accepted (11b).
+- **Tested:** the Python client's checks (UNKNOWN_NAME, NOT_FOUND,
+  NOT_ALLOWED, QUERY_FAILED, INVALID_ARGUMENT, FILE_ERROR,
+  ALREADY_CONNECTED, NOT_CONNECTED, CONNECT_FAILED, AUTH_REJECTED),
+  `Names-Test.ps1` (the tools' code names), `Restart-Test.ps1` (a killed
+  server gives the pushers CONNECTION_LOST).
+
+## Done: restart catch-up tested (2026-11-09)
+
+- **`Tests/Restart-Test.ps1`** (15 checks, ports 12415-12416, 26 s): two
+  servers, a client node pushing on each through `Tests/restart_pusher.py`
+  (as fast as answers come, logging every acknowledged id), servers killed
+  with `Stop-Process -Force` (TerminateProcess, like a crash):
+  1. B killed while both push, A goes on alone for 3 s, B restarted.
+  2. B killed again partway through catching up (9,376 -> 10,806 of 22,064
+     kitchen messages when killed), restarted.
+  3. A killed while both push (the other direction), restarted.
+- **All hold:** every acknowledged push survived, ids 1..n without a gap
+  on both servers, the last acknowledged message is the one pushed, the
+  next push gets the next id, and both servers end with the same messages
+  (counts, ids, data and pushed_at sums equal), each catching up on what
+  the other got meanwhile. The logs show nothing but the links lost and
+  retried while a server was down.
+- **Found:** a push committed but not answered before the kill (#26272
+  stored, #26271 the last answered): a client retrying it stores it twice
+  (open item 11b).
+- With `Synchronous = FULL`, the default; a killed process loses nothing
+  committed with `NORMAL` either (only a power loss or an OS crash would).
+
+## Done: browsing a topic from a database tool, schema v8 (2026-11-09)
+
+- **A view can't take a parameter**, and SQLiteStudio has no dropdown for
+  one. It does show a dropdown for a column with a foreign key (its
+  `FkComboBox`, in the installed copy), so:
+- **`browse`**: one row (`id = 1`), `topic` referencing `topics(name)` and
+  `node` referencing `nodes(name)` (NULL: every node). Set them from the
+  dropdowns, commit, open **`browse_messages`**: that topic's messages,
+  newest first, with `node`, `message_id`, `pushed_utc`, `message_data`,
+  `is_json`, `attachment_size`. Index searches all the way (by name, then
+  `(topic_id, pushed_at)`).
+- **The server never writes `browse`** nor turns foreign keys on, so the
+  references never get in its way; a topic renamed in the config only
+  leaves a stale name there. Made by `SetupStorageDatabase()`, so every
+  database gets them at its next start (`db_schema_v8.dbml`).
+- **Writing to it while the server runs** is a short write next to the
+  server's (it waits up to its 5 s busy timeout). A database tool left
+  open on a table holds a read snapshot, which keeps checkpoints from
+  finishing: the WAL grows until it's closed.
+- **Tested:** `Names-Test.ps1` sets it with Python's `sqlite3` (foreign
+  keys on, like SQLiteStudio): a topic lists its messages, a node narrows
+  them, a name that isn't a topic is refused. Not tested by hand in
+  SQLiteStudio itself.
+
+## Done: Synchronous, FULL by default (2026-11-09)
+
+- **`[BakaShrot.Server] Synchronous`**: `FULL` (default, every commit
+  flushed: an acknowledged push survives a power loss) or `NORMAL`
+  (flushed at checkpoints, about every second: faster, but a power loss
+  can lose the last second and hand its ids out again). `OFF` and `EXTRA`
+  are refused, saying why. The server logs it ("ready (synchronous FULL)").
+- **Measured** (`Design/StorageConcurrency.md`): `FULL` halves the push
+  ceiling here (17,200 msg/s for 4 servers instead of 33,900), a single
+  sequential client gets ~1/flush pushes/s (1,300/s on this VM's 0.6 ms
+  flush), and a steady load only gets ~0.7 ms more per push.
+- **The bench takes `-Synchronous`** (`FULL` by default, like the server),
+  `-Synchronous NORMAL` to compare with the numbers from before.
+- **Before:** the release smoke test passed on the release built with
+  protocol 5 and names-only configs, and the example ran from its
+  extracted zip (2026-11-09). Not done: a run on a clean Windows.
+- **Tested:** `Names-Test.ps1` checks the C server starts with `NORMAL`
+  and logs it, and that `OFF` is refused; every suite passes with the
+  `FULL` default.
+
+## Done: the server picks the ids, nodes come from their sections (2026-11-08)
+
+- **`[BakaShrot.Topics]` is a list of names**, one per line. The server
+  gives each its id: the one its database already has for the name, else
+  the lowest free one (`AssignConfigId()`, `Config.pbi`), so the order
+  doesn't matter and ids never move. `name = id` still pins one: every
+  existing config works as it is (the tests and `Build.ps1` keep their
+  pinned ids, they check the translation between servers).
+- **`[BakaShrot.Nodes]` is optional:** `[BakaShrot] Node`, every peer's and
+  client's `Node` name their node by themselves (`DeclareConfigNode()`),
+  before any node list is read. List only the others to know by name.
+- **The root reads the database's names before the config**
+  (`BakaShrot_Names_ReadKnown()`, `Root.pbi`), from `DatabasePath` read
+  ahead. `BakaShrot_Names_Load()` then reconciles as before.
+- **A peer's `AcceptNodes` defaults to `*`** (was: the named ones only):
+  other servers' clients come as they come, under ids of this server's
+  counting down from 65535. `AcceptNodes` still narrows it per peer.
+- **Found: the Preferences library misreads LF files** with keys without
+  `=`: it takes the next line for the value, a section header too, losing
+  that whole section. The config is now opened through a CRLF copy in the
+  temporary folder when it has LF line endings (`OpenConfigPreferences()`),
+  deleted once read.
+- **Tested:** `Names-Test.ps1` (55 checks): two servers with names-only
+  topics and no nodes listed (C's in an LF file), ids in order, the nodes
+  from the sections, D taking a node it never named, C restarted with its
+  topics reordered and a new one: same ids. Every suite and the push bench
+  (35,600 msg/s) pass; compiles with 5.73 and 6.40. The example's
+  `server.ini` lists names only.
+
+## Done: protocol 5, a client's node and default topic apart (2026-11-08)
+
+- **Client sections** (`[BakaShrot.Client.<name>]`): `Node` (required, the
+  node that key writes as) and `DefaultTopic` (optional, where its pushes
+  go when they don't name a topic) instead of `Identities = Topic:Node;...`.
+  `PushTopics` / `ReadTopics` default to `DefaultTopic`, nothing without
+  one. A key that writes as several nodes is in a section per node.
+- **Why the node:** every push is stored under the authenticated node, so
+  the server decides which node each key writes as. The topic was only
+  ever the default one, and mixing the two made it look like more.
+- **The Hello carries the node only** (protocol 4 -> 5): `client.ini`,
+  the DLL (`BakaShrot_SetTopic*()` removed), the tools and Python
+  (`Client(...)` lost its `topic` argument) have no topic any more. A push
+  without one and no `DefaultTopic` is refused ("No default topic for this
+  client").
+- **Servers too:** `[BakaShrot] Topic` and peers' `Topic` aren't read any
+  more (ignored if left), a server links to its peers by node only.
+- **Old configs:** `Identities` makes the server refuse to start, saying
+  what to write (`Node = garage and DefaultTopic = logs instead of
+  Identities = logs:garage`).
+- **Tested:** `Names-Test.ps1` (now 49 checks): no `DefaultTopic` means a
+  push must name its topic, a key can't write as another section's node
+  (and the log says why), the old `Identities` refused. Every suite and
+  the push bench (36,400 msg/s, no failures) pass; compiles with 5.73 and
+  6.40.
+
+## Done: examples, one server and one client (2026-11-08)
+
+- **`Examples/`**, one folder per setup with its README, indexed in
+  `Examples/README.md`. The first, `Examples/SingleServer/`: one server on
+  127.0.0.1:12360, one client (`logs:demo`, may push to logs and sensors,
+  read all, query), retention on sensors.
+- **Its configs are committed, keys included** (a fixed key pair each,
+  marked as public and example-only in the files and the README). Every
+  other config with keys stays out of git.
+- **`Start-Server.ps1`** opens the server in its own window and waits until
+  it listens (`-Here` in the current console, `-Reset` deletes its
+  database). **`Run-Client.ps1`** pushes (to its topic, another topic, with
+  an attachment), reads back (latest, every message with `--time`, the
+  attachment, checked), resolves and lists names, runs a SQL query; it
+  prints each command, pasteable from the example's folder. Both take
+  `-BinDir`, `Build\` by default.
+- **Git ignores** what they write: `Examples/**/*.sqlite*`, `Examples/**/out/`.
+- **Checked:** both scripts, twice in a row (the ids go on), the
+  double-start guard, the README's Python snippet. `Start-Server.ps1 -Here`
+  wasn't (it needs an interactive console).
 
 ## Threat model (2026-11-08)
 
@@ -420,11 +669,12 @@ network**, not exposed to the internet. So:
    no clean stop from a script (tests force-kill it). Fix: a stop file like
    `BenchServer.exe`'s, and/or a local admin connection, then a way to run
    it as a service. (`Design/Release.md` smoke test #4)
-2. **The 1.0.0 smoke test isn't done:** a run from the extracted zip on a
-   clean Windows (the shipped runtime has never been checked there),
-   replication between two release servers, restart catch-up (designed to
-   work, never tested: kill a server, check ids continue and peers catch
-   up). (`Design/Release.md`, items 1-3)
+2. **The 1.0.0 smoke test, what's left:** replication between two servers
+   built by `Release.ps1` (the suites use `BenchServer.exe`, the same server
+   code). Done: the release's own smoke test and the example from its zip
+   (2026-11-09), restart catch-up (`Restart-Test.ps1`, 2026-11-09). The run
+   on a clean Windows is the owner's, as needed: not an open item here.
+   (`Design/Release.md`, items 1-3)
 3. **A corrupted stored attachment is re-sent to peers forever.** Found
    by `Tests/AttachmentEdges-Test.ps1` part 4 (a byte flipped in the
    sender's `blob_chunks`, `flip.py`).
@@ -447,31 +697,31 @@ network**, not exposed to the internet. So:
      its own peers for a good copy (`MissingAttachments`), and stops
      serving it. Log it loudly. If its copy is fine (the damage was in
      transit), sending again is right.
-   - Better than matching the refusal's text: a distinct answer for "the
-     data doesn't match", e.g. a `ChunkStored` with `Complete = 0` and
-     `Received = 0` after the last part, or a new field.
+   - The refusal now has its own code (DataMismatch, protocol 6): match
+     that rather than the text.
    - The origin (where it was pushed) has no other source: its attachment
      then stays missing ("isn't here yet"), better than serving bad data;
-     maybe a "lost" state (4) so `GetAttachment` says so.
+     maybe a "lost" state (4) so `BakaShrotGetAttachment` says so.
    - Optional, to catch it on reads too: a SHA-256 per part in
      `blob_chunks`, checked by `ReadStorageBlobChunk()`, at ~3 s/GB.
    - Test: part 4 of `AttachmentEdges-Test.ps1` then expects the sender to
      log its copy as damaged and the re-sends to stop (today it only prints
      an INFO line with the count); its own `attachments` row goes to 0.
-4. **`synchronous = NORMAL`:** the last commits can be lost on a power loss
-   or OS crash (not on a killed process). Decide, or switch to `FULL`.
-   (`Design/StorageConcurrency.md`)
-5. **Drift between servers** when one topic/node pair is written to on two
-   servers: only partially resynced. Accepted while each pair has a single
-   writer; document that as the rule. (`Design/ReplicationIssues.md` #1)
+4. ~~**`synchronous = NORMAL`**~~: done, `[BakaShrot.Server] Synchronous`,
+   `FULL` by default (see "Done: Synchronous" above).
+5. ~~**Drift between servers**~~: ruled out by config, a node pushes to
+   one server (written in `schema.ini` and `Design/ReplicationIssues.md`
+   #1). Not an open item: nothing to do unless that rule has to go.
 6. **Gaps in a pair's ids aren't detected** on replication.
    (`Design/ReplicationIssues.md` #5)
-7. **No single test runner**, and fixed ports (12399, 12401-12414): every
+7. **No single test runner**, and fixed ports (12399, 12401-12416): every
    `Tests/*.ps1` and the two `.pb` tests are run by hand. Needed for CI.
    (`Design/Release.md`, "For CI/CD")
-8. **Is `DatabaseError()` per thread?** Messages could land in the wrong
-   thread's log or refusal; Windows queries no longer depend on it.
-   (`Design/StorageConcurrency.md`)
+8. ~~**Is `DatabaseError()` per thread?**~~ Yes, checked (2026-11-09):
+   two threads failing on their own connections 20,000 times each, never
+   once the other's message, with 5.73 and 6.40 (`/THREAD`).
+   `sqlite3_errmsg16()` on the connection gives the same messages, kept as
+   is. Linux untested (item 18).
 9. **Limits:** the sync state must fit in one packet (65536 topic/node
    pairs); `ReplicatingTopicIds` ranges are expanded to every id they cover.
    (`Design/ReplicationIssues.md` #7)
@@ -479,13 +729,19 @@ network**, not exposed to the internet. So:
 ### Client side
 
 10. **One connection per process** (the DLL's globals): a handle-based API
-   for several. No reconnect in `GetMessages --follow` / `follow()`, polling
-   rather than server-pushed subscriptions.
-11. **Breaking with protocols 3 and 4:** every client config needs
-    `ServerPublicKey`; older clients and servers can't connect (any
-    version difference refuses the connection). Fine while it's all
-    built from this repo, worth a line in the release notes of the first
-    real release.
+   for several. Polling rather than server-pushed subscriptions. Nothing
+   reconnects by itself, on purpose: the error codes tell the app when to
+   (see "Done: error codes" above).
+11. ~~**Breaking with protocols 3 to 6**~~: in the release notes now
+    (`VERSION.txt`, "Compatibility", written by `Release.ps1`): servers and
+    clients from the same release only, what old configs need.
+11b. ~~**A push whose answer was lost can be stored twice if retried.**~~
+    Accepted, the way it is: delivery is at least once. A server killed
+    between committing a push and answering it keeps it (`Restart-Test.ps1`
+    saw #26272 stored, #26271 the last answered), the client gets
+    ConnectionLost; pushing it again stores it twice. Documented in
+    `BakaShrot_ErrorCodes.pbi`, the DLL's header and `bakashrot.py`; a
+    client that minds checks the latest message before retrying.
 
 ### Security, low priority under the threat model
 
@@ -525,6 +781,17 @@ network**, not exposed to the internet. So:
   server, skipping on arrival what's past its age (2026-11-08).
 - Attachments, protocol 4: one per message, in 1 MB parts, replicated after
   their message, resumable; edge cases tested (2026-11-08).
+- Tools renamed `BakaShrot<Name>`, waiting for Enter when started from
+  Explorer; `Examples/SingleServer/` (2026-11-08).
+- Protocol 5: a client is a node, its default topic the server's
+  (`Node`, `DefaultTopic`); names-only topics, ids picked by the server,
+  nodes from their sections, `AcceptNodes = *` (2026-11-08).
+- `Synchronous`, `FULL` by default, measured (2026-11-09).
+- Schema v8: `browse` / `browse_messages` for database tools (2026-11-09).
+- Restart catch-up tested: kills mid-traffic and mid-catch-up, nothing
+  acknowledged lost (`Restart-Test.ps1`, 2026-11-09).
+- Protocol 6: error codes everywhere, at-least-once delivery accepted
+  (2026-11-09).
 
 ## To check against Review.md
 
@@ -556,6 +823,12 @@ network**, not exposed to the internet. So:
 - **Things only a raw client can do** (a wrong SHA-256, abandoned uploads):
   `Tests/AttachmentEdgeClient.pb`, over `Commons/Networking/Outbound.pbi`.
   Copy its `Exchange()` / `Refusal()` helpers for new protocol tests.
+- **Log scans in the tests skip "Refused a request" lines:** refusals are
+  expected, and their codes' names (`InvalidRequest`, `QueryFailed`) hold
+  the words the scans look for. PowerShell's `-match` ignores case.
+- **Traffic while a server is killed:** `Tests/restart_pusher.py` pushes as
+  fast as answers come and logs every acknowledged id, then the error's
+  code; `Restart-Test.ps1` shows how to read it back.
 - **Corrupting or seeding a database** from a test: Python's `sqlite3`,
   with the server stopped through its stop file (its WAL is checkpointed
   then), see `Retention-Test.ps1` (an old schema) and

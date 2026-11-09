@@ -14,7 +14,7 @@ import threading
 import time
 
 import bakashrot
-from bakashrot import BakaShrotError, Client, ConnectionLostError, RefusedError
+from bakashrot import AuthError, BakaShrotError, Client, ConnectionLostError, ErrorCode, RefusedError
 
 dll_path, kitchen_ini, lounge_ini = sys.argv[1:4]
 fails = 0
@@ -30,11 +30,12 @@ def check(what, ok, detail=""):
     print(f"{'PASS' if ok else 'FAIL'} {what}\n      -> {detail}", flush=True)
 
 
-def raises(function, error_type, contains=""):
+def raises(function, error_type, contains="", code=None):
     try:
         function()
     except error_type as error:
-        return contains in str(error), f"{type(error).__name__}: {error}"
+        got = getattr(error, "code", None)
+        return contains in str(error) and (code is None or got == code), f"{type(error).__name__} [{got!r}]: {error}"
     except Exception as error:  # noqa: BLE001 - reported as a failure
         return False, f"{type(error).__name__}: {error}"
     return False, "didn't raise"
@@ -111,6 +112,8 @@ with kitchen:
 
     rows = kitchen.query("SELECT is_json, COUNT(*) AS n FROM data GROUP BY is_json ORDER BY is_json")
     check("query(): is_json flags 3 non-JSON, 250 JSON", rows == [{"is_json": "0", "n": "3"}, {"is_json": "1", "n": "250"}], rows)
+    ok, detail = raises(lambda: kitchen.query("SELECT nope FROM data"), RefusedError, "nope", ErrorCode.QUERY_FAILED)
+    check("A query that fails: RefusedError, QUERY_FAILED", ok, detail)
 
     # --- Answers split at ~1 MB ----------------------------------------------
     big = "x" * (700 * 1024)
@@ -123,18 +126,18 @@ with kitchen:
           [len(m.data) for m in every])
 
     # --- Refusals ------------------------------------------------------------
-    ok, detail = raises(lambda: kitchen.get_messages("logs", "nobody"), RefusedError, "Unknown node 'nobody'")
-    check("Unknown node: RefusedError", ok, detail)
+    ok, detail = raises(lambda: kitchen.get_messages("logs", "nobody"), RefusedError, "Unknown node 'nobody'", ErrorCode.UNKNOWN_NAME)
+    check("Unknown node: RefusedError, UNKNOWN_NAME", ok, detail)
     check("Still connected after a refusal", kitchen.connected and kitchen.latest("logs", "kitchen").id == big_ids[-1])
     ok, detail = raises(lambda: kitchen.get_messages("logs", "kitchen", limit=0), ValueError)
     check("limit 0: ValueError, before asking", ok, detail)
     ok, detail = raises(lambda: kitchen.get_messages("logs", "kitchen", after=-1), ValueError)
     check("after -1: ValueError", ok, detail)
-    ok, detail = raises(lambda: kitchen.push("x", topic="nothing"), RefusedError, "Unknown topic")
-    check("Push to an unknown topic: RefusedError", ok, detail)
+    ok, detail = raises(lambda: kitchen.push("x", topic="nothing"), RefusedError, "Unknown topic", ErrorCode.UNKNOWN_NAME)
+    check("Push to an unknown topic: RefusedError, UNKNOWN_NAME", ok, detail)
     secret_id = kitchen.push({"s": 1}, topic="secret")
     check("Push to another allowed topic", secret_id == 1, secret_id)
-    ok, detail = raises(lambda: lounge.connect(), BakaShrotError, "one connection")
+    ok, detail = raises(lambda: lounge.connect(), BakaShrotError, "one connection", ErrorCode.ALREADY_CONNECTED)
     check("A second Client can't connect while one is", ok and not lounge.connected, detail)
 
     topics = kitchen.list_topics()
@@ -192,26 +195,34 @@ with kitchen:
     sizes = [(m.id, m.attachment_size, m.attachment_ready) for m in page]
     check("get_messages(): each message's attachment",
           sizes == [(blob_id, len(blob), True), (file_id, os.path.getsize(source), True), (plain_id, 0, False)], sizes)
-    ok, detail = raises(lambda: kitchen.get_attachment("secret", "kitchen", plain_id), RefusedError, "No attachment")
-    check("get_attachment() of a message without: RefusedError", ok, detail)
-    ok, detail = raises(lambda: kitchen.push("x", topic="secret", attachment=b""), BakaShrotError, "empty")
+    ok, detail = raises(lambda: kitchen.get_attachment("secret", "kitchen", plain_id), RefusedError, "No attachment", ErrorCode.NOT_FOUND)
+    check("get_attachment() of a message without: RefusedError, NOT_FOUND", ok, detail)
+    ok, detail = raises(lambda: kitchen.push("x", topic="secret", attachment=b""), BakaShrotError, "empty", ErrorCode.INVALID_ARGUMENT)
     check("An empty attachment: refused before sending", ok, detail)
-    ok, detail = raises(lambda: kitchen.push("x", topic="secret", attachment=os.path.join(folder, "missing.bin")), BakaShrotError, "no such file")
+    ok, detail = raises(lambda: kitchen.push("x", topic="secret", attachment=os.path.join(folder, "missing.bin")), BakaShrotError, "no such file", ErrorCode.FILE_ERROR)
     check("A missing file: refused before sending", ok, detail)
     check("Still connected", kitchen.connected)
 
 check("close(): disconnected", not kitchen.connected)
-ok, detail = raises(lambda: kitchen.push("x"), ConnectionLostError)
-check("A request once closed: ConnectionLostError", ok, detail)
+ok, detail = raises(lambda: kitchen.push("x"), ConnectionLostError, code=ErrorCode.NOT_CONNECTED)
+check("A request once closed: ConnectionLostError, NOT_CONNECTED", ok, detail)
+
+# --- Connecting: unreachable, rejected ---------------------------------------
+nowhere = Client(kitchen.private_key, kitchen.public_key, kitchen.server_public_key, kitchen.node, "127.0.0.1", 1, dll_path)
+ok, detail = raises(nowhere.connect, ConnectionLostError, code=ErrorCode.CONNECT_FAILED)
+check("Nothing listening: ConnectionLostError, CONNECT_FAILED", ok, detail)
+stranger = Client(kitchen.private_key, kitchen.public_key, kitchen.server_public_key, "nobody", kitchen.host, kitchen.port, dll_path)
+ok, detail = raises(stranger.connect, AuthError, code=ErrorCode.AUTH_REJECTED)
+check("A node the server doesn't give this key: AuthError, AUTH_REJECTED", ok, detail)
 
 with lounge:
     page = lounge.get_messages("logs", "kitchen", after=245, limit=3)
     check("Another identity once the first closed: reads logs", [m.id for m in page] == [246, 247, 248] and page.more,
           f"{[m.id for m in page]}, more={page.more}")
-    ok, detail = raises(lambda: lounge.get_messages("secret", "kitchen"), RefusedError, "Not allowed to read topic 'secret'")
-    check("A topic not in its ReadTopics: RefusedError", ok, detail)
-    ok, detail = raises(lambda: lounge.query("SELECT 1"), RefusedError, "Not allowed to query")
-    check("Not allowed to query: RefusedError", ok, detail)
+    ok, detail = raises(lambda: lounge.get_messages("secret", "kitchen"), RefusedError, "Not allowed to read topic 'secret'", ErrorCode.NOT_ALLOWED)
+    check("A topic not in its ReadTopics: RefusedError, NOT_ALLOWED", ok, detail)
+    ok, detail = raises(lambda: lounge.query("SELECT 1"), RefusedError, "Not allowed to query", ErrorCode.NOT_ALLOWED)
+    check("Not allowed to query: RefusedError, NOT_ALLOWED", ok, detail)
 
 print()
 print("All checks passed" if fails == 0 else f"{fails} check(s) failed")

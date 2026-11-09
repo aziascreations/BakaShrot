@@ -51,7 +51,6 @@ Procedure.i ConnectIni(*Client.EdgeClient, IniPath.s)
 	Ok = DecodeKeyFromString(ReadPreferenceString("PrivateKey", ""), @*Client\PrivateKey[0], #BakaShrot_Ed25519_PrivateKeySize)
 	Ok = Bool(Ok And DecodeKeyFromString(ReadPreferenceString("ServerPublicKey", ""), @*Client\ServerPublicKey[0], #BakaShrot_Ed25519_PublicKeySize))
 	*Client\Identity\PublicKey  = ReadPreferenceString("PublicKey", "")
-	*Client\Identity\Topic      = ReadPreferenceString("Topic", "")
 	*Client\Identity\Node       = ReadPreferenceString("Node", "")
 	*Client\Identity\PrivateKey = @*Client\PrivateKey[0]
 	Host = ReadPreferenceString("ServerHost", "127.0.0.1")

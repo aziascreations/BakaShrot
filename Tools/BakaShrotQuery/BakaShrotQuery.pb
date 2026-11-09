@@ -1,7 +1,7 @@
 ; ============================================================================
-; BakaShrot Query
+; BakaShrotQuery
 ;
-; Usage: Query <Sql|@SqlFile> [ClientIni]
+; Usage: BakaShrotQuery <Sql|@SqlFile> [ClientIni]
 ;   Sql         A single read-only SELECT (or WITH ... SELECT), or @ followed
 ;               by a file holding it. Command-line arguments lose their
 ;               double quotes, use single quotes or @SqlFile.
@@ -24,15 +24,15 @@ Define Sql.s, IniPath.s, FileText.String
 OpenConsole()
 
 If CountProgramParameters() < 1
-	PrintN("Usage: Query <Sql|@SqlFile> [ClientIni]")
+	PrintN("Usage: BakaShrotQuery <Sql|@SqlFile> [ClientIni]")
 	PrintN("  Command-line arguments lose their double quotes, use single quotes or @SqlFile.")
-	End 1
+	ToolConsole_End(1)
 EndIf
 
 Sql = ProgramParameter(0)
 If Left(Sql, 1) = "@"
 	If Not ToolClient_ReadTextFile(Mid(Sql, 2), @FileText)
-		End 1
+		ToolConsole_End(1)
 	EndIf
 	Sql = FileText\s
 EndIf
@@ -43,16 +43,16 @@ If CountProgramParameters() > 1
 EndIf
 
 If Not ToolClient_Connect(IniPath)
-	End 1
+	ToolConsole_End(1)
 EndIf
 
 If Not BakaShrot_Query(Sql)
 	ToolClient_PrintFailure()
 	ToolClient_Close()
-	End 1
+	ToolConsole_End(1)
 EndIf
 
 PrintN(BakaShrot_GetQueryResultString())
 
 ToolClient_Close()
-End 0
+ToolConsole_End(0)

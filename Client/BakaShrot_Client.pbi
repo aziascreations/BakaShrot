@@ -4,14 +4,16 @@
 ; Lets an app connect to a BakaShrot server, one step at a time:
 ;   1. BakaShrot_SetPrivateKey(), BakaShrot_SetPublicKey(),
 ;      BakaShrot_SetServerPublicKey() (the server's, from its log or its
-;      KeyGen output), BakaShrot_SetTopic() and BakaShrot_SetNode() (names
-;      or ids), or BakaShrot_SetTopicId() and BakaShrot_SetNodeId()
+;      BakaShrotGenerateKeyPairs output), and BakaShrot_SetNode() (a name
+;      or an id) or BakaShrot_SetNodeId(): the node it writes as, which the
+;      server must allow for its key. Its default topic is the server's to
+;      say (DefaultTopic in its client section).
 ;   2. BakaShrot_Connect(Host, Port), connects and authenticates, see the
 ;      handshake in Commons/Networking/Connections.pbi: only to the server
 ;      holding the private key of BakaShrot_SetServerPublicKey()'s, and
 ;      everything is encrypted
 ;   3. Requests, once connected:
-;        BakaShrot_PushMessage(JsonData), into the client's own topic, or
+;        BakaShrot_PushMessage(JsonData), into the client's default topic, or
 ;        BakaShrot_PushMessageTo(Topic, JsonData), returns the new
 ;          message's id
 ;        BakaShrot_GetLatestMessageOf(Topic, Node), or
@@ -44,6 +46,15 @@
 ;      If the server refuses a request, the connection stays open and
 ;      BakaShrot_GetRefusalReason() tells why.
 ;   4. BakaShrot_IsConnected(), BakaShrot_Disconnect()
+;
+; After a failed call, BakaShrot_GetLastError() tells what failed: a
+; refusal's code (1-99, the connection still open), or the client's own
+; (100+: not connected, the connection lost, a bad argument...), see
+; BakaShrot_ErrorCodes.pbi for each and what to do about it. 0 after a call
+; that succeeded. Nothing reconnects by itself: on NotConnected,
+; ConnectionLost or ProtocolError, call BakaShrot_Connect() again.
+; A push whose answer was lost (ConnectionLost) may have been stored all
+; the same: pushed again, it's stored twice. Delivery is at least once.
 ;
 ; Topics and nodes are "refs": a name, or an id in digits, see
 ; Commons/Networking/Names.pbi. Ids are the server's own, each server can
@@ -88,7 +99,6 @@ Global BakaShrot_HasPrivateKey.i = #False
 Global BakaShrot_PublicKey.s     = ""
 Global BakaShrot_ServerPublicKey.BakaShrot_ClientServerKey
 Global BakaShrot_HasServerPublicKey.i = #False
-Global BakaShrot_Topic.s         = ""
 Global BakaShrot_Node.s          = ""
 
 ; The connection, see Commons/Networking/Outbound.pbi.
@@ -115,16 +125,42 @@ Global BakaShrot_NamesList.s      = ""
 Global NewList BakaShrot_Messages.BakaShrot_MessagesEntry()
 Global BakaShrot_MessagesMore.i   = #False
 
+; Why the last call failed, a code of BakaShrot_ErrorCodes.pbi, 0 if it
+; succeeded. See BakaShrot_GetLastError().
+Global BakaShrot_LastError.l      = #BakaShrot_Error_None
+
+
+; Sets BakaShrot_LastError to Code and returns Value, for the failures:
+; ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False).
+Procedure.q BakaShrot_Fail(Code.l, Value.q)
+	BakaShrot_LastError = Code
+	ProcedureReturn Value
+EndProcedure
+
+; At the start of every call that can fail: no error, no refusal yet.
+Procedure BakaShrot_ResetError()
+	BakaShrot_LastError     = #BakaShrot_Error_None
+	BakaShrot_RefusalReason = ""
+EndProcedure
+
+; The code of what made the last call fail, 0 if it succeeded, see
+; BakaShrot_ErrorCodes.pbi. Only the calls that can fail set it (not the
+; getters of a message).
+ProcedureCDLL.l BakaShrot_GetLastError()
+	ProcedureReturn BakaShrot_LastError
+EndProcedure
+
 
 ; Sets the Ed25519 private key (Base64) used to answer the server's challenge.
 ; Must be done before connecting.
 Procedure.i BakaShrot_SetPrivateKeyString(PrivateKey.s)
+	BakaShrot_ResetError()
 	If BakaShrot_Outbound\ConnectionId
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_AlreadyConnected, #False)
 	EndIf
 
 	If Not DecodeKeyFromString(PrivateKey, @BakaShrot_PrivateKey\Bytes[0], #BakaShrot_Ed25519_PrivateKeySize)
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 
 	BakaShrot_HasPrivateKey = #True
@@ -133,14 +169,14 @@ EndProcedure
 
 ProcedureCDLL.i BakaShrot_SetPrivateKeyA(*PrivateKey)
 	If Not *PrivateKey
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_SetPrivateKeyString(PeekS(*PrivateKey, -1, #PB_UTF8))
 EndProcedure
 
 ProcedureCDLL.i BakaShrot_SetPrivateKeyW(*PrivateKey)
 	If Not *PrivateKey
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_SetPrivateKeyString(PeekS(*PrivateKey, -1, #PB_Unicode))
 EndProcedure
@@ -149,12 +185,13 @@ EndProcedure
 ; Sets the Ed25519 public key (Base64) sent to the server in the Hello.
 ; Must be done before connecting.
 Procedure.i BakaShrot_SetPublicKeyString(PublicKey.s)
+	BakaShrot_ResetError()
 	If BakaShrot_Outbound\ConnectionId
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_AlreadyConnected, #False)
 	EndIf
 
 	If PublicKey = ""
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 
 	BakaShrot_PublicKey = PublicKey
@@ -163,14 +200,14 @@ EndProcedure
 
 ProcedureCDLL.i BakaShrot_SetPublicKeyA(*PublicKey)
 	If Not *PublicKey
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_SetPublicKeyString(PeekS(*PublicKey, -1, #PB_UTF8))
 EndProcedure
 
 ProcedureCDLL.i BakaShrot_SetPublicKeyW(*PublicKey)
 	If Not *PublicKey
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_SetPublicKeyString(PeekS(*PublicKey, -1, #PB_Unicode))
 EndProcedure
@@ -180,12 +217,13 @@ EndProcedure
 ; and the server must prove it holds the matching private key.
 ; Must be done before connecting.
 Procedure.i BakaShrot_SetServerPublicKeyString(PublicKey.s)
+	BakaShrot_ResetError()
 	If BakaShrot_Outbound\ConnectionId
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_AlreadyConnected, #False)
 	EndIf
 
 	If Not DecodeKeyFromString(PublicKey, @BakaShrot_ServerPublicKey\Bytes[0], #BakaShrot_Ed25519_PublicKeySize)
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 
 	BakaShrot_HasServerPublicKey = #True
@@ -194,57 +232,28 @@ EndProcedure
 
 ProcedureCDLL.i BakaShrot_SetServerPublicKeyA(*PublicKey)
 	If Not *PublicKey
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_SetServerPublicKeyString(PeekS(*PublicKey, -1, #PB_UTF8))
 EndProcedure
 
 ProcedureCDLL.i BakaShrot_SetServerPublicKeyW(*PublicKey)
 	If Not *PublicKey
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_SetServerPublicKeyString(PeekS(*PublicKey, -1, #PB_Unicode))
-EndProcedure
-
-
-; Sets the topic the client identifies as, a name or an id in digits.
-; Must be done before connecting.
-Procedure.i BakaShrot_SetTopicString(Topic.s)
-	If BakaShrot_Outbound\ConnectionId Or Not BakaShrot_IsValidRef(Topic)
-		ProcedureReturn #False
-	EndIf
-	BakaShrot_Topic = Topic
-	ProcedureReturn #True
-EndProcedure
-
-ProcedureCDLL.i BakaShrot_SetTopicA(*Topic)
-	If Not *Topic
-		ProcedureReturn #False
-	EndIf
-	ProcedureReturn BakaShrot_SetTopicString(PeekS(*Topic, -1, #PB_UTF8))
-EndProcedure
-
-ProcedureCDLL.i BakaShrot_SetTopicW(*Topic)
-	If Not *Topic
-		ProcedureReturn #False
-	EndIf
-	ProcedureReturn BakaShrot_SetTopicString(PeekS(*Topic, -1, #PB_Unicode))
-EndProcedure
-
-; Same, by id, 0-65535.
-ProcedureCDLL.i BakaShrot_SetTopicId(TopicId.l)
-	If TopicId < 0 Or TopicId > 65535
-		ProcedureReturn #False
-	EndIf
-	ProcedureReturn BakaShrot_SetTopicString(Str(TopicId))
 EndProcedure
 
 
 ; Sets the node the client identifies as, a name or an id in digits.
 ; Must be done before connecting.
 Procedure.i BakaShrot_SetNodeString(Node.s)
-	If BakaShrot_Outbound\ConnectionId Or Not BakaShrot_IsValidRef(Node)
-		ProcedureReturn #False
+	BakaShrot_ResetError()
+	If BakaShrot_Outbound\ConnectionId
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_AlreadyConnected, #False)
+	EndIf
+	If Not BakaShrot_IsValidRef(Node)
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	BakaShrot_Node = Node
 	ProcedureReturn #True
@@ -252,14 +261,14 @@ EndProcedure
 
 ProcedureCDLL.i BakaShrot_SetNodeA(*Node)
 	If Not *Node
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_SetNodeString(PeekS(*Node, -1, #PB_UTF8))
 EndProcedure
 
 ProcedureCDLL.i BakaShrot_SetNodeW(*Node)
 	If Not *Node
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_SetNodeString(PeekS(*Node, -1, #PB_Unicode))
 EndProcedure
@@ -267,7 +276,7 @@ EndProcedure
 ; Same, by id, 0-65535.
 ProcedureCDLL.i BakaShrot_SetNodeId(NodeId.l)
 	If NodeId < 0 Or NodeId > 65535
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_SetNodeString(Str(NodeId))
 EndProcedure
@@ -279,34 +288,36 @@ EndProcedure
 ; handshake is out of order or unexpected, in which case the connection is
 ; closed.
 Procedure.i BakaShrot_ConnectString(Host.s, Port.l)
-	Protected Identity.BakaShrot_OutboundIdentity
+	Protected Identity.BakaShrot_OutboundIdentity, Connected.i
 
+	BakaShrot_ResetError()
 	If BakaShrot_Outbound\ConnectionId
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_AlreadyConnected, #False)
 	EndIf
 
-	If Not BakaShrot_HasPrivateKey Or BakaShrot_PublicKey = "" Or Not BakaShrot_HasServerPublicKey Or BakaShrot_Topic = "" Or BakaShrot_Node = ""
-		ProcedureReturn #False
+	If Not BakaShrot_HasPrivateKey Or BakaShrot_PublicKey = "" Or Not BakaShrot_HasServerPublicKey Or BakaShrot_Node = ""
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 
-	Identity\Topic      = BakaShrot_Topic
 	Identity\Node       = BakaShrot_Node
 	Identity\PublicKey  = BakaShrot_PublicKey
 	Identity\PrivateKey = @BakaShrot_PrivateKey\Bytes[0]
 
-	ProcedureReturn BakaShrot_Outbound_Connect(@BakaShrot_Outbound, Host, Port, @Identity, @BakaShrot_ServerPublicKey\Bytes[0])
+	Connected = BakaShrot_Outbound_Connect(@BakaShrot_Outbound, Host, Port, @Identity, @BakaShrot_ServerPublicKey\Bytes[0])
+	BakaShrot_LastError = BakaShrot_Outbound\LastError
+	ProcedureReturn Connected
 EndProcedure
 
 ProcedureCDLL.i BakaShrot_ConnectA(*Host, Port.l)
 	If Not *Host
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_ConnectString(PeekS(*Host, -1, #PB_UTF8), Port)
 EndProcedure
 
 ProcedureCDLL.i BakaShrot_ConnectW(*Host, Port.l)
 	If Not *Host
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_ConnectString(PeekS(*Host, -1, #PB_Unicode), Port)
 EndProcedure
@@ -332,8 +343,12 @@ EndProcedure
 
 ; --- Requests ----------------------------------------------------------------
 
-; Closes the connection after something went wrong in a request.
+; Closes the connection after something went wrong in a request: an
+; unexpected or malformed answer, unless the caller said otherwise first.
 Procedure BakaShrot_AbortConnection()
+	If BakaShrot_LastError = #BakaShrot_Error_None
+		BakaShrot_LastError = #BakaShrot_Error_ProtocolError
+	EndIf
 	BakaShrot_Outbound_Close(@BakaShrot_Outbound, #BakaShrot_ConnectionStatus_Aborted)
 EndProcedure
 
@@ -346,12 +361,14 @@ Procedure.i BakaShrot_SendRequest(*Request, RequestSize.i, *OutSize.Integer)
 	Protected *Answer
 
 	If Not BakaShrot_Outbound_Send(@BakaShrot_Outbound, *Request, RequestSize)
+		BakaShrot_LastError = #BakaShrot_Error_ConnectionLost
 		BakaShrot_AbortConnection()
 		ProcedureReturn 0
 	EndIf
 
 	*Answer = BakaShrot_Outbound_WaitPacket(@BakaShrot_Outbound, *OutSize, #BakaShrot_Outbound_Timeout)
 	If Not *Answer
+		BakaShrot_LastError = #BakaShrot_Error_ConnectionLost
 		BakaShrot_AbortConnection()
 		ProcedureReturn 0
 	EndIf
@@ -376,6 +393,7 @@ Procedure.i BakaShrot_ReadRefusal(*Answer, AnswerSize.i)
 	EndIf
 
 	BakaShrot_RefusalReason = *Refused\Reason
+	BakaShrot_LastError     = *Refused\Code
 	FreeStructure(*Refused)
 	ProcedureReturn #True
 EndProcedure
@@ -402,8 +420,8 @@ EndProcedure
 
 
 ; Pushes a message (JSON or anything else, the server flags which in its
-; is_json column) into Topic (a name or an id, "" for the client's own
-; topic), the server stores it under that topic and this client's node, with
+; is_json column) into Topic (a name or an id, "" for the client's default
+; topic, its server config's DefaultTopic), the server stores it under that topic and this client's node, with
 ; the next message id. The client's PushTopics on the server must allow it.
 ; UploadId: its attachment, uploaded with BakaShrot_Upload(), 0 for none.
 ; Returns the new message's id (1 or more), or -1 on failure.
@@ -415,20 +433,20 @@ Procedure.q BakaShrot_PushMessageToString(Topic.s, JsonData.s, UploadId.q = 0)
 	Protected *Request, RequestSize.Integer, *Answer, AnswerSize.Integer
 	Protected *View.MsgPackData, IsRefusal.i, MessageId.q
 
-	BakaShrot_RefusalReason = ""
+	BakaShrot_ResetError()
 
 	If Not BakaShrot_Outbound\ConnectionId Or BakaShrot_Outbound\Metadata\Status <> #BakaShrot_ConnectionStatus_Authenticated
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_NotConnected, -1)
 	EndIf
 
 	If Topic <> "" And Not BakaShrot_IsValidRef(Topic)
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 
 	; Refused here rather than sent for nothing, same reason as the server's.
 	If StringByteLength(JsonData, #PB_UTF8) > #BakaShrot_MaxMessageSize
 		BakaShrot_RefusalReason = "The message is too big: " + Str(StringByteLength(JsonData, #PB_UTF8)) + " bytes, at most " + Str(#BakaShrot_MaxMessageSize)
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 
 	Push\Topic    = Topic
@@ -436,7 +454,7 @@ Procedure.q BakaShrot_PushMessageToString(Topic.s, JsonData.s, UploadId.q = 0)
 	Push\UploadId = UploadId
 	*Request = BakaShrot_PushMessagePacket_Encode(@Push, @RequestSize)
 	If Not *Request
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_Internal, -1)
 	EndIf
 	*Answer = BakaShrot_SendRequest(*Request, RequestSize\i, @AnswerSize)
 	FreeMemory(*Request)
@@ -486,7 +504,7 @@ ProcedureCDLL.q BakaShrot_PushMessageW(*JsonData)
 	ProcedureReturn BakaShrot_PushMessageToString("", PeekS(*JsonData, -1, #PB_Unicode))
 EndProcedure
 
-; A null *Topic is the client's own topic, like "", and a null *JsonData an
+; A null *Topic is the client's default topic, like "", and a null *JsonData an
 ; empty message: PureBasic passes empty strings to a DLL as null pointers.
 ProcedureCDLL.q BakaShrot_PushMessageToA(*Topic, *JsonData)
 	Protected Topic.s, JsonData.s
@@ -524,7 +542,7 @@ Procedure.i BakaShrot_GetLatestMessageOfString(Topic.s, Node.s)
 	Protected *Packet, PacketSize.Integer, *Answer, AnswerSize.Integer
 	Protected *View.MsgPackData, IsRefusal.i, IsExpected.i
 
-	BakaShrot_RefusalReason = ""
+	BakaShrot_ResetError()
 	BakaShrot_MessageId     = 0
 	BakaShrot_MessagePushedAt = 0
 	BakaShrot_MessageAttachmentSize  = 0
@@ -538,18 +556,18 @@ Procedure.i BakaShrot_GetLatestMessageOfString(Topic.s, Node.s)
 	BakaShrot_MessagesMore   = #False
 
 	If Not BakaShrot_Outbound\ConnectionId Or BakaShrot_Outbound\Metadata\Status <> #BakaShrot_ConnectionStatus_Authenticated
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_NotConnected, #False)
 	EndIf
 
 	If Not BakaShrot_IsValidRef(Topic) Or Not BakaShrot_IsValidRef(Node)
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 
 	Request\Topic = Topic
 	Request\Node  = Node
 	*Packet = BakaShrot_GetLatestMessagePacket_Encode(@Request, @PacketSize)
 	If Not *Packet
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_Internal, #False)
 	EndIf
 	*Answer = BakaShrot_SendRequest(*Packet, PacketSize\i, @AnswerSize)
 	FreeMemory(*Packet)
@@ -609,14 +627,14 @@ EndProcedure
 
 ProcedureCDLL.i BakaShrot_GetLatestMessageOfA(*Topic, *Node)
 	If Not *Topic Or Not *Node
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_GetLatestMessageOfString(PeekS(*Topic, -1, #PB_UTF8), PeekS(*Node, -1, #PB_UTF8))
 EndProcedure
 
 ProcedureCDLL.i BakaShrot_GetLatestMessageOfW(*Topic, *Node)
 	If Not *Topic Or Not *Node
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_GetLatestMessageOfString(PeekS(*Topic, -1, #PB_Unicode), PeekS(*Node, -1, #PB_Unicode))
 EndProcedure
@@ -624,7 +642,7 @@ EndProcedure
 ; Same, by ids, 0-65535.
 ProcedureCDLL.i BakaShrot_GetLatestMessage(TopicId.l, NodeId.l)
 	If TopicId < 0 Or TopicId > 65535 Or NodeId < 0 Or NodeId > 65535
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_GetLatestMessageOfString(Str(TopicId), Str(NodeId))
 EndProcedure
@@ -649,7 +667,7 @@ Procedure.l BakaShrot_GetMessagesString(Topic.s, Node.s, AfterMessageId.q, Limit
 	Protected *Packet, PacketSize.Integer, *AnswerPacket, AnswerSize.Integer
 	Protected *View.MsgPackData, IsRefusal.i, IsExpected.i, Count.l
 
-	BakaShrot_RefusalReason  = ""
+	BakaShrot_ResetError()
 	BakaShrot_MessageId      = 0
 	BakaShrot_MessagePushedAt = 0
 	BakaShrot_MessageAttachmentSize  = 0
@@ -663,14 +681,14 @@ Procedure.l BakaShrot_GetMessagesString(Topic.s, Node.s, AfterMessageId.q, Limit
 	BakaShrot_MessagesMore   = #False
 
 	If Not BakaShrot_Outbound\ConnectionId Or BakaShrot_Outbound\Metadata\Status <> #BakaShrot_ConnectionStatus_Authenticated
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_NotConnected, -1)
 	EndIf
 
 	If Not BakaShrot_IsValidRef(Topic) Or Not BakaShrot_IsValidRef(Node)
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	If AfterMessageId < 0 Or Limit < 1 Or Limit > #BakaShrot_MaxGetMessages
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 
 	Request\Topic          = Topic
@@ -679,7 +697,7 @@ Procedure.l BakaShrot_GetMessagesString(Topic.s, Node.s, AfterMessageId.q, Limit
 	Request\Limit          = Limit
 	*Packet = BakaShrot_GetMessagesPacket_Encode(@Request, @PacketSize)
 	If Not *Packet
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_Internal, -1)
 	EndIf
 	*AnswerPacket = BakaShrot_SendRequest(*Packet, PacketSize\i, @AnswerSize)
 	FreeMemory(*Packet)
@@ -746,14 +764,14 @@ EndProcedure
 
 ProcedureCDLL.l BakaShrot_GetMessagesA(*Topic, *Node, AfterMessageId.q, Limit.l)
 	If Not *Topic Or Not *Node
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	ProcedureReturn BakaShrot_GetMessagesString(PeekS(*Topic, -1, #PB_UTF8), PeekS(*Node, -1, #PB_UTF8), AfterMessageId, Limit)
 EndProcedure
 
 ProcedureCDLL.l BakaShrot_GetMessagesW(*Topic, *Node, AfterMessageId.q, Limit.l)
 	If Not *Topic Or Not *Node
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	ProcedureReturn BakaShrot_GetMessagesString(PeekS(*Topic, -1, #PB_Unicode), PeekS(*Node, -1, #PB_Unicode), AfterMessageId, Limit)
 EndProcedure
@@ -768,8 +786,9 @@ EndProcedure
 ; last answer, for BakaShrot_GetMessageId() and BakaShrot_GetMessageData().
 ; Returns #False if there's none at Index, the selection doesn't change then.
 ProcedureCDLL.i BakaShrot_SelectMessage(Index.l)
+	BakaShrot_LastError = #BakaShrot_Error_None
 	If Index < 0 Or Index >= ListSize(BakaShrot_Messages())
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	SelectElement(BakaShrot_Messages(), Index)
 	BakaShrot_MessageId   = BakaShrot_Messages()\MessageId
@@ -837,22 +856,22 @@ Procedure.l BakaShrot_ResolveString(Kind.i, Ref.s)
 	Protected *Packet, PacketSize.Integer, *Answer, AnswerSize.Integer
 	Protected *View.MsgPackData, IsRefusal.i, Id.l
 
-	BakaShrot_RefusalReason = ""
+	BakaShrot_ResetError()
 	BakaShrot_ResolvedName  = ""
 
 	If Not BakaShrot_Outbound\ConnectionId Or BakaShrot_Outbound\Metadata\Status <> #BakaShrot_ConnectionStatus_Authenticated
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_NotConnected, -1)
 	EndIf
 
 	If Not BakaShrot_IsValidRef(Ref)
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 
 	Request\Kind = Kind
 	Request\Ref  = Ref
 	*Packet = BakaShrot_ResolveNamePacket_Encode(@Request, @PacketSize)
 	If Not *Packet
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_Internal, -1)
 	EndIf
 	*Answer = BakaShrot_SendRequest(*Packet, PacketSize\i, @AnswerSize)
 	FreeMemory(*Packet)
@@ -896,28 +915,28 @@ EndProcedure
 
 ProcedureCDLL.l BakaShrot_ResolveTopicA(*Ref)
 	If Not *Ref
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	ProcedureReturn BakaShrot_ResolveString(#BakaShrot_NameKind_Topic, PeekS(*Ref, -1, #PB_UTF8))
 EndProcedure
 
 ProcedureCDLL.l BakaShrot_ResolveTopicW(*Ref)
 	If Not *Ref
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	ProcedureReturn BakaShrot_ResolveString(#BakaShrot_NameKind_Topic, PeekS(*Ref, -1, #PB_Unicode))
 EndProcedure
 
 ProcedureCDLL.l BakaShrot_ResolveNodeA(*Ref)
 	If Not *Ref
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	ProcedureReturn BakaShrot_ResolveString(#BakaShrot_NameKind_Node, PeekS(*Ref, -1, #PB_UTF8))
 EndProcedure
 
 ProcedureCDLL.l BakaShrot_ResolveNodeW(*Ref)
 	If Not *Ref
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	ProcedureReturn BakaShrot_ResolveString(#BakaShrot_NameKind_Node, PeekS(*Ref, -1, #PB_Unicode))
 EndProcedure
@@ -937,17 +956,17 @@ Procedure.l BakaShrot_ListNamesOf(Kind.i)
 	Protected *View.MsgPackData, IsRefusal.i, Count.l
 	Protected Json.i, Root.i, Items.i, Item.i
 
-	BakaShrot_RefusalReason = ""
+	BakaShrot_ResetError()
 	BakaShrot_NamesList     = ""
 
 	If Not BakaShrot_Outbound\ConnectionId Or BakaShrot_Outbound\Metadata\Status <> #BakaShrot_ConnectionStatus_Authenticated
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_NotConnected, -1)
 	EndIf
 
 	Request\Kind = Kind
 	*Packet = BakaShrot_ListNamesPacket_Encode(@Request, @PacketSize)
 	If Not *Packet
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_Internal, -1)
 	EndIf
 	*Answer = BakaShrot_SendRequest(*Packet, PacketSize\i, @AnswerSize)
 	FreeMemory(*Packet)
@@ -982,7 +1001,7 @@ Procedure.l BakaShrot_ListNamesOf(Kind.i)
 	Json = CreateJSON(#PB_Any)
 	If Not Json
 		FreeStructure(*List)
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_Internal, -1)
 	EndIf
 	Root = SetJSONObject(JSONValue(Json))
 	If Kind = #BakaShrot_NameKind_Topic
@@ -1068,17 +1087,17 @@ Procedure.i BakaShrot_QueryString(Sql.s)
 	Protected *Packet, PacketSize.Integer, *Answer, AnswerSize.Integer
 	Protected *View.MsgPackData, IsRefusal.i
 
-	BakaShrot_RefusalReason = ""
+	BakaShrot_ResetError()
 	BakaShrot_QueryResult   = ""
 
 	If Not BakaShrot_Outbound\ConnectionId Or BakaShrot_Outbound\Metadata\Status <> #BakaShrot_ConnectionStatus_Authenticated
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_NotConnected, #False)
 	EndIf
 
 	Request\Sql = Sql
 	*Packet = BakaShrot_QueryRequestPacket_Encode(@Request, @PacketSize)
 	If Not *Packet
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_Internal, #False)
 	EndIf
 	*Answer = BakaShrot_SendRequest(*Packet, PacketSize\i, @AnswerSize)
 	FreeMemory(*Packet)
@@ -1114,14 +1133,14 @@ EndProcedure
 
 ProcedureCDLL.i BakaShrot_QueryA(*Sql)
 	If Not *Sql
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_QueryString(PeekS(*Sql, -1, #PB_UTF8))
 EndProcedure
 
 ProcedureCDLL.i BakaShrot_QueryW(*Sql)
 	If Not *Sql
-		ProcedureReturn #False
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, #False)
 	EndIf
 	ProcedureReturn BakaShrot_QueryString(PeekS(*Sql, -1, #PB_Unicode))
 EndProcedure
@@ -1180,7 +1199,7 @@ EndProcedure
 
 ; Uploads Size bytes, read from FileId (from its start) or else from *Memory,
 ; as the attachment of a message about to be pushed to Topic ("" for the
-; client's own). Its SHA-256 is computed first, so the file is read twice.
+; client's default one). Its SHA-256 is computed first, so the file is read twice.
 ; Returns the upload id for BakaShrot_PushMessageToString(), 0 on failure.
 Procedure.q BakaShrot_Upload(Topic.s, FileId.i, *Memory, Size.q)
 	Protected Start.BakaShrot_UploadStart, *Started.BakaShrot_UploadStarted
@@ -1188,26 +1207,26 @@ Procedure.q BakaShrot_Upload(Topic.s, FileId.i, *Memory, Size.q)
 	Protected Hash.BakaShrot_Sha256, *Buffer, Index.q, Count.q, Bytes.i, UploadId.q, Received.q, Complete.i
 	Protected *Request, RequestSize.Integer, *Answer, AnswerSize.Integer, *View.MsgPackData
 
-	BakaShrot_RefusalReason = ""
+	BakaShrot_ResetError()
 	If Not BakaShrot_Outbound\ConnectionId Or BakaShrot_Outbound\Metadata\Status <> #BakaShrot_ConnectionStatus_Authenticated
-		ProcedureReturn 0
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_NotConnected, 0)
 	EndIf
 	If Topic <> "" And Not BakaShrot_IsValidRef(Topic)
-		ProcedureReturn 0
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, 0)
 	EndIf
 	If Size < 1
 		BakaShrot_RefusalReason = "The attachment is empty"
-		ProcedureReturn 0
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, 0)
 	EndIf
 	If Size > #BakaShrot_MaxAttachmentSize
 		BakaShrot_RefusalReason = "The attachment is too big: " + Str(Size) + " bytes, at most " + Str(#BakaShrot_MaxAttachmentSize)
-		ProcedureReturn 0
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, 0)
 	EndIf
 
 	*Buffer = AllocateMemory(#BakaShrot_AttachmentChunkSize, #PB_Memory_NoClear)
 	If Not *Buffer Or Not BakaShrot_Sha256_Start(@Hash)
 		If *Buffer : FreeMemory(*Buffer) : EndIf
-		ProcedureReturn 0
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_Internal, 0)
 	EndIf
 	Count = BakaShrot_AttachmentChunkCount(Size)
 
@@ -1219,7 +1238,7 @@ Procedure.q BakaShrot_Upload(Topic.s, FileId.i, *Memory, Size.q)
 			If ReadData(FileId, *Buffer, Bytes) <> Bytes
 				BakaShrot_RefusalReason = "The file couldn't be read"
 				FreeMemory(*Buffer)
-				ProcedureReturn 0
+				ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_FileError, 0)
 			EndIf
 			BakaShrot_Sha256_Add(@Hash, *Buffer, Bytes)
 		Next
@@ -1235,7 +1254,7 @@ Procedure.q BakaShrot_Upload(Topic.s, FileId.i, *Memory, Size.q)
 	*Request = BakaShrot_UploadStartPacket_Encode(@Start, @RequestSize)
 	If Not *Request
 		FreeMemory(*Buffer)
-		ProcedureReturn 0
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_Internal, 0)
 	EndIf
 	*Answer = BakaShrot_RequestExpecting(*Request, RequestSize\i, #BakaShrot_PacketType_UploadStarted, @AnswerSize)
 	FreeMemory(*Request)
@@ -1267,7 +1286,7 @@ Procedure.q BakaShrot_Upload(Topic.s, FileId.i, *Memory, Size.q)
 			If ReadData(FileId, *Buffer, Bytes) <> Bytes
 				BakaShrot_RefusalReason = "The file couldn't be read"
 				FreeMemory(*Buffer)
-				ProcedureReturn 0
+				ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_FileError, 0)
 			EndIf
 			Chunk\Data = *Buffer
 		Else
@@ -1278,7 +1297,7 @@ Procedure.q BakaShrot_Upload(Topic.s, FileId.i, *Memory, Size.q)
 		*Request = BakaShrot_UploadChunkPacket_Encode(@Chunk, @RequestSize)
 		If Not *Request
 			FreeMemory(*Buffer)
-			ProcedureReturn 0
+			ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_Internal, 0)
 		EndIf
 		*Answer = BakaShrot_RequestExpecting(*Request, RequestSize\i, #BakaShrot_PacketType_ChunkStored, @AnswerSize)
 		FreeMemory(*Request)
@@ -1322,15 +1341,15 @@ EndProcedure
 Procedure.q BakaShrot_PushMessageWithFileString(Topic.s, JsonData.s, FilePath.s)
 	Protected FileId.i, UploadId.q
 
-	BakaShrot_RefusalReason = ""
+	BakaShrot_ResetError()
 	If StringByteLength(JsonData, #PB_UTF8) > #BakaShrot_MaxMessageSize
 		BakaShrot_RefusalReason = "The message is too big: " + Str(StringByteLength(JsonData, #PB_UTF8)) + " bytes, at most " + Str(#BakaShrot_MaxMessageSize)
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	FileId = ReadFile(#PB_Any, FilePath, #PB_File_SharedRead)
 	If Not FileId
 		BakaShrot_RefusalReason = "Can't open '" + FilePath + "'"
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_FileError, -1)
 	EndIf
 	UploadId = BakaShrot_Upload(Topic, FileId, 0, Lof(FileId))
 	CloseFile(FileId)
@@ -1340,11 +1359,11 @@ Procedure.q BakaShrot_PushMessageWithFileString(Topic.s, JsonData.s, FilePath.s)
 	ProcedureReturn BakaShrot_PushMessageToString(Topic, JsonData, UploadId)
 EndProcedure
 
-; A null *Topic is the client's own topic, a null *JsonData an empty message.
+; A null *Topic is the client's default topic, a null *JsonData an empty message.
 ProcedureCDLL.q BakaShrot_PushMessageWithFileA(*Topic, *JsonData, *FilePath)
 	Protected Topic.s, JsonData.s
 	If Not *FilePath
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	If *Topic : Topic = PeekS(*Topic, -1, #PB_UTF8) : EndIf
 	If *JsonData : JsonData = PeekS(*JsonData, -1, #PB_UTF8) : EndIf
@@ -1354,7 +1373,7 @@ EndProcedure
 ProcedureCDLL.q BakaShrot_PushMessageWithFileW(*Topic, *JsonData, *FilePath)
 	Protected Topic.s, JsonData.s
 	If Not *FilePath
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	If *Topic : Topic = PeekS(*Topic, -1, #PB_Unicode) : EndIf
 	If *JsonData : JsonData = PeekS(*JsonData, -1, #PB_Unicode) : EndIf
@@ -1366,14 +1385,14 @@ EndProcedure
 Procedure.q BakaShrot_PushMessageWithDataString(Topic.s, JsonData.s, *Data, Size.q)
 	Protected UploadId.q
 
-	BakaShrot_RefusalReason = ""
+	BakaShrot_ResetError()
 	If StringByteLength(JsonData, #PB_UTF8) > #BakaShrot_MaxMessageSize
 		BakaShrot_RefusalReason = "The message is too big: " + Str(StringByteLength(JsonData, #PB_UTF8)) + " bytes, at most " + Str(#BakaShrot_MaxMessageSize)
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	If Not *Data
 		BakaShrot_RefusalReason = "The attachment is empty"
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	UploadId = BakaShrot_Upload(Topic, 0, *Data, Size)
 	If Not UploadId
@@ -1408,12 +1427,12 @@ Procedure.q BakaShrot_Download(Topic.s, Node.s, MessageId.q, FileId.i)
 	Protected Dim Expected.a(#BakaShrot_Sha256Size - 1), Dim Result.a(#BakaShrot_Sha256Size - 1)
 	Protected *Request, RequestSize.Integer, *Answer, AnswerSize.Integer, *View.MsgPackData
 
-	BakaShrot_RefusalReason = ""
+	BakaShrot_ResetError()
 	If Not BakaShrot_Outbound\ConnectionId Or BakaShrot_Outbound\Metadata\Status <> #BakaShrot_ConnectionStatus_Authenticated
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_NotConnected, -1)
 	EndIf
 	If Not BakaShrot_IsValidRef(Topic) Or Not BakaShrot_IsValidRef(Node) Or MessageId < 1 Or Not BakaShrot_Sha256_Start(@Hash)
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 
 	Request\Topic     = Topic
@@ -1425,6 +1444,7 @@ Procedure.q BakaShrot_Download(Topic.s, Node.s, MessageId.q, FileId.i)
 		Request\ChunkIndex = Index
 		*Request = BakaShrot_GetAttachmentPacket_Encode(@Request, @RequestSize)
 		If Not *Request
+			BakaShrot_LastError = #BakaShrot_Error_Internal
 			Goto DownloadFailed
 		EndIf
 		*Answer = BakaShrot_RequestExpecting(*Request, RequestSize\i, #BakaShrot_PacketType_AttachmentChunk, @AnswerSize)
@@ -1454,6 +1474,7 @@ Procedure.q BakaShrot_Download(Topic.s, Node.s, MessageId.q, FileId.i)
 				If Not *Memory
 					BakaShrot_AttachmentChunkPacket_Free(*Chunk)
 					BakaShrot_RefusalReason = "Out of memory for " + Str(Size) + " bytes"
+					BakaShrot_LastError = #BakaShrot_Error_Internal
 					Goto DownloadFailed
 				EndIf
 			EndIf
@@ -1469,6 +1490,7 @@ Procedure.q BakaShrot_Download(Topic.s, Node.s, MessageId.q, FileId.i)
 			If WriteData(FileId, *Chunk\Data, *Chunk\DataSize) <> *Chunk\DataSize
 				BakaShrot_AttachmentChunkPacket_Free(*Chunk)
 				BakaShrot_RefusalReason = "The file couldn't be written"
+				BakaShrot_LastError = #BakaShrot_Error_FileError
 				Goto DownloadFailed
 			EndIf
 		Else
@@ -1481,6 +1503,7 @@ Procedure.q BakaShrot_Download(Topic.s, Node.s, MessageId.q, FileId.i)
 	BakaShrot_Sha256_Finish(@Hash, @Result(0))
 	If Not CompareMemory(@Result(0), @Expected(0), #BakaShrot_Sha256Size)
 		BakaShrot_RefusalReason = "The attachment doesn't match its SHA-256"
+		BakaShrot_LastError = #BakaShrot_Error_AttachmentMismatch
 		Goto DownloadFailed
 	EndIf
 
@@ -1507,10 +1530,11 @@ EndProcedure
 Procedure.q BakaShrot_SaveAttachmentString(Topic.s, Node.s, MessageId.q, FilePath.s)
 	Protected FileId.i, Size.q
 
+	BakaShrot_ResetError()
 	FileId = CreateFile(#PB_Any, FilePath)
 	If Not FileId
 		BakaShrot_RefusalReason = "Can't create '" + FilePath + "'"
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_FileError, -1)
 	EndIf
 	Size = BakaShrot_Download(Topic, Node, MessageId, FileId)
 	CloseFile(FileId)
@@ -1522,14 +1546,14 @@ EndProcedure
 
 ProcedureCDLL.q BakaShrot_SaveAttachmentA(*Topic, *Node, MessageId.q, *FilePath)
 	If Not *Topic Or Not *Node Or Not *FilePath
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	ProcedureReturn BakaShrot_SaveAttachmentString(PeekS(*Topic, -1, #PB_UTF8), PeekS(*Node, -1, #PB_UTF8), MessageId, PeekS(*FilePath, -1, #PB_UTF8))
 EndProcedure
 
 ProcedureCDLL.q BakaShrot_SaveAttachmentW(*Topic, *Node, MessageId.q, *FilePath)
 	If Not *Topic Or Not *Node Or Not *FilePath
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	ProcedureReturn BakaShrot_SaveAttachmentString(PeekS(*Topic, -1, #PB_Unicode), PeekS(*Node, -1, #PB_Unicode), MessageId, PeekS(*FilePath, -1, #PB_Unicode))
 EndProcedure
@@ -1541,14 +1565,14 @@ EndProcedure
 ; Returns its size, -1 on failure, see BakaShrot_Download().
 ProcedureCDLL.q BakaShrot_LoadAttachmentA(*Topic, *Node, MessageId.q)
 	If Not *Topic Or Not *Node
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	ProcedureReturn BakaShrot_Download(PeekS(*Topic, -1, #PB_UTF8), PeekS(*Node, -1, #PB_UTF8), MessageId, 0)
 EndProcedure
 
 ProcedureCDLL.q BakaShrot_LoadAttachmentW(*Topic, *Node, MessageId.q)
 	If Not *Topic Or Not *Node
-		ProcedureReturn -1
+		ProcedureReturn BakaShrot_Fail(#BakaShrot_Error_InvalidArgument, -1)
 	EndIf
 	ProcedureReturn BakaShrot_Download(PeekS(*Topic, -1, #PB_Unicode), PeekS(*Node, -1, #PB_Unicode), MessageId, 0)
 EndProcedure

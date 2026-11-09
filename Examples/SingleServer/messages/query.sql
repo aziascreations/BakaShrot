@@ -1,0 +1,1 @@
+SELECT topic, node, message_id, pushed_utc, message_data ->> '$.text' FROM messages WHERE topic = 'logs' AND is_json = 1 ORDER BY message_id

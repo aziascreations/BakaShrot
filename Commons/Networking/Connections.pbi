@@ -129,9 +129,11 @@ CompilerEndIf
 Structure BakaShrot_ConnectionMetadata
 	Status.i
 
-	; Identity from the Hello, as the server's own ids (unused on the client
-	; side), only trusted once Status is Authenticated.
-	TopicId.u
+	; Server side only, trusted once Status is Authenticated: the node from
+	; the Hello, and the default topic of its pushes from its client
+	; section's DefaultTopic (-1 without one: pushes must name their topic),
+	; both as the server's own ids.
+	DefaultTopicId.l
 	NodeId.u
 	; The client's Ed25519 public key, on both sides.
 	PublicKey.a[#BakaShrot_Ed25519_PublicKeySize]

@@ -1,6 +1,6 @@
 # End-to-end test of reading runs of messages: the GetMessages request
 # (Commons/Networking/Packets/GetMessagesPacket.pbi), through the client DLL
-# and Tools\GetMessages: from the start, after an id, after the latest one,
+# and Tools\BakaShrotGetMessages: from the start, after an id, after the latest one,
 # with a limit, answers split at ~1 MB, data that isn't JSON or spans lines,
 # refusals, and --follow picking up new pushes.
 # Needs Build\ (Build.ps1) and Build\Bench\BenchServer.exe (Bench-Replication.ps1,
@@ -17,7 +17,7 @@ $Port = 12405
 $Fails = 0
 
 function New-KeyPair {
-    $L = & (Join-Path $Build "KeyGen.exe")
+    $L = & (Join-Path $Build "BakaShrotGenerateKeyPairs.exe")
     @{ Priv = $L[0] -replace "^PrivateKey = ", ""; Pub = $L[1] -replace "^PublicKey = ", "" }
 }
 function Test-Port($P) {
@@ -37,7 +37,7 @@ function Check([string]$What, [bool]$Ok, [string]$Detail) {
 function Expect([string]$What, $Result, [string]$Pattern, [int]$Code = 0) {
     Check $What (($Result.Code -eq $Code) -and ($Result.Out -match $Pattern)) ("[{0}] {1}" -f $Result.Code, $Result.Out)
 }
-# The ids GetMessages printed, in order.
+# The ids BakaShrotGetMessages printed, in order.
 function Ids($Result) {
     @($Result.Lines | Where-Object { $_ -match "^\d+`t" } | ForEach-Object { [long]($_ -split "`t", 2)[0] })
 }
@@ -51,7 +51,7 @@ function Push($Data, $Ini, [string]$Topic = "") {
     [IO.File]::WriteAllText($F, $Data, (New-Object System.Text.UTF8Encoding $false))
     $A = @()
     if ($Topic) { $A += @("-t", $Topic) }
-    Tool "PushMessage.exe" ($A + @("@$F", $Ini))
+    Tool "BakaShrotPushMessage.exe" ($A + @("@$F", $Ini))
 }
 
 $S = New-KeyPair; $K = New-KeyPair; $L = New-KeyPair
@@ -59,7 +59,6 @@ $S = New-KeyPair; $K = New-KeyPair; $L = New-KeyPair
 Set-Content (Join-Path $Dir "server.ini") -Encoding Ascii -Value @"
 [BakaShrot]
 PrivateKey = $($S.Priv)
-Topic = logs
 Node = server
 
 [BakaShrot.Topics]
@@ -79,20 +78,22 @@ DatabasePath = $(Join-Path $Dir "server.sqlite")
 
 [BakaShrot.Client.kitchen]
 PublicKeys = $($K.Pub)
-Identities = logs:kitchen
+Node = kitchen
+DefaultTopic = logs
 PushTopics = logs;secret
 ReadTopics = *
 AllowQuery = 1
 
 [BakaShrot.Client.lounge]
 PublicKeys = $($L.Pub)
-Identities = logs:lounge
+Node = lounge
+DefaultTopic = logs
 ReadTopics = logs
 "@
 
 function Client-Ini($Name, $Keys) {
     $P = Join-Path $Dir "$Name.ini"
-    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($Keys.Priv)`r`nPublicKey = $($Keys.Pub)`r`nTopic = logs`r`nNode = $Name`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($S.Pub)"
+    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($Keys.Priv)`r`nPublicKey = $($Keys.Pub)`r`nNode = $Name`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($S.Pub)"
     $P
 }
 $Kitchen = Client-Ini "kitchen" $K
@@ -114,10 +115,10 @@ try {
 
     # --- Nothing yet ----------------------------------------------------------
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", $Kitchen)
     Check "No messages yet: nothing printed, not a failure" ($R.Code -eq 0 -and $R.Lines.Count -eq 0) ("[{0}] {1}" -f $R.Code, $R.Out)
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "latest", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "latest", $Kitchen)
     Check "--after latest with no messages yet: nothing, not a failure" ($R.Code -eq 0 -and $R.Lines.Count -eq 0) ("[{0}] {1}" -f $R.Code, $R.Out)
 
     # --- 120 small ones -------------------------------------------------------
@@ -130,50 +131,50 @@ try {
     }
     Check "120 pushes" ($Pushed -eq 120) ("{0} pushed in {1:N1} s" -f $Pushed, ((Get-Date) - $Started).TotalSeconds)
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", $Kitchen)
     $Ids = Ids $R
     Check "Default: the first 100, in order" ($R.Code -eq 0 -and (Is-Run $Ids 1 100)) ("[{0}] {1} ids, {2}..{3}" -f $R.Code, $Ids.Count, $Ids[0], $Ids[-1])
     Check "Each line is the id, a tab and the data as stored" ($R.Lines[0] -eq "1`t{`"i`":1}" -and $R.Lines[99] -eq "100`t{`"i`":100}") ("'{0}' / '{1}'" -f $R.Lines[0], $R.Lines[99])
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--limit", "0", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--limit", "0", $Kitchen)
     Check "--limit 0: all 120" ($R.Code -eq 0 -and (Is-Run (Ids $R) 1 120)) ("[{0}] {1} lines" -f $R.Code, $R.Lines.Count)
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "115", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "115", $Kitchen)
     Check "--after 115: 116-120" ($R.Code -eq 0 -and (Is-Run (Ids $R) 116 120)) ("[{0}] {1}" -f $R.Code, $R.Out)
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "10", "--limit", "7", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "10", "--limit", "7", $Kitchen)
     Check "--after 10 --limit 7: 11-17" ($R.Code -eq 0 -and (Is-Run (Ids $R) 11 17)) ("[{0}] {1}" -f $R.Code, $R.Out)
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "120", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "120", $Kitchen)
     Check "--after the last one: nothing, not a failure" ($R.Code -eq 0 -and $R.Lines.Count -eq 0) ("[{0}] {1}" -f $R.Code, $R.Out)
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "latest", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "latest", $Kitchen)
     Check "--after latest: nothing" ($R.Code -eq 0 -and $R.Lines.Count -eq 0) ("[{0}] {1}" -f $R.Code, $R.Out)
 
-    $R = Tool "GetMessages.exe" @("1", "5", "--after", "118", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("1", "5", "--after", "118", $Kitchen)
     Check "By ids (1, 5): 119-120" ($R.Code -eq 0 -and (Is-Run (Ids $R) 119 120)) ("[{0}] {1}" -f $R.Code, $R.Out)
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "100", $Lounge)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "100", $Lounge)
     Check "Another client allowed to read logs: 101-120" ($R.Code -eq 0 -and (Is-Run (Ids $R) 101 120)) ("[{0}] {1} lines" -f $R.Code, $R.Lines.Count)
 
     # --- Refusals -------------------------------------------------------------
 
     $null = Push '{"s":1}' $Kitchen "secret"
-    $R = Tool "GetMessages.exe" @("secret", "kitchen", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("secret", "kitchen", $Kitchen)
     Check "A topic in ReadTopics (*): read" ($R.Code -eq 0 -and (Is-Run (Ids $R) 1 1)) ("[{0}] {1}" -f $R.Code, $R.Out)
-    Expect "A topic not in ReadTopics: refused" (Tool "GetMessages.exe" @("secret", "kitchen", $Lounge)) "Not allowed to read topic 'secret'" 1
-    Expect "Unknown node: refused" (Tool "GetMessages.exe" @("logs", "nobody", $Kitchen)) "Unknown node 'nobody'" 1
-    Expect "Unknown topic: refused" (Tool "GetMessages.exe" @("nothing", "kitchen", $Kitchen)) "Unknown topic 'nothing'" 1
-    $R = Tool "GetMessages.exe" @("logs", "empty", $Kitchen)
+    Expect "A topic not in ReadTopics: refused" (Tool "BakaShrotGetMessages.exe" @("secret", "kitchen", $Lounge)) "Not allowed to read topic 'secret'" 1
+    Expect "Unknown node: refused" (Tool "BakaShrotGetMessages.exe" @("logs", "nobody", $Kitchen)) "Unknown node 'nobody'" 1
+    Expect "Unknown topic: refused" (Tool "BakaShrotGetMessages.exe" @("nothing", "kitchen", $Kitchen)) "Unknown topic 'nothing'" 1
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "empty", $Kitchen)
     Check "A known node with no messages: nothing, not a failure" ($R.Code -eq 0 -and $R.Lines.Count -eq 0) ("[{0}] {1}" -f $R.Code, $R.Out)
-    Expect "Bad --after: refused by the tool" (Tool "GetMessages.exe" @("logs", "kitchen", "--after", "-3", $Kitchen)) "Invalid --after" 1
-    Expect "Unknown option: refused by the tool" (Tool "GetMessages.exe" @("logs", "kitchen", "--nope", $Kitchen)) "Unknown option" 1
+    Expect "Bad --after: refused by the tool" (Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "-3", $Kitchen)) "Invalid --after" 1
+    Expect "Unknown option: refused by the tool" (Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--nope", $Kitchen)) "Unknown option" 1
 
     # --- Data that isn't one line of JSON -------------------------------------
 
     $null = Push "plain text, not JSON" $Kitchen
     $null = Push "two`nlines" $Kitchen
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "120", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "120", $Kitchen)
     Check "Non-JSON data printed as stored, a line break spans lines" (
         $R.Code -eq 0 -and $R.Lines.Count -eq 3 -and $R.Lines[0] -eq "121`tplain text, not JSON" -and $R.Lines[1] -eq "122`ttwo" -and $R.Lines[2] -eq "lines"
     ) ($R.Lines -join " / ")
@@ -189,7 +190,7 @@ try {
     }
     Check "6 big pushes (5 x 600 KB, 3 MB)" ($BigOk -eq 6) "$BigOk pushed"
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "122", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "122", $Kitchen)
     $Ids = Ids $R
     $Lengths = @($R.Lines | ForEach-Object { (($_ -split "`t", 2)[1]).Length })
     $WantLengths = @($Sizes | ForEach-Object { $_ })
@@ -197,13 +198,13 @@ try {
         $R.Code -eq 0 -and (Is-Run $Ids 123 128) -and (($Lengths -join ",") -eq ($WantLengths -join ","))
     ) ("[{0}] ids {1}, lengths {2}" -f $R.Code, ($Ids -join ","), ($Lengths -join ","))
 
-    $R = Tool "GetMessages.exe" @("logs", "kitchen", "--after", "122", "--limit", "2", $Kitchen)
+    $R = Tool "BakaShrotGetMessages.exe" @("logs", "kitchen", "--after", "122", "--limit", "2", $Kitchen)
     Check "--limit 2 over big ones: 123-124" ($R.Code -eq 0 -and (Is-Run (Ids $R) 123 124)) ("[{0}] {1} lines" -f $R.Code, $R.Lines.Count)
 
     # --- --follow ---------------------------------------------------------------
 
     $FollowOut = Join-Path $Dir "follow.out"
-    $Follower = Start-Process -FilePath (Join-Path $Build "GetMessages.exe") `
+    $Follower = Start-Process -FilePath (Join-Path $Build "BakaShrotGetMessages.exe") `
         -ArgumentList "logs", "kitchen", "--after", "latest", "--follow", "--interval", "100", "`"$Kitchen`"" `
         -WorkingDirectory $Build -RedirectStandardOutput $FollowOut -WindowStyle Hidden -PassThru
     $null = $Follower.Handle

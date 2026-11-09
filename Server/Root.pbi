@@ -52,8 +52,24 @@ EndStructure
 ; Only while the workers are stopped, they use the config.
 Procedure.i BakaShrot_Root_LoadConfig(*Root.BakaShrot_Root)
 	Protected *Config.BakaShrot_CoreConfig
+	Protected Known.BakaShrot_KnownNames, KnownError.String, DatabasePath.s, DbId.i
 
-	*Config = LoadConfig(*Root\ConfigPath)
+	; The names the database has first, so the ones the config lists without
+	; an id keep theirs (Storage/Names.pbi). Nothing to read on a new one.
+	DatabasePath = ReadConfigDatabasePath(*Root\ConfigPath)
+	If DatabasePath <> "" And FileSize(DatabasePath) > 0
+		DbId = OpenStorageDatabase(DatabasePath)
+		If Not DbId Or Not SetupStorageDatabase(DbId) Or Not BakaShrot_Names_ReadKnown(DbId, @Known, @KnownError)
+			PrintN("[Root] Failed to read the names of the database '" + DatabasePath + "': " + KnownError\s + DatabaseError())
+			If DbId
+				CloseDatabase(DbId)
+			EndIf
+			ProcedureReturn #False
+		EndIf
+		CloseDatabase(DbId)
+	EndIf
+
+	*Config = LoadConfig(*Root\ConfigPath, @Known)
 	If Not *Config
 		PrintN("[Root] Failed to load the config from '" + *Root\ConfigPath + "': " + BakaShrot_ConfigError)
 		ProcedureReturn #False
@@ -64,7 +80,7 @@ Procedure.i BakaShrot_Root_LoadConfig(*Root.BakaShrot_Root)
 	EndIf
 	*Root\Config = *Config
 
-	PrintN("[Root] Loaded config '" + *Root\ConfigPath + "' (Topic=" + *Config\TopicText + ", Node=" + *Config\NodeText + ", " + Str(MapSize(*Config\TopicNames())) + " named topics, " +
+	PrintN("[Root] Loaded config '" + *Root\ConfigPath + "' (Node=" + *Config\NodeText + ", " + Str(MapSize(*Config\TopicNames())) + " named topics, " +
 	       Str(MapSize(*Config\NodeNames())) + " named nodes, " + Str(MapSize(*Config\Peers())) + " peers, " + Str(MapSize(*Config\Clients())) + " clients)")
 	ProcedureReturn #True
 EndProcedure
@@ -76,6 +92,10 @@ EndProcedure
 Procedure.i BakaShrot_Root_OpenDatabase(*Root.BakaShrot_Root)
 	Protected DatabasePath.s = *Root\Config\Server\DatabasePath
 	Protected NamesError.String
+
+	; Every connection opened from here on, the workers' included (they're
+	; stopped meanwhile), takes it.
+	BakaShrot_Storage_Synchronous = *Root\Config\Server\Synchronous
 
 	*Root\DbId = OpenStorageDatabase(DatabasePath)
 	If Not *Root\DbId
@@ -97,7 +117,7 @@ Procedure.i BakaShrot_Root_OpenDatabase(*Root.BakaShrot_Root)
 		ProcedureReturn #False
 	EndIf
 
-	PrintN("[Root] Database '" + DatabasePath + "' is ready")
+	PrintN("[Root] Database '" + DatabasePath + "' is ready (synchronous " + BakaShrot_Storage_Synchronous + ")")
 	ProcedureReturn #True
 EndProcedure
 

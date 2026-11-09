@@ -26,6 +26,8 @@ Reference for working on BakaShrot's networking. Related docs:
 | Server: the root thread, which stops and starts every worker (restart, vacuum) | `Server/Root.pbi` |
 | Client DLL (one connection) | `Client/BakaShrot_Client.pbi`, used through `BakaShrot_Client_Prototypes.pbi` |
 | Python client, over the DLL | `Interactors/Python/bakashrot.py` |
+| Ready-to-run setups (configs, start scripts, a README each) | `Examples/`, listed in `Examples/README.md` |
+| Tools: connecting through the DLL from an ini; ending (waits for Enter when started from Explorer) | `Tools/Common/ToolClient.pbi`, `Tools/Common/ToolConsole.pbi` |
 | Tests of the packets alone, without sockets | `Tests/HandshakeTest.pb` |
 | Tests of the cipher and the session crypto, without sockets | `Tests/CipherTest.pb` |
 | What goes over the wire (a recording proxy) | `Tests/wire_check.py`, run by `Tests/Python-Test.ps1` |
@@ -74,8 +76,9 @@ Reference for working on BakaShrot's networking. Related docs:
   array, read in order with PB-MessagePack:
   1. `Magic` (integer), always `#BakaShrot_ProtocolMagic` (`0x42534854`,
      "BSHT").
-  2. `Version` (integer), always `#BakaShrot_ProtocolVersion` (4:
-     attachments; 3: the Hello sealed, a key per connection, everything
+  2. `Version` (integer), always `#BakaShrot_ProtocolVersion` (6:
+     refusals carry a code; 5: the Hello carries the node only, the default
+     topic is the server's; 4: attachments; 3: the Hello sealed, a key per connection, everything
      after the ChallengeRequest encrypted, times; 2 had topics and nodes by
      name, in plain text; 1 had ids only).
   3. `PacketType` (integer), one of the ids below.
@@ -90,10 +93,13 @@ Reference for working on BakaShrot's networking. Related docs:
 
 ### Topics and nodes: names and ids
 
-- **Each server has its own ids** (0-65535) for topics and nodes, and the
-  config can name them (`[BakaShrot.Topics]`, `[BakaShrot.Nodes]`). The
-  **name is what's shared**: "logs" can be 1 on one server and 200 on
-  another.
+- **Each server has its own ids** (0-65535) for topics and nodes, and
+  gives them to the names: the config lists the topics
+  (`[BakaShrot.Topics]`), the nodes come from the sections that define
+  them (its own, its peers', its clients') and optionally
+  `[BakaShrot.Nodes]`; a name keeps the id the database has for it, a new
+  one gets the lowest free one (`Server/Storage/Names.pbi`). The **name is
+  what's shared**: "logs" can be 1 on one server and 200 on another.
 - **A ref** is how a packet gives a topic or node: a name (1-64 of
   `A-Z a-z 0-9 _ . -`, not only digits, any case), or an id in digits,
   which always means that id on the receiving server. An unnamed topic or
@@ -105,7 +111,7 @@ Reference for working on BakaShrot's networking. Related docs:
 - **Only what's named on both servers replicates.** Unnamed topics and
   nodes, and names the other server doesn't have, are dropped, unless the
   receiver's `AcceptTopics` / `AcceptNodes` for that peer has a wildcard
-  (`*`, `sensors.*`) matching it: it's then added there with an id of its
+  (`*`, `sensors.*`; `AcceptNodes` is `*` by default) matching it: it's then added there with an id of its
   own. The sync state lists every name the receiver takes, and its
   wildcards, so the sender only sends those and nothing gets refused at
   every check-in.
@@ -119,7 +125,7 @@ over its own link to another server.
 |---|---|---|---|---|
 | 0 | None | | Never valid. | |
 | 1-3 | | | Used by the removed `AuthenticationPacket.pbi`, don't reuse. | |
-| 4 | ClientHello | C→S | `ClientTopic` str (ref), `ClientNode` str (ref), `ClientPubKeyB64` str, `ClientSessionKey` bin (32 bytes). Sent sealed for the server's key | ChallengeRequest |
+| 4 | ClientHello | C→S | `ClientNode` str (ref, the node it writes as), `ClientPubKeyB64` str, `ClientSessionKey` bin (32 bytes). Sent sealed for the server's key | ChallengeRequest |
 | 5 | ChallengeRequest | S→C | `ChallengeB64` str (32 bytes), `Nonce` bin (32 bytes), `ServerSessionKey` bin (32 bytes), `ServerSignature` bin (64 bytes, of the transcript). The last packet in plain text | ChallengeResponse |
 | 6 | ChallengeResponse | C→S | `ChallengeResponseB64` str (64-byte signature of the transcript), `Nonce` bin (32 bytes) | AuthAccepted |
 | 7 | AuthAccepted | S→C | None. | |
@@ -127,7 +133,7 @@ over its own link to another server.
 | 9 | MessagePushed | S→C | `MessageId` int ≥ 1 | |
 | 10 | GetLatestMessage | C→S | `Topic` str (ref), `Node` str (ref) | LatestMessage / RequestRefused |
 | 11 | LatestMessage | S→C | `TopicId`, `NodeId` int 0-65535 (the server's), `TopicName`, `NodeName` str (names, or ids in digits), `MessageId` int ≥ 1, `PushedAt` int (time, see below), `JsonData` str, `AttachmentSize` int (0 for none), `AttachmentReady` int 0/1 | |
-| 12 | RequestRefused | S→C | `Reason` str, for logs and humans | |
+| 12 | RequestRefused | S→C | `Code` int 1-99 (what kind, `#BakaShrot_Refused_*` in `Client/BakaShrot_ErrorCodes.pbi`: what clients act on), `Reason` str, for logs and humans | |
 | 13 | SyncStateRequest | P→S | None. | SyncState / RequestRefused |
 | 14 | SyncState | S→P | `TopicCount` int, then each topic's `Id` int and `Name` str (the named topics S takes from P); `NodeCount` int, then each node's `Id` and `Name` (the named nodes S takes from P); `TopicPatternCount` int, then each pattern str; `NodePatternCount` int, then each pattern str (S's wildcards for P, `*` included); `PairCount` int, then each pair's `TopicId`, `NodeId`, `MessageId`. Ids are S's own, names are never digits | |
 | 15 | ReplicateMessages | P→S | `Topic` str, `Node` str (names, never digits), `Count` int 1-10000, then each message's `MessageId` int (≥ 1, strictly increasing), `PushedAt` int (as stored, from its origin), `JsonData` str, `AttachmentSize` int (0 for none) and `AttachmentSha256` bin (32 bytes, empty for none) | MessagePushed (last id) / RequestRefused |
@@ -165,7 +171,13 @@ the client's), and keeps that time on every server it's replicated to.
 - **Refuse or abort:**
   - **Refuse** (RequestRefused, the connection stays open) for things that
     are valid but not allowed: permissions, no message found, too big,
-    a failed query, a regular client sending replication packets.
+    a failed query, a regular client sending replication packets. Each with
+    a code (`Client/BakaShrot_ErrorCodes.pbi`): NotAllowed, UnknownName,
+    NotFound, NotReady, TooBig, NoDefaultTopic, InvalidRequest,
+    DataMismatch, QueryFailed, ServerError. Clients get them from
+    `BakaShrot_GetLastError()` (the DLL) or `error.code` (Python), with
+    their own codes (100+) for what never reached the server or broke the
+    connection.
   - **Abort** (the connection is closed) for anything malformed or out of
     order: an invalid frame or packet, a packet type that isn't expected at
     that point, an answer to a different request, a timeout during the
@@ -187,12 +199,12 @@ the client's), and keeps that time on every server it's replicated to.
 ```
         client: knows the server's Ed25519 public key (ServerPublicKey),
         makes a key pair for this connection
-C -> S  ClientHello         identity (topic and node refs) + Base64 public key
+C -> S  ClientHello         node (ref, the one it writes as) + Base64 public key
                             + the public half of the client's pair,
                             sealed for the server's public key
-        server: opens it (or aborts: not for this server), the refs must
-        resolve to its ids, the key must decode to 32 bytes, and one
-        [BakaShrot.Client.<name>] must list both this key and this identity
+        server: opens it (or aborts: not for this server), the node must
+        resolve to its id, the key must decode to 32 bytes, and one
+        [BakaShrot.Client.<name>] must have this Node and list this key
 S -> C  ChallengeRequest    fresh random challenge + nonce, the public half of
                             the server's pair, and the server's signature of
                             the transcript (in plain text)
@@ -215,14 +227,16 @@ server's session halves, the challenge, the nonce.
   connection:
   - Its **permissions**, from the matching client section: `AllowRead`,
     `AllowWrite`, `AllowQuery`, and the `PushTopics` / `ReadTopics` filters
-    (default: the topics of its `Identities`).
-  - Whether it's a **peer**: its key and identity match a
+    (default: its `DefaultTopic`, nothing without one), and that
+    `DefaultTopic`: the topic of its pushes that don't name one.
+  - Whether it's a **peer**: its key and node match a
     `[BakaShrot.Peer.<name>]`, and then its `AcceptTopics`.
 
 ### Client requests
 
 ```
-PushMessage(t, json)       AllowWrite, t in PushTopics ("" = own topic), at most
+PushMessage(t, json)       AllowWrite, t in PushTopics ("" = its DefaultTopic,
+                           refused without one), at most
                            #BakaShrot_MaxMessageSize. JSON or not: stored as
                            is, SQLite flags it in is_json
                            -> stored under t and the authenticated node with the

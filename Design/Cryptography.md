@@ -33,7 +33,7 @@ keys sit in plain-text ini files (see the end).
 | libsodium | Wrapper | Notes |
 |---|---|---|
 | `sodium_init` | `InitCryptography()` | Called before any use; repeated calls are fine. |
-| `crypto_sign_keypair` | `GenerateKeyPair()` | Used by `Tools/KeyGen`. |
+| `crypto_sign_keypair` | `GenerateKeyPair()` | Used by `Tools/BakaShrotGenerateKeyPairs`. |
 | `crypto_sign_detached` | `EncodeData()`, `BakaShrot_SignHandshake()` | **Signs**, the name `EncodeData` is wrong. |
 | `crypto_sign_verify_detached` | `DecodeData()`, `BakaShrot_VerifyHandshake()` | **Verifies**, the name `DecodeData` is wrong. |
 | `crypto_sign_ed25519_sk_to_pk` | `GetPublicKeyFromPrivateKey()` | Lets a server only keep its private key in its config. |
@@ -69,9 +69,10 @@ keys sit in plain-text ini files (see the end).
 - **Connection keys: X25519**, made for each connection by both ends, the
   secrets wiped once the cipher has its keys. So a recorded connection
   can't be decrypted later, even with both identity keys (forward secrecy).
-- **Generated** by `Tools/KeyGen`, which `Build.ps1` runs on every build.
+- **Generated** by `Tools/BakaShrotGenerateKeyPairs`, which `Build.ps1` runs
+  on every build.
 - **Wiping:**
-  - Wiped from memory after use: KeyGen; a server's key when it stops, and
+  - Wiped from memory after use: BakaShrotGenerateKeyPairs; a server's key when it stops, and
     its peer links'; every connection's keys when it ends.
   - Not wiped: the client DLL's global copy of its private key, and the
     config structures holding the Base64 text.
@@ -91,11 +92,11 @@ See `Design/Packets.md` for the packets, `Connections.pbi` for the code.
 The client knows the server's public key beforehand.
 
 1. **Hello, sealed** (`crypto_box_seal` for the server's key): the client's
-   identity (topic, node), its Base64 public key, and the public half of a
-   key pair it made for this connection.
+   node (the one it writes as), its Base64 public key, and the public half
+   of a key pair it made for this connection.
 2. The server opens it (another server can't: abort), decodes the key and
-   checks that a `[BakaShrot.Client.<name>]` lists both this key and this
-   identity.
+   checks that a `[BakaShrot.Client.<name>]` has this `Node` and lists this
+   key.
 3. **ChallengeRequest, in plain text:** a fresh random challenge and nonce,
    the public half of the server's own pair for this connection, and the
    server's signature of the transcript.

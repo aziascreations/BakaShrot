@@ -1,6 +1,8 @@
 
 XIncludeFile "../../Includes/PB-MessagePack/Includes/MessagePack.pbi"
 XIncludeFile "Names.pbi"
+; The refusal codes (RequestRefused) and the client's error codes.
+XIncludeFile "../../Client/BakaShrot_ErrorCodes.pbi"
 
 
 ; Represents the root of all BakaShrot packets.
@@ -21,7 +23,10 @@ EndStructure
 ;    the ChallengeRequest encrypted (Connections.pbi). Messages carry when
 ;    they were pushed (PushedAt).
 ; 4: attachments (Design/Attachments.md).
-#BakaShrot_ProtocolVersion = 4
+; 5: the Hello carries the client's node only: its default topic is the
+;    server's to say (DefaultTopic in its client section).
+; 6: RequestRefused carries a Code (Client/BakaShrot_ErrorCodes.pbi).
+#BakaShrot_ProtocolVersion = 6
 
 ; Size in bytes of the nonce sent in a challenge request and echoed in its response.
 ; It MUST be filled with CryptRandomData(), never reused, and be checked against the one the

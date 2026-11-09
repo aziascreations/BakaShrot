@@ -1,7 +1,7 @@
 ; ============================================================================
-; BakaShrot ListNames
+; BakaShrotList
 ;
-; Usage: ListNames [topics|nodes|all] [ClientIni] [--json]
+; Usage: BakaShrotList [topics|nodes|all] [ClientIni] [--json]
 ;   topics|nodes|all  What to list, defaults to all.
 ;   ClientIni         Identity and server to use, defaults to "client.ini".
 ;   --json            Prints the DLL's JSON instead of a table.
@@ -36,7 +36,7 @@ For i = 0 To CountProgramParameters() - 1
 Next
 
 If Not ToolClient_Connect(IniPath)
-	End 1
+	ToolConsole_End(1)
 EndIf
 
 ; Prints one list, from the DLL's JSON.
@@ -91,6 +91,6 @@ EndIf
 
 ToolClient_Close()
 If Failed
-	End 1
+	ToolConsole_End(1)
 EndIf
-End 0
+ToolConsole_End(0)

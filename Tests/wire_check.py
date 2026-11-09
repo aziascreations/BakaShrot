@@ -84,18 +84,21 @@ class Proxy:
 base = Client.from_ini(ini_path, dll_path)
 proxy = Proxy(proxy_port, base.host, base.port)
 marker = "wire-marker-7f3a91"
+# The client's DefaultTopic in Python-Test.ps1's server config: its pushes
+# land there, and it reads them back from there.
+topic = "logs"
 
-client = Client(base.private_key, base.public_key, base.server_public_key, base.topic, base.node,
+client = Client(base.private_key, base.public_key, base.server_public_key, base.node,
                 "127.0.0.1", proxy_port, dll_path)
 
 # Through the proxy, all of it recorded.
 try:
     client.connect()
     message_id = client.push({"note": marker})
-    latest = client.latest(base.topic, base.node)
+    latest = client.latest(topic, base.node)
     check("Pushed and read back through the proxy", latest is not None and marker in latest.data,
           latest.data if latest else "nothing")
-    pages = client.get_messages(base.topic, base.node, after=message_id - 1, limit=10)
+    pages = client.get_messages(topic, base.node, after=message_id - 1, limit=10)
     check("Read as a run of messages too", any(marker in m.data for m in pages.messages))
     client.close()
 except BakaShrotError as error:
@@ -104,7 +107,7 @@ except BakaShrotError as error:
 wire_up, wire_down = bytes(proxy.to_server), bytes(proxy.to_client)
 check("Something went through both ways", len(wire_up) > 200 and len(wire_down) > 200,
       f"{len(wire_up)} bytes up, {len(wire_down)} down")
-for needle in (marker, str(base.node), str(base.topic), base.public_key):
+for needle in (marker, str(base.node), topic, base.public_key):
     shown = needle.encode("utf-8")
     check(f"'{needle[:20]}' never in plain text on the wire", shown not in wire_up and shown not in wire_down)
 
@@ -122,7 +125,7 @@ except BakaShrotError as error:
     check("A tampered request drops the connection", False, "couldn't connect: " + str(error))
 
 # Another server's key: the server can't open the Hello, nor sign for it.
-impostor = Client(base.private_key, base.public_key, other_key, base.topic, base.node,
+impostor = Client(base.private_key, base.public_key, other_key, base.node,
                   base.host, base.port, dll_path)
 try:
     impostor.connect()

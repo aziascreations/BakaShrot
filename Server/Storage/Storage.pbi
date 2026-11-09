@@ -3,7 +3,7 @@
 ;
 ; Opens the SQLite database file that backs the node's local storage, and
 ; provides the basic read/write operations on top of it.
-; Schema: see db_schema_v7.dbml in this same folder. Attachments: see
+; Schema: see db_schema_v8.dbml in this same folder. Attachments: see
 ; Attachments.pbi and Design/Attachments.md.
 ;
 ; Needs SQLite 3.38+ with its JSON functions (json_valid, ->>), which the one
@@ -37,7 +37,7 @@ CompilerElse
 CompilerEndIf
 
 
-; One row of the "data" table (see db_schema_v7.dbml).
+; One row of the "data" table (see db_schema_v8.dbml).
 ; PushedAt: when it was pushed, ms since 1970 UTC (Packets.pbi).
 ; AttachmentSize: its attachment's size, 0 for none (the "attachments"
 ; table), AttachmentReady #True once all of it is here, AttachmentSha256 its
@@ -82,15 +82,18 @@ EndProcedure
 ; The database runs in WAL mode (set up by SetupStorageDatabase(), stored in
 ; the file): readers and the writer don't block each other anymore, so a
 ; long raw query no longer stalls every push.
-; With WAL, NORMAL only syncs to disk at checkpoints instead of on every
-; commit, which is most of what a push used to cost. The database can't get
-; corrupted, but the last commits before a power loss or an OS crash (not a
-; crash of the server itself) can be lost. Those messages were acknowledged,
-; and maybe replicated already, so their ids could then be handed out again
-; for other messages: drift, see Design/ReplicationIssues.md #1.
-; FULL syncs every commit, like before, but still lets reads and writes run
-; side by side.
-#BakaShrot_Storage_Synchronous = "NORMAL"
+; PRAGMA synchronous of every connection: [BakaShrot.Server] Synchronous,
+; set by the root before it opens any (Server/Root.pbi). FULL by default.
+; FULL syncs the WAL on every commit: an acknowledged push is on disk. It
+; costs one flush per transaction, shared by a group commit's pushes.
+; NORMAL only syncs at checkpoints (about every second, Writer.pbi): the
+; database can't get corrupted, but the last commits before a power loss or
+; an OS crash (not a crash of the server itself) can be lost. Those messages
+; were acknowledged, and maybe replicated already, so their ids could then
+; be handed out again for other messages: drift, see
+; Design/ReplicationIssues.md #1. Measured: Design/StorageConcurrency.md.
+#BakaShrot_Storage_DefaultSynchronous = "FULL"
+Global BakaShrot_Storage_Synchronous.s = #BakaShrot_Storage_DefaultSynchronous
 
 
 ; Opens (and creates, if missing) the SQLite database at DatabasePath, as a
@@ -120,8 +123,8 @@ Procedure.i OpenStorageDatabase(DatabasePath.s)
 		ProcedureReturn 0
 	EndIf
 
-	; Per connection, see #BakaShrot_Storage_Synchronous.
-	If Not DatabaseUpdate(DbId, "PRAGMA synchronous = " + #BakaShrot_Storage_Synchronous)
+	; Per connection, see BakaShrot_Storage_Synchronous.
+	If Not DatabaseUpdate(DbId, "PRAGMA synchronous = " + BakaShrot_Storage_Synchronous)
 		CloseDatabase(DbId)
 		ProcedureReturn 0
 	EndIf
@@ -232,7 +235,7 @@ Procedure.i MigrateStoragePushedAt(DbId.i)
 EndProcedure
 
 
-; Creates the tables and indexes described by db_schema_v7.dbml, if they
+; Creates the tables and indexes described by db_schema_v8.dbml, if they
 ; don't exist yet. Plain "CREATE IF NOT EXISTS" for now - a real versioned
 ; upgrade mechanism (DbUpdater) will replace this later.
 ; Fails on a database made with an older schema, since it would be left as is.
@@ -427,6 +430,33 @@ Procedure.i SetupStorageDatabase(DbId.i)
 	                             "SELECT t.name AS topic, n.name AS node, d.message_id, d.message_data, d.is_json, d.topic_id, d.node_id, " +
 	                             "d.pushed_at, strftime('%Y-%m-%dT%H:%M:%fZ', d.pushed_at / 1000.0, 'unixepoch') AS pushed_utc " +
 	                             "FROM data d JOIN topics t ON t.topic_id = d.topic_id JOIN nodes n ON n.node_id = d.node_id")
+		ProcedureReturn #False
+	EndIf
+
+	; For browsing with a database tool: set browse's one row to a topic
+	; (and optionally a node), open browse_messages. The foreign keys are
+	; only there for the tools: SQLiteStudio shows a dropdown of the names
+	; for a column that references them. The server never turns foreign keys
+	; on, so they never get in its way (a topic renamed in the config only
+	; leaves a stale name here). The server never writes to browse either.
+	If Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS browse (" +
+	                             "id INTEGER PRIMARY KEY CHECK (id = 1), " +
+	                             "topic TEXT COLLATE NOCASE REFERENCES topics (name), " +
+	                             "node TEXT COLLATE NOCASE REFERENCES nodes (name))") Or
+	   Not DatabaseUpdate(DbId, "INSERT OR IGNORE INTO browse (id) VALUES (1)")
+		ProcedureReturn #False
+	EndIf
+
+	; Newest first, by the (topic_id, pushed_at) index. Made again on every
+	; start, like messages.
+	If Not DatabaseUpdate(DbId, "DROP VIEW IF EXISTS browse_messages") Or
+	   Not DatabaseUpdate(DbId, "CREATE VIEW browse_messages AS " +
+	                             "SELECT m.node, m.message_id, m.pushed_utc, m.message_data, m.is_json, " +
+	                             "a.size AS attachment_size, m.topic " +
+	                             "FROM browse b JOIN messages m ON m.topic = b.topic " +
+	                             "LEFT JOIN attachments a ON a.topic_id = m.topic_id AND a.node_id = m.node_id AND a.message_id = m.message_id " +
+	                             "WHERE b.id = 1 AND (b.node IS NULL OR m.node = b.node) " +
+	                             "ORDER BY m.pushed_at DESC, m.node, m.message_id DESC")
 		ProcedureReturn #False
 	EndIf
 

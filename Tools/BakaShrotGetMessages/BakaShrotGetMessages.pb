@@ -1,7 +1,7 @@
 ; ============================================================================
-; BakaShrot GetMessages
+; BakaShrotGetMessages
 ;
-; Usage: GetMessages <Topic> <Node> [options] [ClientIni]
+; Usage: BakaShrotGetMessages <Topic> <Node> [options] [ClientIni]
 ;   Topic, Node        Whose messages to get, each a name or an id.
 ;   --after <Id>       Starts after that message id, defaults to 0: from the
 ;                      first one. "latest" starts after the latest one,
@@ -41,10 +41,10 @@ OpenConsole()
 
 ; Prints the usage and exits.
 Procedure Usage()
-	PrintN("Usage: GetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [--interval <Ms>] [--time] [ClientIni]")
+	PrintN("Usage: BakaShrotGetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [--interval <Ms>] [--time] [ClientIni]")
 	PrintN("  Topic and Node are names or ids. Prints each message as its id, a tab, and its data.")
 	PrintN("  --time also prints when it was pushed (UTC) between them.")
-	End 1
+	ToolConsole_End(1)
 EndProcedure
 
 ; Whether Text is a whole number of digits, 0 or more.
@@ -68,7 +68,7 @@ While i < CountProgramParameters()
 		Case "--after", "--limit", "--interval"
 			If i + 1 >= CountProgramParameters()
 				PrintN("Missing the value of " + Argument)
-				End 1
+				ToolConsole_End(1)
 			EndIf
 			i + 1
 			Value = ProgramParameter(i)
@@ -76,19 +76,19 @@ While i < CountProgramParameters()
 				Case "--after"
 					If LCase(Value) <> "latest" And Not IsNumber(Value)
 						PrintN("Invalid --after '" + Value + "', expected a message id or 'latest'")
-						End 1
+						ToolConsole_End(1)
 					EndIf
 					AfterText = LCase(Value)
 				Case "--limit"
 					If Not IsNumber(Value)
 						PrintN("Invalid --limit '" + Value + "', expected a number")
-						End 1
+						ToolConsole_End(1)
 					EndIf
 					Limit = Val(Value)
 				Case "--interval"
 					If Not IsNumber(Value) Or Val(Value) < 10 Or Val(Value) > 3600000
 						PrintN("Invalid --interval '" + Value + "', expected 10 to 3600000 ms")
-						End 1
+						ToolConsole_End(1)
 					EndIf
 					IntervalMs = Val(Value)
 			EndSelect
@@ -118,11 +118,11 @@ If Positional < 2
 EndIf
 If Not BakaShrot_IsValidRef(Topic)
 	PrintN("Invalid topic '" + Topic + "', expected a name or an id 0-65535")
-	End 1
+	ToolConsole_End(1)
 EndIf
 If Not BakaShrot_IsValidRef(Node)
 	PrintN("Invalid node '" + Node + "', expected a name or an id 0-65535")
-	End 1
+	ToolConsole_End(1)
 EndIf
 If Limit < 0
 	If Follow
@@ -133,17 +133,18 @@ If Limit < 0
 EndIf
 
 If Not ToolClient_Connect(IniPath)
-	End 1
+	ToolConsole_End(1)
 EndIf
 
 ; "latest": after the latest message, or from the start if there's none yet.
 If AfterText = "latest"
 	If BakaShrot_GetLatestMessageOf(Topic, Node)
 		AfterMessageId = BakaShrot_GetMessageId()
-	ElseIf Not BakaShrot_IsConnected()
+	ElseIf BakaShrot_GetLastError() <> #BakaShrot_Refused_NotFound
+		; Only "no message yet" starts from the start, anything else is told.
 		ToolClient_PrintFailure()
 		ToolClient_Close()
-		End 1
+		ToolConsole_End(1)
 	EndIf
 Else
 	AfterMessageId = Val(AfterText)
@@ -160,7 +161,7 @@ Repeat
 	If Count < 0
 		ToolClient_PrintFailure()
 		ToolClient_Close()
-		End 1
+		ToolConsole_End(1)
 	EndIf
 
 	For n = 0 To Count - 1
@@ -186,4 +187,4 @@ Repeat
 ForEver
 
 ToolClient_Close()
-End 0
+ToolConsole_End(0)

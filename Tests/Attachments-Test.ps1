@@ -1,5 +1,5 @@
 # End-to-end test of attachments (Design/Attachments.md), through the tools
-# (PushMessage -a, GetAttachment, GetLatestMessage):
+# (BakaShrotPushMessage -a, BakaShrotGetAttachment, BakaShrotGetLatestMessage):
 #   - pushed with a message, read back identical (100 KB, 5 MB + a bit,
 #     exactly 2 MB: one part, several, a whole number of them);
 #   - a message without one: refused when asked for it;
@@ -21,7 +21,7 @@ $Server = Join-Path $Build "Bench\BenchServer.exe"
 $Fails = 0
 
 function New-KeyPair {
-    $L = & (Join-Path $Build "KeyGen.exe")
+    $L = & (Join-Path $Build "BakaShrotGenerateKeyPairs.exe")
     @{ Priv = $L[0] -replace "^PrivateKey = ", ""; Pub = $L[1] -replace "^PublicKey = ", "" }
 }
 function Test-Port($P) {
@@ -62,7 +62,7 @@ function Wait-Port($Port, $S) {
 }
 function Query($Sql, $Ini) {
     $F = Join-Path $Dir "q.sql"; Set-Content $F -Encoding Ascii -Value $Sql
-    Tool "Query.exe" @("@$F", $Ini)
+    Tool "BakaShrotQuery.exe" @("@$F", $Ini)
 }
 function Wait-Query($Sql, $Ini, $Pattern, $Seconds = 20) {
     $D = (Get-Date).AddSeconds($Seconds)
@@ -79,7 +79,7 @@ function Push($Data, $Ini, [string]$Topic = "", [string]$Attach = "") {
     $A = @()
     if ($Topic) { $A += @("-t", $Topic) }
     if ($Attach) { $A += @("-a", $Attach) }
-    Tool "PushMessage.exe" ($A + @("@$F", $Ini))
+    Tool "BakaShrotPushMessage.exe" ($A + @("@$F", $Ini))
 }
 # A file of Size random bytes.
 function New-File($Name, [int]$Size, [int]$Seed) {
@@ -93,16 +93,16 @@ function Hash($Path) { if (Test-Path $Path) { (Get-FileHash $Path -Algorithm SHA
 # Saves an attachment and compares it with the original.
 function Expect-Same([string]$What, $Topic, $Node, $Id, $Original, $Ini) {
     $Out = Join-Path $Dir ("got-" + [guid]::NewGuid().ToString("N") + ".bin")
-    $R = Tool "GetAttachment.exe" @($Topic, $Node, "$Id", $Out, $Ini)
+    $R = Tool "BakaShrotGetAttachment.exe" @($Topic, $Node, "$Id", $Out, $Ini)
     $Same = ($R.Code -eq 0) -and ((Hash $Out) -eq (Hash $Original))
     Check $What $Same ("[{0}] {1}" -f $R.Code, $R.Out)
 }
-# Retries GetAttachment until it works: replicated ones come after their message.
+# Retries BakaShrotGetAttachment until it works: replicated ones come after their message.
 function Wait-Same([string]$What, $Topic, $Node, $Id, $Original, $Ini, $Seconds = 20) {
     $Out = Join-Path $Dir ("got-" + [guid]::NewGuid().ToString("N") + ".bin")
     $D = (Get-Date).AddSeconds($Seconds)
     do {
-        $R = Tool "GetAttachment.exe" @($Topic, $Node, "$Id", $Out, $Ini)
+        $R = Tool "BakaShrotGetAttachment.exe" @($Topic, $Node, "$Id", $Out, $Ini)
         if ($R.Code -eq 0) { break }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $D)
@@ -114,7 +114,6 @@ $A = New-KeyPair; $B = New-KeyPair; $K = New-KeyPair
 Set-Content (Join-Path $Dir "a.ini") -Encoding Ascii -Value @"
 [BakaShrot]
 PrivateKey = $($A.Priv)
-Topic = logs
 Node = serverA
 
 [BakaShrot.Topics]
@@ -144,17 +143,18 @@ MaxAttachmentSize = 64M
 [BakaShrot.Peer.b]
 Host = 127.0.0.1
 Port = 12411
-Topic = logs
 Node = serverB
 PublicKey = $($B.Pub)
 
 [BakaShrot.Client.b]
 PublicKeys = $($B.Pub)
-Identities = logs:serverB
+Node = serverB
+DefaultTopic = logs
 
 [BakaShrot.Client.kitchen]
 PublicKeys = $($K.Pub)
-Identities = logs:kitchen
+Node = kitchen
+DefaultTopic = logs
 PushTopics = logs;short
 ReadTopics = *
 AllowQuery = 1
@@ -163,7 +163,6 @@ AllowQuery = 1
 Set-Content (Join-Path $Dir "b.ini") -Encoding Ascii -Value @"
 [BakaShrot]
 PrivateKey = $($B.Priv)
-Topic = logs
 Node = serverB
 
 [BakaShrot.Topics]
@@ -190,17 +189,18 @@ MaxAttachmentSize = 3M
 [BakaShrot.Peer.a]
 Host = 127.0.0.1
 Port = 12410
-Topic = logs
 Node = serverA
 PublicKey = $($A.Pub)
 
 [BakaShrot.Client.a]
 PublicKeys = $($A.Pub)
-Identities = logs:serverA
+Node = serverA
+DefaultTopic = logs
 
 [BakaShrot.Client.garage]
 PublicKeys = $($K.Pub)
-Identities = photos:garage
+Node = garage
+DefaultTopic = photos
 PushTopics = photos
 ReadTopics = *
 AllowQuery = 1
@@ -209,7 +209,7 @@ AllowQuery = 1
 $ServerKeys = @{ 12410 = $A.Pub; 12411 = $B.Pub }
 function Client-Ini($Name, $Topic, $Node, $Port) {
     $P = Join-Path $Dir "$Name.ini"
-    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($K.Priv)`r`nPublicKey = $($K.Pub)`r`nTopic = $Topic`r`nNode = $Node`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($ServerKeys[$Port])"
+    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($K.Priv)`r`nPublicKey = $($K.Pub)`r`nNode = $Node`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($ServerKeys[$Port])"
     $P
 }
 $OnA = Client-Ini "kitchen-a" "logs" "kitchen" 12410
@@ -241,10 +241,10 @@ try {
     Check "5 MB up and down, tool start included" $true ("{0:N0} ms up, {1:N0} ms down" -f $UploadMs, $DownloadMs)
     Expect-Same "#3 read back identical" "logs" "kitchen" 3 $Exact $OnA
     Expect-Same "#4 read back identical" "logs" "kitchen" 4 $Tiny $OnA
-    Expect "#5 has none: refused" (Tool "GetAttachment.exe" @("logs", "kitchen", "5", (Join-Path $Dir "none.bin"), $OnA)) "No attachment for logs:kitchen#5" 1
+    Expect "#5 has none: refused" (Tool "BakaShrotGetAttachment.exe" @("logs", "kitchen", "5", (Join-Path $Dir "none.bin"), $OnA)) "No attachment for logs:kitchen#5" 1
     Check "a refused one leaves no file" (-not (Test-Path (Join-Path $Dir "none.bin"))) "checked"
-    Expect "a message that doesn't exist: refused" (Tool "GetAttachment.exe" @("logs", "kitchen", "99", (Join-Path $Dir "none.bin"), $OnA)) "No attachment" 1
-    Expect "GetLatestMessage: #5, no attachment line" (Tool "GetLatestMessage.exe" @("logs", "kitchen", $OnA)) "#5 \(ids 1:2\), pushed [^|]+\| \{`"n`":5\}$"
+    Expect "a message that doesn't exist: refused" (Tool "BakaShrotGetAttachment.exe" @("logs", "kitchen", "99", (Join-Path $Dir "none.bin"), $OnA)) "No attachment" 1
+    Expect "BakaShrotGetLatestMessage: #5, no attachment line" (Tool "BakaShrotGetLatestMessage.exe" @("logs", "kitchen", $OnA)) "#5 \(ids 1:2\), pushed [^|]+\| \{`"n`":5\}$"
     $R = Query "SELECT message_id, size, state FROM attachments WHERE topic_id = 1 AND node_id = 2 ORDER BY message_id" $OnA
     Check "A's attachments: 4, all ready (2)" ($R.Out -match '\[\["1","102400","2"\],\["2","5243003","2"\],\["3","2097152","2"\],\["4","1","2"\]\]') $R.Out
     Expect "A stores 6 + 2 + 1 + 1 parts" (Query "SELECT COUNT(*) FROM blob_chunks" $OnA) '\[\["10"\]\]'
@@ -255,16 +255,16 @@ try {
     Wait-Same "B: #1 identical" "logs" "kitchen" 1 $Small $OnB
     Wait-Same "B: #3 identical (2 MB)" "logs" "kitchen" 3 $Exact $OnB
     Wait-Same "B: #4 identical (1 byte)" "logs" "kitchen" 4 $Tiny $OnB
-    Expect "B: #2 isn't kept (5 MB > 3M)" (Tool "GetAttachment.exe" @("logs", "kitchen", "2", (Join-Path $Dir "none.bin"), $OnB)) "isn't kept here" 1
+    Expect "B: #2 isn't kept (5 MB > 3M)" (Tool "BakaShrotGetAttachment.exe" @("logs", "kitchen", "2", (Join-Path $Dir "none.bin"), $OnB)) "isn't kept here" 1
     $R = Query "SELECT a.message_id, a.state FROM attachments a JOIN topics t ON t.topic_id = a.topic_id WHERE t.name = 'logs' ORDER BY a.message_id" $OnB
     Check "B's attachments: ready, not kept (3), ready, ready" ($R.Out -match '\[\["1","2"\],\["2","3"\],\["3","2"\],\["4","2"\]\]') $R.Out
-    Expect "B: GetLatestMessage logs:kitchen, #5 has none" (Tool "GetLatestMessage.exe" @("logs", "kitchen", $OnB)) "#5 \(ids 300:30\), pushed [^|]+\| \{`"n`":5\}"
+    Expect "B: BakaShrotGetLatestMessage logs:kitchen, #5 has none" (Tool "BakaShrotGetLatestMessage.exe" @("logs", "kitchen", $OnB)) "#5 \(ids 300:30\), pushed [^|]+\| \{`"n`":5\}"
 
     "--- Pushed on B, too big there, then replicated to A"
     Expect "B refuses 5 MB (more than 3M)" (Push '{"photo":0}' $OnB "" $Mid) "too big: 5243003 bytes, at most 3145728" 1
     Expect "the message wasn't stored: the next is #1" (Push '{"photo":1}' $OnB "" $Small) "message #1, with an attachment"
     Wait-Same "A got B's photos:garage#1 identical" "photos" "garage" 1 $Small $OnA
-    Expect "A: the latest of photos:garage" (Tool "GetLatestMessage.exe" @("photos", "garage", $OnA)) "Attachment: 102400 bytes \| \{`"photo`":1\}"
+    Expect "A: the latest of photos:garage" (Tool "BakaShrotGetLatestMessage.exe" @("photos", "garage", $OnA)) "Attachment: 102400 bytes \| \{`"photo`":1\}"
 
     "--- Deleted with their message (A: short = 4s)"
     $Before = (Query "SELECT COUNT(*) FROM blob_chunks" $OnA).Out

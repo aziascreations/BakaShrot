@@ -6,8 +6,11 @@
 XIncludeFile "../Packets.pbi"
 
 ; S2C, answers a request the server won't fulfill, the connection stays open.
-; Reason is only meant for logs and humans.
+; Code: what kind of refusal, 1-#BakaShrot_Refused_Max, one of the
+; #BakaShrot_Refused_* in Client/BakaShrot_ErrorCodes.pbi: what clients act
+; on (protocol 6). Reason is only meant for logs and humans.
 Structure BakaShrot_RequestRefused Extends BakaShrot_PacketBase
+    Code.l
     Reason.s
 EndStructure
 
@@ -22,12 +25,20 @@ Procedure.i BakaShrot_RequestRefusedPacket_Encode(*Refused.BakaShrot_RequestRefu
     *Refused\Version    = #BakaShrot_ProtocolVersion
     *Refused\PacketType = #BakaShrot_PacketType_RequestRefused
 
+    If Not BakaShrot_IsRefusalCode(*Refused\Code)
+        ProcedureReturn 0
+    EndIf
+
     *MsgPackData = MsgPackCreate(64)
     If Not *MsgPackData
         ProcedureReturn 0
     EndIf
 
     If Not BakaShrot_WritePacketBase(*Refused, *MsgPackData)
+        Goto EncodeFailed
+    EndIf
+
+    If MsgPackWriteInteger(*MsgPackData, *Refused\Code) <> #MsgPack_Error_Success
         Goto EncodeFailed
     EndIf
 
@@ -53,7 +64,7 @@ EndProcedure
 ; *MsgPackData stays owned by the caller, and should be discarded on failure.
 ; Returns 0 on failure, the caller owns the returned struct - free it with FreeStructure.
 Procedure.i BakaShrot_RequestRefusedPacket_Decode(*MsgPackData.MsgPackData)
-    Protected *Refused.BakaShrot_RequestRefused
+    Protected *Refused.BakaShrot_RequestRefused, Value.q
 
     *Refused = AllocateStructure(BakaShrot_RequestRefused)
     If Not *Refused
@@ -64,6 +75,16 @@ Procedure.i BakaShrot_RequestRefusedPacket_Decode(*MsgPackData.MsgPackData)
     If Not BakaShrot_ReadPacketBase(*Refused, *MsgPackData) Or *Refused\PacketType <> #BakaShrot_PacketType_RequestRefused
         Goto DecodeFailed
     EndIf
+
+    ; Code
+    If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+        Goto DecodeFailed
+    EndIf
+    Value = MsgPackReadInteger(*MsgPackData)
+    If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or Not BakaShrot_IsRefusalCode(Value)
+        Goto DecodeFailed
+    EndIf
+    *Refused\Code = Value
 
     ; Reason
     If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_String

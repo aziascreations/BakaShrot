@@ -22,8 +22,8 @@ XIncludeFile "SocketWait.pbi"
 
 ; Who to authenticate as.
 Structure BakaShrot_OutboundIdentity
-	; Each a name or an id in digits (Names.pbi), resolved by the server.
-	Topic.s
+	; The node it writes as, a name or an id in digits (Names.pbi), resolved
+	; by the server, which must allow it for this key.
 	Node.s
 
 	; Ed25519 public key (Base64), sent in the Hello.
@@ -45,6 +45,10 @@ Structure BakaShrot_Outbound
 	; for the server's packets give up right away, as if they timed out.
 	; Lets a server stop its peer links without waiting out their timeouts.
 	*StopRequested.Integer
+
+	; Why BakaShrot_Outbound_Connect() failed, a #BakaShrot_Error_* of
+	; Client/BakaShrot_ErrorCodes.pbi, 0 once it succeeded.
+	LastError.l
 EndStructure
 
 
@@ -158,22 +162,27 @@ Procedure.i BakaShrot_Outbound_Connect(*Outbound.BakaShrot_Outbound, Host.s, Por
 	Protected KeyPair.BakaShrot_SessionKeyPair
 	Protected ChallengeDecoded.i, ServerProved.i
 
-	If *Outbound\ConnectionId Or Not *ServerPublicKey
+	*Outbound\LastError = #BakaShrot_Error_None
+	If *Outbound\ConnectionId
+		*Outbound\LastError = #BakaShrot_Error_AlreadyConnected
 		ProcedureReturn #False
 	EndIf
 
-	If Port < 1 Or Port > 65535
+	If Not *ServerPublicKey Or Port < 1 Or Port > 65535
+		*Outbound\LastError = #BakaShrot_Error_InvalidArgument
 		ProcedureReturn #False
 	EndIf
 
 	; Only needed before PureBasic 6.00.
 	CompilerIf #PB_Compiler_Version < 600
 		If Not InitNetwork()
+			*Outbound\LastError = #BakaShrot_Error_Internal
 			ProcedureReturn #False
 		EndIf
 	CompilerEndIf
 
 	If Not InitCryptography()
+		*Outbound\LastError = #BakaShrot_Error_Internal
 		ProcedureReturn #False
 	EndIf
 
@@ -181,6 +190,7 @@ Procedure.i BakaShrot_Outbound_Connect(*Outbound.BakaShrot_Outbound, Host.s, Por
 	ClearStructure(@*Outbound\Metadata, BakaShrot_ConnectionMetadata)
 	If Not DecodeKeyFromString(*Identity\PublicKey, @*Outbound\Metadata\PublicKey[0], #BakaShrot_Ed25519_PublicKeySize)
 		*Outbound\Metadata\Status = #BakaShrot_ConnectionStatus_Aborted
+		*Outbound\LastError = #BakaShrot_Error_InvalidArgument
 		ProcedureReturn #False
 	EndIf
 	CopyMemory(*ServerPublicKey, @*Outbound\Metadata\ServerPublicKey[0], #BakaShrot_Ed25519_PublicKeySize)
@@ -188,6 +198,7 @@ Procedure.i BakaShrot_Outbound_Connect(*Outbound.BakaShrot_Outbound, Host.s, Por
 	*Outbound\ConnectionId = OpenNetworkConnection(Host, Port, #PB_Network_TCP | #PB_Network_IPv4)
 	If Not *Outbound\ConnectionId
 		*Outbound\Metadata\Status = #BakaShrot_ConnectionStatus_Aborted
+		*Outbound\LastError = #BakaShrot_Error_ConnectFailed
 		ProcedureReturn #False
 	EndIf
 	*Outbound\Metadata\Status = #BakaShrot_ConnectionStatus_New
@@ -198,11 +209,11 @@ Procedure.i BakaShrot_Outbound_Connect(*Outbound.BakaShrot_Outbound, Host.s, Por
 
 
 	; 1. Hello, sealed for the server
-	Hello\ClientTopic     = *Identity\Topic
 	Hello\ClientNode      = *Identity\Node
 	Hello\ClientPubKeyB64 = *Identity\PublicKey
 	CopyMemory(@KeyPair\PublicKey[0], @Hello\ClientSessionKey[0], #BakaShrot_SessionKeySize)
 
+	*Outbound\LastError = #BakaShrot_Error_Internal
 	*Packet = BakaShrot_HelloPacket_Encode(@Hello, @PacketSize)
 	If Not *Packet
 		Goto ConnectFailed
@@ -212,6 +223,7 @@ Procedure.i BakaShrot_Outbound_Connect(*Outbound.BakaShrot_Outbound, Host.s, Por
 	If Not *Sealed
 		Goto ConnectFailed
 	EndIf
+	*Outbound\LastError = #BakaShrot_Error_ConnectFailed
 	Sent = BakaShrot_SendPacket(*Outbound\ConnectionId, *Sealed, SealedSize\i, 0)
 	FreeMemory(*Sealed)
 	If Not Sent
@@ -219,11 +231,16 @@ Procedure.i BakaShrot_Outbound_Connect(*Outbound.BakaShrot_Outbound, Host.s, Por
 	EndIf
 
 
-	; 2. Challenge request, in plain text
+	; 2. Challenge request, in plain text. No answer: the server closed the
+	; connection, it couldn't open the Hello or doesn't allow this key and
+	; node (or speaks another protocol version).
+	*Outbound\LastError = #BakaShrot_Error_AuthRejected
 	*Packet = BakaShrot_Outbound_WaitPacket(*Outbound, @PacketSize, #BakaShrot_Outbound_Timeout)
 	If Not *Packet
 		Goto ConnectFailed
 	EndIf
+
+	*Outbound\LastError = #BakaShrot_Error_ProtocolError
 
 	*Request = 0
 	*View = MsgPackWrapMsgBuffer(*Packet, PacketSize\i)
@@ -250,10 +267,12 @@ Procedure.i BakaShrot_Outbound_Connect(*Outbound.BakaShrot_Outbound, Host.s, Por
 	BakaShrot_MakeHandshakeTranscript(@*Outbound\Metadata, #BakaShrot_TranscriptServerLabel, @Proof)
 	ServerProved = BakaShrot_VerifyHandshake(@Proof, *ServerPublicKey)
 	If Not ServerProved
+		*Outbound\LastError = #BakaShrot_Error_ServerNotVerified
 		Goto ConnectFailed
 	EndIf
 
 	; Every packet is encrypted from now on.
+	*Outbound\LastError = #BakaShrot_Error_Internal
 	If Not BakaShrot_Session_StartClient(@*Outbound\Metadata\Cipher, @KeyPair, @*Outbound\Metadata\ServerSessionKey[0])
 		Goto ConnectFailed
 	EndIf
@@ -274,6 +293,7 @@ Procedure.i BakaShrot_Outbound_Connect(*Outbound.BakaShrot_Outbound, Host.s, Por
 	If Not *Packet
 		Goto ConnectFailed
 	EndIf
+	*Outbound\LastError = #BakaShrot_Error_AuthRejected
 	Sent = BakaShrot_Outbound_Send(*Outbound, *Packet, PacketSize\i)
 	FreeMemory(*Packet)
 	If Not Sent
@@ -281,11 +301,12 @@ Procedure.i BakaShrot_Outbound_Connect(*Outbound.BakaShrot_Outbound, Host.s, Por
 	EndIf
 
 
-	; 4. Accepted
+	; 4. Accepted. No answer: the server didn't accept this key's signature.
 	*Packet = BakaShrot_Outbound_WaitPacket(*Outbound, @PacketSize, #BakaShrot_Outbound_Timeout)
 	If Not *Packet
 		Goto ConnectFailed
 	EndIf
+	*Outbound\LastError = #BakaShrot_Error_ProtocolError
 
 	*Accepted = 0
 	*View = MsgPackWrapMsgBuffer(*Packet, PacketSize\i)
@@ -302,6 +323,7 @@ Procedure.i BakaShrot_Outbound_Connect(*Outbound.BakaShrot_Outbound, Host.s, Por
 	; The server's answers may be big from now on.
 	BakaShrot_Inbox_Lift(@*Outbound\Inbox)
 	*Outbound\Metadata\Status = #BakaShrot_ConnectionStatus_Authenticated
+	*Outbound\LastError = #BakaShrot_Error_None
 	ProcedureReturn #True
 
 

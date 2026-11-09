@@ -8,8 +8,8 @@ operations come before security hardening (`Notes.md`, "Threat model").
 
 ## Read first
 
-1. `Notes.md`: where things stand, "Open items, by importance" (the to-do
-   list, item 3 is the next known bug), "Testing tips".
+1. `Notes.md`: "Right now" (what's committed, what's next), where things
+   stand, "Open items, by importance" (the to-do list), "Testing tips".
 2. `Design/`, by topic: `Packets.md` (the protocol, where every file lives,
    code conventions), `Attachments.md`, `Cryptography.md`,
    `StorageConcurrency.md`, `ReplicationIssues.md`, `Release.md`,
@@ -30,7 +30,7 @@ operations come before security hardening (`Notes.md`, "Threat model").
 |---|---|---|
 | `Server\BakaShrot_Server.pb` | `Build\BakaShrot_Server.exe` | `/CONSOLE /THREAD` |
 | `Client\BakaShrot_Client.pbi` | `Build\BakaShrot_Client.dll` | `/DLL /THREAD` |
-| `Tools\<Name>\<Name>.pb` (PushMessage, GetLatestMessage, GetMessages, GetAttachment, Query, Resolve, ListNames, KeyGen) | `Build\<Name>.exe` | `/CONSOLE` |
+| `Tools\<Name>\<Name>.pb` (BakaShrot + PushMessage, GetLatestMessage, GetMessages, GetAttachment, Query, ResolveIds, List, GenerateKeyPairs) | `Build\<Name>.exe` | `/CONSOLE` |
 | `Client\BakaShrot_Client_Prototypes.pbi` | `Build\ClientExample.exe` | `/CONSOLE` |
 | `Tests\Bench\BenchServer.pb` (the server with a stop file, used by every test) | `Build\Bench\BenchServer.exe` | `/CONSOLE /THREAD` |
 | `Tests\Bench\BenchClient.pb`, `BenchSeed.pb` | `Build\Bench\` | `/CONSOLE /THREAD` |
@@ -55,21 +55,29 @@ all passed. `powershell -ExecutionPolicy Bypass -File Tests\<Suite>.ps1`:
 | `Retention-Test.ps1` | 12408-12409 | `pushed_at`, retention, schema upgrade (Python) |
 | `Attachments-Test.ps1` | 12410-12411 | attachments through the tools, replication, limits |
 | `AttachmentEdges-Test.ps1` | 12413-12414 | raw-protocol edge cases, expiry, resuming, corruption (Python) |
+| `Restart-Test.ps1` | 12415-12416 | servers killed mid-traffic and mid-catch-up: nothing acknowledged lost, ids carry on, both catch up (Python pushers) |
 
 Plus `Build\HandshakeTest.exe` and `Build\CipherTest.exe` (no server), and
 the release's smoke test. Speed: `Tests\Bench\Bench-Replication.ps1 -Ramp 10x0 -Parts Ramp`
-(push ceiling, ~40,800 msg/s for 4 servers). After a change, run every
+(push ceiling for 4 servers: ~17,000 msg/s with the default `Synchronous =
+FULL`, ~34,000-40,000 with `-Synchronous NORMAL`). After a change, run every
 suite: they take a few minutes in all.
 
 ## Traps
 
 - **Run exes from `Build\`**: the antivirus blocks them in temp folders.
-- **`Build\` holds private keys**: git-ignored, never publish it.
+- **`Build\` holds private keys**: git-ignored, never publish it. The one
+  exception: `Examples/*/` commit their configs, keys included, on purpose
+  (public, example-only, marked so); don't copy those keys anywhere else.
 - **PureBasic is single pass**: constants, structures and procedures must
   be declared before use, so include order matters (e.g. `Config.pbi`
   includes `Packets.pbi` for its constants).
 - **`SetDatabase*()` binds the next statement run on that connection**, not
   a specific one: set them right before their `DatabaseUpdate/Query`.
+- **Never `Goto` out of a `Select`**: 5.73's ASM backend keeps the value on
+  the stack, the jump corrupts it (a config error crashed the server with
+  0xC0000005). Set the error, leave the `Select`, then jump. Out of
+  `For`/`ForEach`/`While` loops is fine (checked on both compilers).
 - **PureBasic lists aren't safe to walk from several threads** (`ForEach`
   moves the shared current element): give each thread its own copy.
 - **Files mix CRLF and LF**: edits must keep each file's line endings.
@@ -84,9 +92,9 @@ suite: they take a few minutes in all.
 ## Working rules
 
 - **Commit only when the owner asks**, on a branch, not `master`.
-- **Wire changes bump `#BakaShrot_ProtocolVersion`** (`Packets.pbi`, 4 at
+- **Wire changes bump `#BakaShrot_ProtocolVersion`** (`Packets.pbi`, 6 at
   this writing); any difference refuses the connection.
-- **Schema changes** add a `Server/Storage/db_schema_vN.dbml` (v7 at this
+- **Schema changes** add a `Server/Storage/db_schema_vN.dbml` (v8 at this
   writing) and a migration in `SetupStorageDatabase()` (`Storage.pbi`),
   existing databases must keep working.
 - **Packets** follow `Design/Packets.md` "Code conventions": one file per

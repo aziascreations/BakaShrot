@@ -26,7 +26,7 @@ $Server = Join-Path $Build "Bench\BenchServer.exe"
 $Fails = 0
 
 function New-KeyPair {
-    $L = & (Join-Path $Build "KeyGen.exe")
+    $L = & (Join-Path $Build "BakaShrotGenerateKeyPairs.exe")
     @{ Priv = $L[0] -replace "^PrivateKey = ", ""; Pub = $L[1] -replace "^PublicKey = ", "" }
 }
 function Test-Port($P) {
@@ -71,7 +71,7 @@ function Wait-Port($Port, $S) {
 }
 function Query($Sql, $Ini) {
     $F = Join-Path $Dir "q.sql"; Set-Content $F -Encoding Ascii -Value $Sql
-    Tool "Query.exe" @("@$F", $Ini)
+    Tool "BakaShrotQuery.exe" @("@$F", $Ini)
 }
 function Wait-Query($Sql, $Ini, $Pattern, $Seconds = 20) {
     $D = (Get-Date).AddSeconds($Seconds)
@@ -87,7 +87,7 @@ function Push($Data, $Ini, [string]$Attach = "") {
     [IO.File]::WriteAllText($F, $Data, (New-Object System.Text.UTF8Encoding $false))
     $A = @()
     if ($Attach) { $A += @("-a", $Attach) }
-    Tool "PushMessage.exe" ($A + @("@$F", $Ini))
+    Tool "BakaShrotPushMessage.exe" ($A + @("@$F", $Ini))
 }
 function New-File($Name, [int64]$Size, [int]$Seed) {
     $P = Join-Path $Dir $Name
@@ -112,7 +112,6 @@ foreach ($Name in "a", "b") {
     Set-Content (Join-Path $Dir "$Name.ini") -Encoding Ascii -Value @"
 [BakaShrot]
 PrivateKey = $($Me.Priv)
-Topic = logs
 Node = server$Name
 
 [BakaShrot.Topics]
@@ -140,24 +139,26 @@ UploadTimeout = 10
 [BakaShrot.Peer.$PeerName]
 Host = 127.0.0.1
 Port = $PeerPort
-Topic = logs
 Node = server$PeerName
 PublicKey = $($Peer.Pub)
 
 [BakaShrot.Client.$PeerName]
 PublicKeys = $($Peer.Pub)
-Identities = logs:server$PeerName
+Node = server$PeerName
+DefaultTopic = logs
 
 [BakaShrot.Client.kitchen]
 PublicKeys = $($K.Pub)
-Identities = logs:kitchen
+Node = kitchen
+DefaultTopic = logs
 PushTopics = logs;other;secret
 ReadTopics = *
 AllowQuery = 1
 
 [BakaShrot.Client.garage]
 PublicKeys = $($G.Pub)
-Identities = logs:garage
+Node = garage
+DefaultTopic = logs
 PushTopics = logs
 ReadTopics = logs
 "@
@@ -165,7 +166,7 @@ ReadTopics = logs
 $ServerKeys = @{ 12413 = $A.Pub; 12414 = $B.Pub }
 function Client-Ini($Name, $Keys, $Node, $Port) {
     $P = Join-Path $Dir "$Name.ini"
-    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($Keys.Priv)`r`nPublicKey = $($Keys.Pub)`r`nTopic = logs`r`nNode = $Node`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($ServerKeys[$Port])"
+    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($Keys.Priv)`r`nPublicKey = $($Keys.Pub)`r`nNode = $Node`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($ServerKeys[$Port])"
     $P
 }
 $KitchenA = Client-Ini "kitchen-a" $K "kitchen" 12413
@@ -223,7 +224,7 @@ try {
     $Copy = Join-Path $Dir "big-from-b.bin"
     $D = (Get-Date).AddSeconds(90)
     do {
-        $R = Tool "GetAttachment.exe" @("logs", "kitchen", $BigId, $Copy, $KitchenB)
+        $R = Tool "BakaShrotGetAttachment.exe" @("logs", "kitchen", $BigId, $Copy, $KitchenB)
         if ($R.Code -eq 0) { break }
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $D)
@@ -260,7 +261,7 @@ db.commit(); print("flipped")
         $SA = Start-Srv "a"
         Wait-Port 12413 $SA
         $Copy = Join-Path $Dir "bad-from-a.bin"
-        Expect "reading it from A: the client refuses it" (Tool "GetAttachment.exe" @("logs", "kitchen", $BadId, $Copy, $KitchenA)) "doesn't match its SHA-256" 1
+        Expect "reading it from A: the client refuses it" (Tool "BakaShrotGetAttachment.exe" @("logs", "kitchen", $BadId, $Copy, $KitchenA)) "doesn't match its SHA-256" 1
         Check "  and leaves no file" (-not (Test-Path $Copy)) "checked"
         $SB = Start-Srv "b"
         Wait-Port 12414 $SB
@@ -268,7 +269,7 @@ db.commit(); print("flipped")
         $LogB = Get-Content $SB.Log -Raw
         $Drops = [regex]::Matches($LogB, "attachment of logs:kitchen#$BadId from peer 'a' doesn't match its SHA-256, dropped").Count
         Check "B drops it: doesn't match" ($Drops -ge 1) "$Drops times in 6 s"
-        Expect "B doesn't serve it" (Tool "GetAttachment.exe" @("logs", "kitchen", $BadId, $Copy, $KitchenB)) "isn't here yet" 1
+        Expect "B doesn't serve it" (Tool "BakaShrotGetAttachment.exe" @("logs", "kitchen", $BadId, $Copy, $KitchenB)) "isn't here yet" 1
         $R = Query "SELECT a.state, COALESCE(a.blob_id, 0) FROM attachments a JOIN topics t ON t.topic_id = a.topic_id WHERE t.name = 'logs' AND a.message_id = $BadId" $KitchenB
         Check "B's attachment is back to missing (0), no blob" ($R.Out -match '\[\["0","0"\]\]') $R.Out
         Expect "B: no blob left behind, once cleaned" (Wait-Query "SELECT COUNT(*) FROM blobs WHERE state <> 2" $KitchenB '\[\["0"\]\]' 5) '\[\["0"\]\]'
@@ -280,7 +281,9 @@ finally {
 }
 
 "--- Logs"
-$All = (Get-ChildItem $Dir -Filter "*.log" | ForEach-Object { Get-Content $_.FullName }) | Where-Object { $_ -match "invalid|unexpected|doesn't decrypt" }
+# Refusals are what this test asks for, their codes' names (InvalidRequest)
+# aren't bad packets.
+$All = (Get-ChildItem $Dir -Filter "*.log" | ForEach-Object { Get-Content $_.FullName }) | Where-Object { $_ -notmatch "Refused a request" -and $_ -match "invalid|unexpected|doesn't decrypt" }
 Check "no invalid or unexpected packets in any log" ($All.Count -eq 0) ($All -join " / ")
 
 ""

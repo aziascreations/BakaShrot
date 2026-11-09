@@ -204,7 +204,7 @@ Procedure.i BakaShrot_NetClient_Authenticate(*Client.BakaShrot_NetClient)
 	Protected Accepted.BakaShrot_AuthAccepted
 	Protected Proof.BakaShrot_ChallengeProof
 	Protected KeyPair.BakaShrot_SessionKeyPair
-	Protected TopicId.i, NodeId.i, PublicKey.s, ClientName.s, TopicRef.s, NodeRef.s
+	Protected NodeId.i, DefaultTopicId.i, PublicKey.s, ClientName.s, NodeRef.s
 	Protected NonceMatches.i, SignatureDecoded.i, Sent.i, CipherReady.i
 
 	*Client\Metadata\Status = #BakaShrot_ConnectionStatus_New
@@ -235,16 +235,14 @@ Procedure.i BakaShrot_NetClient_Authenticate(*Client.BakaShrot_NetClient)
 		ProcedureReturn #False
 	EndIf
 
-	TopicRef  = *Hello\ClientTopic
 	NodeRef   = *Hello\ClientNode
 	PublicKey = *Hello\ClientPubKeyB64
 	CopyMemory(@*Hello\ClientSessionKey[0], @*Client\Metadata\ClientSessionKey[0], #BakaShrot_SessionKeySize)
 	FreeStructure(*Hello)
 
-	TopicId = BakaShrot_Names_ResolveTopic(TopicRef)
-	NodeId  = BakaShrot_Names_ResolveNode(NodeRef)
-	If TopicId < 0 Or NodeId < 0
-		PrintN("[Net] Client " + Str(*Client\ClientId) + " sent an unknown identity '" + Left(TopicRef, 80) + "':'" + Left(NodeRef, 80) + "'")
+	NodeId = BakaShrot_Names_ResolveNode(NodeRef)
+	If NodeId < 0
+		PrintN("[Net] Client " + Str(*Client\ClientId) + " sent an unknown node '" + Left(NodeRef, 80) + "'")
 		ProcedureReturn #False
 	EndIf
 
@@ -254,9 +252,11 @@ Procedure.i BakaShrot_NetClient_Authenticate(*Client.BakaShrot_NetClient)
 	EndIf
 
 	LockMutex(*Server\Mutex)
-	ClientName = FindClientName(*Server\Config, PublicKey, TopicId, NodeId)
-	*Client\PeerName = FindPeerName(*Server\Config, PublicKey, TopicId, NodeId)
+	ClientName = FindClientName(*Server\Config, PublicKey, NodeId)
+	*Client\PeerName = FindPeerName(*Server\Config, PublicKey, NodeId)
+	DefaultTopicId = -1
 	If ClientName <> "" And FindMapElement(*Server\Config\Clients(), ClientName)
+		DefaultTopicId = *Server\Config\Clients()\DefaultTopicId
 		*Client\Permissions\Read  = *Server\Config\Clients()\Permissions\Read
 		*Client\Permissions\Write = *Server\Config\Clients()\Permissions\Write
 		*Client\Permissions\Query = *Server\Config\Clients()\Permissions\Query
@@ -270,12 +270,12 @@ Procedure.i BakaShrot_NetClient_Authenticate(*Client.BakaShrot_NetClient)
 	EndIf
 	UnlockMutex(*Server\Mutex)
 	If ClientName = ""
-		PrintN("[Net] Client " + Str(*Client\ClientId) + " isn't allowed to use " + BakaShrot_Names_TopicRef(TopicId) + ":" + BakaShrot_Names_NodeRef(NodeId) + " with its public key")
+		PrintN("[Net] Client " + Str(*Client\ClientId) + " isn't allowed to write as node " + BakaShrot_Names_NodeRef(NodeId) + " with its public key")
 		ProcedureReturn #False
 	EndIf
 
-	*Client\Metadata\TopicId = TopicId
-	*Client\Metadata\NodeId  = NodeId
+	*Client\Metadata\DefaultTopicId = DefaultTopicId
+	*Client\Metadata\NodeId         = NodeId
 
 
 	; 2. Challenge request, in plain text, signed by this server
@@ -386,9 +386,9 @@ Procedure.i BakaShrot_NetClient_Authenticate(*Client.BakaShrot_NetClient)
 
 	*Client\Metadata\Status = #BakaShrot_ConnectionStatus_Authenticated
 	If *Client\PeerName = ""
-		PrintN("[Net] Client " + Str(*Client\ClientId) + " authenticated as '" + ClientName + "' " + BakaShrot_Names_TopicRef(TopicId) + ":" + BakaShrot_Names_NodeRef(NodeId))
+		PrintN("[Net] Client " + Str(*Client\ClientId) + " authenticated as '" + ClientName + "', node " + BakaShrot_Names_NodeRef(NodeId))
 	Else
-		PrintN("[Net] Client " + Str(*Client\ClientId) + " authenticated as '" + ClientName + "' " + BakaShrot_Names_TopicRef(TopicId) + ":" + BakaShrot_Names_NodeRef(NodeId) + ", peer '" + *Client\PeerName + "'")
+		PrintN("[Net] Client " + Str(*Client\ClientId) + " authenticated as '" + ClientName + "', node " + BakaShrot_Names_NodeRef(NodeId) + ", peer '" + *Client\PeerName + "'")
 	EndIf
 
 	ProcedureReturn #True
@@ -397,12 +397,13 @@ EndProcedure
 
 ; Encodes and sends a RequestRefused.
 ; Returns #False if it couldn't be sent, the client must then be aborted.
-Procedure.i BakaShrot_NetClient_Refuse(*Client.BakaShrot_NetClient, Reason.s)
+Procedure.i BakaShrot_NetClient_Refuse(*Client.BakaShrot_NetClient, Code.l, Reason.s)
 	Protected Refused.BakaShrot_RequestRefused
 	Protected *Packet, PacketSize.Integer, Sent.i
 
-	PrintN("[Net] Refused a request from client " + Str(*Client\ClientId) + ": " + Reason)
+	PrintN("[Net] Refused a request from client " + Str(*Client\ClientId) + " (" + BakaShrot_ErrorName(Code) + "): " + Reason)
 
+	Refused\Code   = Code
 	Refused\Reason = Reason
 	*Packet = BakaShrot_RequestRefusedPacket_Encode(@Refused, @PacketSize)
 	If Not *Packet
@@ -449,51 +450,54 @@ Procedure.i BakaShrot_NetClient_HandlePushMessage(*Client.BakaShrot_NetClient, *
 	EndIf
 
 	If Not *Client\Permissions\Write
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to write")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to write")
 	EndIf
 
 	If TopicRef = ""
-		TopicId = *Client\Metadata\TopicId
+		TopicId = *Client\Metadata\DefaultTopicId
+		If TopicId < 0
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NoDefaultTopic, "No default topic for this client (DefaultTopic in its server's config): name the topic")
+		EndIf
 	Else
 		TopicId = BakaShrot_Names_ResolveTopic(TopicRef)
 		If TopicId < 0
-			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown topic '" + Left(TopicRef, 80) + "'")
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown topic '" + Left(TopicRef, 80) + "'")
 		EndIf
 	EndIf
 	If Not NameSetHas(@*Client\PushTopics, TopicId, BakaShrot_Names_TopicName(TopicId))
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to push to topic '" + BakaShrot_Names_TopicRef(TopicId) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to push to topic '" + BakaShrot_Names_TopicRef(TopicId) + "'")
 	EndIf
 
 	; So it fits in every packet that carries it later, see Packets.pbi.
 	JsonSize = StringByteLength(JsonData, #PB_UTF8)
 	If JsonSize > #BakaShrot_MaxMessageSize
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The message is too big: " + Str(JsonSize) + " bytes, at most " + Str(#BakaShrot_MaxMessageSize))
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_TooBig, "The message is too big: " + Str(JsonSize) + " bytes, at most " + Str(#BakaShrot_MaxMessageSize))
 	EndIf
 
 	; A topic allowed by "*" may be new here, it needs its row for the
 	; "messages" view.
 	If Not BakaShrot_Names_EnsureTopicId(TopicId, @StoreError)
 		PrintN("[Net] Failed to register topic " + Str(TopicId) + ": " + StoreError\s)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The message couldn't be stored")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The message couldn't be stored")
 	EndIf
 
 	; Its attachment: one of this client's complete uploads, for that topic.
 	If UploadId
 		If Not GetStorageBlob(*Client\DbId, UploadId, @Blob) Or Blob\NodeId <> *Client\Metadata\NodeId
-			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "No such upload")
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotFound, "No such upload")
 		EndIf
 		If Blob\State <> #BakaShrot_Blob_Complete
-			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The upload isn't complete, or is attached already")
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_InvalidRequest, "The upload isn't complete, or is attached already")
 		EndIf
 		If Blob\TopicId <> TopicId
-			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The upload is for topic '" + BakaShrot_Names_TopicRef(Blob\TopicId) + "'")
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_InvalidRequest, "The upload is for topic '" + BakaShrot_Names_TopicRef(Blob\TopicId) + "'")
 		EndIf
 	EndIf
 
 	MessageId = InsertNextMessage(TopicId, *Client\Metadata\NodeId, JsonData, @StoreError, UploadId)
 	If MessageId < 1
 		PrintN("[Net] Failed to store a message from client " + Str(*Client\ClientId) + ": " + StoreError\s)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The message couldn't be stored")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The message couldn't be stored")
 	EndIf
 
 	Pushed\MessageId = MessageId
@@ -542,23 +546,23 @@ Procedure.i BakaShrot_NetClient_HandleGetLatestMessage(*Client.BakaShrot_NetClie
 	EndIf
 
 	If Not *Client\Permissions\Read
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to read")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to read")
 	EndIf
 
 	TopicId = BakaShrot_Names_ResolveTopic(TopicRef)
 	If TopicId < 0
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown topic '" + Left(TopicRef, 80) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown topic '" + Left(TopicRef, 80) + "'")
 	EndIf
 	If Not NameSetHas(@*Client\ReadTopics, TopicId, BakaShrot_Names_TopicName(TopicId))
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to read topic '" + BakaShrot_Names_TopicRef(TopicId) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to read topic '" + BakaShrot_Names_TopicRef(TopicId) + "'")
 	EndIf
 	NodeId = BakaShrot_Names_ResolveNode(NodeRef)
 	If NodeId < 0
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown node '" + Left(NodeRef, 80) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown node '" + Left(NodeRef, 80) + "'")
 	EndIf
 
 	If Not GetLatestMessage(*Client\DbId, TopicId, NodeId, @Message)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "No message for " + BakaShrot_Names_TopicRef(TopicId) + ":" + BakaShrot_Names_NodeRef(NodeId))
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotFound, "No message for " + BakaShrot_Names_TopicRef(TopicId) + ":" + BakaShrot_Names_NodeRef(NodeId))
 	EndIf
 
 	Latest\TopicId   = TopicId
@@ -619,24 +623,24 @@ Procedure.i BakaShrot_NetClient_HandleGetMessages(*Client.BakaShrot_NetClient, *
 	EndIf
 
 	If Not *Client\Permissions\Read
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to read")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to read")
 	EndIf
 
 	TopicId = BakaShrot_Names_ResolveTopic(TopicRef)
 	If TopicId < 0
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown topic '" + Left(TopicRef, 80) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown topic '" + Left(TopicRef, 80) + "'")
 	EndIf
 	If Not NameSetHas(@*Client\ReadTopics, TopicId, BakaShrot_Names_TopicName(TopicId))
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to read topic '" + BakaShrot_Names_TopicRef(TopicId) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to read topic '" + BakaShrot_Names_TopicRef(TopicId) + "'")
 	EndIf
 	NodeId = BakaShrot_Names_ResolveNode(NodeRef)
 	If NodeId < 0
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown node '" + Left(NodeRef, 80) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown node '" + Left(NodeRef, 80) + "'")
 	EndIf
 
 	; In characters, the bytes are counted below: never less than that.
 	If Not GetMessagesAfter(*Client\DbId, TopicId, NodeId, AfterMessageId, Limit, #BakaShrot_MessagesBatchBytes, Messages(), @More)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The messages couldn't be read")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The messages couldn't be read")
 	EndIf
 
 	; As many as fit in #BakaShrot_MessagesBatchBytes, the rest is for the
@@ -702,16 +706,16 @@ Procedure.i BakaShrot_NetClient_HandleQuery(*Client.BakaShrot_NetClient, *Packet
 	FreeStructure(*Request)
 
 	If Not *Client\Permissions\Query
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to query")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to query")
 	EndIf
 
 	If Not RunReadOnlyQuery(*Client\Server\DatabasePath, Sql, @JsonResult, @QueryError)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Query failed: " + QueryError\s)
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_QueryFailed, "Query failed: " + QueryError\s)
 	EndIf
 
 	; Leaves room for the packet's own fields.
 	If StringByteLength(JsonResult\s, #PB_UTF8) > #BakaShrot_MaxPacketSize - 64
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The result is too big for one packet, add a LIMIT")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_TooBig, "The result is too big for one packet, add a LIMIT")
 	EndIf
 
 	Result\JsonResult = JsonResult\s
@@ -755,16 +759,16 @@ Procedure.i BakaShrot_NetClient_HandleResolveName(*Client.BakaShrot_NetClient, *
 	If Kind = #BakaShrot_NameKind_Topic
 		Id = BakaShrot_Names_ResolveTopic(Ref)
 		If Id < 0
-			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown topic '" + Left(Ref, 80) + "'")
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown topic '" + Left(Ref, 80) + "'")
 		EndIf
 		If Not *Client\Permissions\Query And Not NameSetHas(@*Client\PushTopics, Id, BakaShrot_Names_TopicName(Id)) And Not NameSetHas(@*Client\ReadTopics, Id, BakaShrot_Names_TopicName(Id))
-			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown topic '" + Left(Ref, 80) + "'")
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown topic '" + Left(Ref, 80) + "'")
 		EndIf
 		Resolved\Name = BakaShrot_Names_TopicName(Id)
 	Else
 		Id = BakaShrot_Names_ResolveNode(Ref)
 		If Id < 0
-			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown node '" + Left(Ref, 80) + "'")
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown node '" + Left(Ref, 80) + "'")
 		EndIf
 		Resolved\Name = BakaShrot_Names_NodeName(Id)
 	EndIf
@@ -878,12 +882,12 @@ Procedure.i BakaShrot_NetClient_HandleSyncStateRequest(*Client.BakaShrot_NetClie
 	FreeStructure(*Request)
 
 	If *Client\PeerName = ""
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Only peers can replicate")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Only peers can replicate")
 	EndIf
 
 	If Not GetSyncState(*Client\DbId, AllPairs())
 		PrintN("[Net] Failed to read the sync state for peer '" + *Client\PeerName + "': " + DatabaseError())
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The sync state couldn't be read")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The sync state couldn't be read")
 	EndIf
 
 	; Every name this server knows, the peer only sends those.
@@ -963,20 +967,20 @@ Procedure.i BakaShrot_NetClient_HandleReplicateMessages(*Client.BakaShrot_NetCli
 
 	If *Client\PeerName = ""
 		FreeStructure(*Batch)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Only peers can replicate")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Only peers can replicate")
 	EndIf
 
 	TopicId = BakaShrot_Names_TopicByName(TopicRef)
 	If Not NameSetHas(@*Client\AcceptTopics, TopicId, TopicRef)
 		FreeStructure(*Batch)
 		BakaShrot_Names_NoteDropped(*Client\PeerName, "topic", TopicRef, "not taken here")
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Topic '" + TopicRef + "' isn't replicated here")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_InvalidRequest, "Topic '" + TopicRef + "' isn't replicated here")
 	EndIf
 	NodeId = BakaShrot_Names_NodeByName(NodeRef)
 	If Not NameSetHas(@*Client\AcceptNodes, NodeId, NodeRef)
 		FreeStructure(*Batch)
 		BakaShrot_Names_NoteDropped(*Client\PeerName, "node", NodeRef, "not taken here")
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Node '" + NodeRef + "' isn't replicated here")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_InvalidRequest, "Node '" + NodeRef + "' isn't replicated here")
 	EndIf
 
 	; Taken by a wildcard, new here.
@@ -989,7 +993,7 @@ Procedure.i BakaShrot_NetClient_HandleReplicateMessages(*Client.BakaShrot_NetCli
 	If TopicId < 0 Or NodeId < 0
 		FreeStructure(*Batch)
 		PrintN("[Net] Failed to add '" + TopicRef + "':'" + NodeRef + "' from peer '" + *Client\PeerName + "': " + StoreError\s)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The messages couldn't be stored")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The messages couldn't be stored")
 	EndIf
 
 	MaxAge = RetentionMaxAgeMs(*Client\Retention(), TopicId, TopicRef)
@@ -1003,7 +1007,7 @@ Procedure.i BakaShrot_NetClient_HandleReplicateMessages(*Client.BakaShrot_NetCli
 	EndIf
 	If Not IsStored
 		PrintN("[Net] Failed to store messages from peer '" + *Client\PeerName + "': " + StoreError\s)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The messages couldn't be stored")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The messages couldn't be stored")
 	EndIf
 
 	Pushed\MessageId = LastMessageId
@@ -1062,29 +1066,32 @@ Procedure.i BakaShrot_NetClient_HandleUploadStart(*Client.BakaShrot_NetClient, *
 	FreeStructure(*Start)
 
 	If Not *Client\Permissions\Write
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to write")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to write")
 	EndIf
 	If TopicRef = ""
-		TopicId = *Client\Metadata\TopicId
+		TopicId = *Client\Metadata\DefaultTopicId
+		If TopicId < 0
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NoDefaultTopic, "No default topic for this client (DefaultTopic in its server's config): name the topic")
+		EndIf
 	Else
 		TopicId = BakaShrot_Names_ResolveTopic(TopicRef)
 		If TopicId < 0
-			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown topic '" + Left(TopicRef, 80) + "'")
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown topic '" + Left(TopicRef, 80) + "'")
 		EndIf
 	EndIf
 	If Not NameSetHas(@*Client\PushTopics, TopicId, BakaShrot_Names_TopicName(TopicId))
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to push to topic '" + BakaShrot_Names_TopicRef(TopicId) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to push to topic '" + BakaShrot_Names_TopicRef(TopicId) + "'")
 	EndIf
 
 	MaxSize = *Client\Server\Config\Server\MaxAttachmentSize
 	If Size > MaxSize
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The attachment is too big: " + Str(Size) + " bytes, at most " + Str(MaxSize) + " here")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_TooBig, "The attachment is too big: " + Str(Size) + " bytes, at most " + Str(MaxSize) + " here")
 	EndIf
 
 	BlobId = CreateStorageBlob(TopicId, *Client\Metadata\NodeId, Size, @Sha256(0), @StoreError)
 	If Not BlobId
 		PrintN("[Net] Failed to start an upload for client " + Str(*Client\ClientId) + ": " + StoreError\s)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The upload couldn't be started")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The upload couldn't be started")
 	EndIf
 
 	Started\UploadId  = BlobId
@@ -1120,23 +1127,23 @@ Procedure.i BakaShrot_NetClient_HandleUploadChunk(*Client.BakaShrot_NetClient, *
 	; Only its own uploads: same node, a topic it may still push to.
 	If Not GetStorageBlob(*Client\DbId, *Chunk\UploadId, @Blob) Or Blob\NodeId <> *Client\Metadata\NodeId Or Blob\State <> #BakaShrot_Blob_Receiving
 		BakaShrot_UploadChunkPacket_Free(*Chunk)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "No such upload in progress")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotFound, "No such upload in progress")
 	EndIf
 	If Not *Client\Permissions\Write Or Not NameSetHas(@*Client\PushTopics, Blob\TopicId, BakaShrot_Names_TopicName(Blob\TopicId))
 		BakaShrot_UploadChunkPacket_Free(*Chunk)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to push to topic '" + BakaShrot_Names_TopicRef(Blob\TopicId) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to push to topic '" + BakaShrot_Names_TopicRef(Blob\TopicId) + "'")
 	EndIf
 	Expected = BakaShrot_AttachmentChunkBytes(Blob\Size, *Chunk\ChunkIndex)
 	If *Chunk\ChunkIndex * #BakaShrot_AttachmentChunkSize <> Blob\Received Or *Chunk\DataSize <> Expected
 		BakaShrot_UploadChunkPacket_Free(*Chunk)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Expected part " + Str(Blob\Received / #BakaShrot_AttachmentChunkSize) + " of " + Str(BakaShrot_AttachmentChunkCount(Blob\Size)) + ", " + Str(BakaShrot_AttachmentChunkBytes(Blob\Size, Blob\Received / #BakaShrot_AttachmentChunkSize)) + " bytes")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_InvalidRequest, "Expected part " + Str(Blob\Received / #BakaShrot_AttachmentChunkSize) + " of " + Str(BakaShrot_AttachmentChunkCount(Blob\Size)) + ", " + Str(BakaShrot_AttachmentChunkBytes(Blob\Size, Blob\Received / #BakaShrot_AttachmentChunkSize)) + " bytes")
 	EndIf
 
 	Received = StoreStorageBlobChunk(Blob\BlobId, *Chunk\ChunkIndex, *Chunk\Data, *Chunk\DataSize, @StoreError)
 	BakaShrot_UploadChunkPacket_Free(*Chunk)
 	If Received < 0
 		PrintN("[Net] Failed to store a part of an upload from client " + Str(*Client\ClientId) + ": " + StoreError\s)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The part couldn't be stored")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The part couldn't be stored")
 	EndIf
 
 	If Received < Blob\Size
@@ -1146,10 +1153,10 @@ Procedure.i BakaShrot_NetClient_HandleUploadChunk(*Client.BakaShrot_NetClient, *
 	; All of it: the SHA-256 given at the start must match.
 	If Not HashStorageBlob(*Client\DbId, Blob\BlobId, Blob\Size, @Blob\Sha256[0])
 		SetStorageBlobState(Blob\BlobId, #BakaShrot_Blob_Deleted)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The upload doesn't match its SHA-256, it's dropped")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_DataMismatch, "The upload doesn't match its SHA-256, it's dropped")
 	EndIf
 	If Not SetStorageBlobState(Blob\BlobId, #BakaShrot_Blob_Complete)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The upload couldn't be stored")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The upload couldn't be stored")
 	EndIf
 	ProcedureReturn BakaShrot_NetClient_SendChunkStored(*Client, Received, #True)
 EndProcedure
@@ -1181,36 +1188,36 @@ Procedure.i BakaShrot_NetClient_HandleGetAttachment(*Client.BakaShrot_NetClient,
 	FreeStructure(*Request)
 
 	If Not *Client\Permissions\Read
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to read")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to read")
 	EndIf
 	TopicId = BakaShrot_Names_ResolveTopic(TopicRef)
 	If TopicId < 0
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown topic '" + Left(TopicRef, 80) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown topic '" + Left(TopicRef, 80) + "'")
 	EndIf
 	If Not NameSetHas(@*Client\ReadTopics, TopicId, BakaShrot_Names_TopicName(TopicId))
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Not allowed to read topic '" + BakaShrot_Names_TopicRef(TopicId) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Not allowed to read topic '" + BakaShrot_Names_TopicRef(TopicId) + "'")
 	EndIf
 	NodeId = BakaShrot_Names_ResolveNode(NodeRef)
 	If NodeId < 0
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Unknown node '" + Left(NodeRef, 80) + "'")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_UnknownName, "Unknown node '" + Left(NodeRef, 80) + "'")
 	EndIf
 
 	If Not GetStorageAttachment(*Client\DbId, TopicId, NodeId, MessageId, @Attachment)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "No attachment for " + BakaShrot_Names_TopicRef(TopicId) + ":" + BakaShrot_Names_NodeRef(NodeId) + "#" + Str(MessageId))
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotFound, "No attachment for " + BakaShrot_Names_TopicRef(TopicId) + ":" + BakaShrot_Names_NodeRef(NodeId) + "#" + Str(MessageId))
 	EndIf
 	Select Attachment\State
 		Case #BakaShrot_Attachment_NotKept
-			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The attachment isn't kept here: " + Str(Attachment\Size) + " bytes, more than MaxAttachmentSize")
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_TooBig, "The attachment isn't kept here: " + Str(Attachment\Size) + " bytes, more than MaxAttachmentSize")
 		Case #BakaShrot_Attachment_Missing, #BakaShrot_Attachment_Receiving
-			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The attachment isn't here yet: " + Str(Attachment\Received) + " of " + Str(Attachment\Size) + " bytes")
+			ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotReady, "The attachment isn't here yet: " + Str(Attachment\Received) + " of " + Str(Attachment\Size) + " bytes")
 	EndSelect
 	If Index >= BakaShrot_AttachmentChunkCount(Attachment\Size)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The attachment has " + Str(BakaShrot_AttachmentChunkCount(Attachment\Size)) + " parts")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_InvalidRequest, "The attachment has " + Str(BakaShrot_AttachmentChunkCount(Attachment\Size)) + " parts")
 	EndIf
 
 	Chunk\Data = ReadStorageBlobChunk(*Client\DbId, Attachment\BlobId, Index, @DataSize)
 	If Not Chunk\Data
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The attachment couldn't be read")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The attachment couldn't be read")
 	EndIf
 	Chunk\DataSize   = DataSize\i
 	Chunk\TopicId    = TopicId
@@ -1252,12 +1259,12 @@ Procedure.i BakaShrot_NetClient_HandleMissingAttachmentsRequest(*Client.BakaShro
 	FreeStructure(*Request)
 
 	If *Client\PeerName = ""
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Only peers can replicate")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Only peers can replicate")
 	EndIf
 
 	; More than one answer holds, some of them may be someone else's.
 	If Not GetMissingStorageAttachments(*Client\DbId, 4 * #BakaShrot_MaxMissingAttachments, Missing())
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The missing attachments couldn't be read")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The missing attachments couldn't be read")
 	EndIf
 	ForEach Missing()
 		If ListSize(Answer\Attachments()) >= #BakaShrot_MaxMissingAttachments
@@ -1312,18 +1319,18 @@ Procedure.i BakaShrot_NetClient_HandleReplicateAttachmentChunk(*Client.BakaShrot
 
 	If *Client\PeerName = ""
 		BakaShrot_ReplicateAttachmentChunkPacket_Free(*Chunk)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Only peers can replicate")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_NotAllowed, "Only peers can replicate")
 	EndIf
 	TopicId = BakaShrot_Names_TopicByName(TopicRef)
 	NodeId  = BakaShrot_Names_NodeByName(NodeRef)
 	If TopicId < 0 Or NodeId < 0 Or Not NameSetHas(@*Client\AcceptTopics, TopicId, TopicRef) Or Not NameSetHas(@*Client\AcceptNodes, NodeId, NodeRef)
 		BakaShrot_ReplicateAttachmentChunkPacket_Free(*Chunk)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "'" + TopicRef + "':'" + NodeRef + "' isn't replicated here")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_InvalidRequest, "'" + TopicRef + "':'" + NodeRef + "' isn't replicated here")
 	EndIf
 
 	If Not GetStorageAttachment(*Client\DbId, TopicId, NodeId, MessageId, @Attachment)
 		BakaShrot_ReplicateAttachmentChunkPacket_Free(*Chunk)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "No attachment expected for " + TopicRef + ":" + NodeRef + "#" + Str(MessageId))
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_InvalidRequest, "No attachment expected for " + TopicRef + ":" + NodeRef + "#" + Str(MessageId))
 	EndIf
 	If Attachment\State = #BakaShrot_Attachment_Ready
 		; Someone else's link was faster: done.
@@ -1332,11 +1339,11 @@ Procedure.i BakaShrot_NetClient_HandleReplicateAttachmentChunk(*Client.BakaShrot
 	EndIf
 	If Attachment\State = #BakaShrot_Attachment_NotKept
 		BakaShrot_ReplicateAttachmentChunkPacket_Free(*Chunk)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The attachment isn't kept here")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_TooBig, "The attachment isn't kept here")
 	EndIf
 	If *Chunk\ChunkIndex * #BakaShrot_AttachmentChunkSize <> Attachment\Received Or *Chunk\DataSize <> BakaShrot_AttachmentChunkBytes(Attachment\Size, *Chunk\ChunkIndex)
 		BakaShrot_ReplicateAttachmentChunkPacket_Free(*Chunk)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "Expected part " + Str(Attachment\Received / #BakaShrot_AttachmentChunkSize))
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_InvalidRequest, "Expected part " + Str(Attachment\Received / #BakaShrot_AttachmentChunkSize))
 	EndIf
 
 	BlobId = Attachment\BlobId
@@ -1351,7 +1358,7 @@ Procedure.i BakaShrot_NetClient_HandleReplicateAttachmentChunk(*Client.BakaShrot
 	BakaShrot_ReplicateAttachmentChunkPacket_Free(*Chunk)
 	If Received < 0
 		PrintN("[Net] Failed to store an attachment's part from peer '" + *Client\PeerName + "': " + StoreError\s)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The part couldn't be stored")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The part couldn't be stored")
 	EndIf
 
 	If Received < Attachment\Size
@@ -1360,11 +1367,11 @@ Procedure.i BakaShrot_NetClient_HandleReplicateAttachmentChunk(*Client.BakaShrot
 
 	IsValid = HashStorageBlob(*Client\DbId, BlobId, Attachment\Size, @Attachment\Sha256[0])
 	If Not FinishReplicatedAttachment(TopicId, NodeId, MessageId, BlobId, IsValid)
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The attachment couldn't be stored")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_ServerError, "The attachment couldn't be stored")
 	EndIf
 	If Not IsValid
 		PrintN("[Net] The attachment of " + TopicRef + ":" + NodeRef + "#" + Str(MessageId) + " from peer '" + *Client\PeerName + "' doesn't match its SHA-256, dropped")
-		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, "The attachment doesn't match its SHA-256, send it again")
+		ProcedureReturn BakaShrot_NetClient_Refuse(*Client, #BakaShrot_Refused_DataMismatch, "The attachment doesn't match its SHA-256, send it again")
 	EndIf
 	ProcedureReturn BakaShrot_NetClient_SendChunkStored(*Client, Received, #True)
 EndProcedure

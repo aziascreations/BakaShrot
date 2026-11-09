@@ -21,9 +21,15 @@
 ; Kept in the "topics" and "nodes" tables (Storage.pbi), so raw queries can
 ; join on them (the "messages" view), and in memory for the server, guarded
 ; by BakaShrot_Names_Mutex. Every id in "data" has a row:
-;   origin "config"  named in [BakaShrot.Topics] / [BakaShrot.Nodes]
+;   origin "config"  named by the config: in [BakaShrot.Topics] /
+;                    [BakaShrot.Nodes], or a peer's or client's Node
 ;   origin "id"      unnamed, its name is its id in digits
 ;   origin "peer"    sent by a peer, taken by a wildcard, named by the peer
+;
+; Ids are this server's to pick: a name the config lists without one keeps
+; the one these tables have for it, a new one gets the lowest free one
+; (LoadConfig(), after BakaShrot_Names_ReadKnown()). The config may still
+; pin one ("logs = 1").
 ;
 ; BakaShrot_Names_Load() reconciles the config with the tables at start (and
 ; on restart). The config wins, except when it would give a name to another
@@ -216,6 +222,47 @@ Procedure.i BakaShrot_Names_Load(DbId.i, *Config.BakaShrot_CoreConfig, *Error.St
 
 	UnlockMutex(BakaShrot_Names_Mutex)
 	ProcedureReturn Loaded
+EndProcedure
+
+
+; Fills *Known with what the database has, for LoadConfig() (Config.pbi):
+; the id of every name, and every id with a row or messages. Before the
+; config is loaded, on a connection of its own, the database set up.
+; Returns #False with the reason in *Error\s.
+Procedure.i BakaShrot_Names_ReadKnown(DbId.i, *Known.BakaShrot_KnownNames, *Error.String)
+	Protected Name.s, Id.i
+
+	; Topics
+	If Not DatabaseQuery(DbId, "SELECT topic_id, name FROM topics UNION SELECT DISTINCT topic_id, '' FROM node_heads")
+		*Error\s = "can't read the topics: " + DatabaseError()
+		ProcedureReturn #False
+	EndIf
+	While NextDatabaseRow(DbId)
+		Id   = GetDatabaseLong(DbId, 0)
+		Name = GetDatabaseString(DbId, 1)
+		*Known\TopicUsed(Str(Id)) = #True
+		If Name <> "" And Not BakaShrot_IsDigits(Name)
+			*Known\TopicIds(LCase(Name)) = Id
+		EndIf
+	Wend
+	FinishDatabaseQuery(DbId)
+
+	; Nodes
+	If Not DatabaseQuery(DbId, "SELECT node_id, name FROM nodes UNION SELECT DISTINCT node_id, '' FROM node_heads")
+		*Error\s = "can't read the nodes: " + DatabaseError()
+		ProcedureReturn #False
+	EndIf
+	While NextDatabaseRow(DbId)
+		Id   = GetDatabaseLong(DbId, 0)
+		Name = GetDatabaseString(DbId, 1)
+		*Known\NodeUsed(Str(Id)) = #True
+		If Name <> "" And Not BakaShrot_IsDigits(Name)
+			*Known\NodeIds(LCase(Name)) = Id
+		EndIf
+	Wend
+	FinishDatabaseQuery(DbId)
+
+	ProcedureReturn #True
 EndProcedure
 
 

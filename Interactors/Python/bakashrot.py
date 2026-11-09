@@ -27,6 +27,18 @@ The connection only goes through to the server holding the private key of
 server_public_key (client.ini's ServerPublicKey, the server logs it when it
 starts), and everything on it is encrypted.
 
+Errors are exceptions with a code (`error.code`, an ErrorCode, the same
+numbers as the DLL's BakaShrot_GetLastError(), see
+Client/BakaShrot_ErrorCodes.pbi):
+  RefusedError         the server refused (codes 1-99), still connected
+  ConnectionLostError  not connected, unreachable, the connection lost or
+                       broken: connect() again (nothing reconnects by itself)
+  AuthError            the server rejected the handshake or couldn't prove
+                       its key: fix the config, retrying won't help
+  BakaShrotError       the rest: a bad argument, a file, the DLL itself
+A push whose answer was lost (ConnectionLostError) may have been stored all
+the same: pushed again, it's stored twice. Delivery is at least once.
+
 The DLL holds a single connection per process: only one Client may be
 connected at a time. Calls are serialized with a lock, so a Client can be
 shared between threads, one request at a time.
@@ -40,6 +52,7 @@ from __future__ import annotations
 
 import configparser
 import ctypes
+import enum
 import json
 import os
 import threading
@@ -50,7 +63,7 @@ from typing import Any, Iterator, Optional, Union
 
 __all__ = [
     "Client", "Message", "MessagesPage", "NameEntry", "NamesList",
-    "BakaShrotError", "RefusedError", "ConnectionLostError",
+    "BakaShrotError", "RefusedError", "ConnectionLostError", "AuthError", "ErrorCode",
     "MAX_GET_MESSAGES", "MAX_MESSAGE_SIZE",
 ]
 
@@ -61,20 +74,75 @@ MAX_MESSAGE_SIZE = 16 * 1024 * 1024 - 4096
 Ref = Union[str, int]
 
 
+class ErrorCode(enum.IntEnum):
+    """What failed: Client/BakaShrot_ErrorCodes.pbi, the same numbers.
+    1-99: refused by the server, 100+: the client's own."""
+    NONE = 0
+    # Refused by the server, the connection still open.
+    NOT_ALLOWED = 1          # AllowRead/Write/Query, PushTopics/ReadTopics
+    UNKNOWN_NAME = 2         # a topic or node this server doesn't know
+    NOT_FOUND = 3            # no such message, attachment or upload
+    NOT_READY = 4            # the attachment isn't on this server yet: retry later
+    TOO_BIG = 5              # over a limit, or more than this server keeps
+    NO_DEFAULT_TOPIC = 6     # a push without a topic, and no DefaultTopic
+    INVALID_REQUEST = 7      # parts out of order, an upload for another topic...
+    DATA_MISMATCH = 8        # an upload that doesn't match its SHA-256
+    QUERY_FAILED = 9         # the SQL failed
+    SERVER_ERROR = 10        # the server's database failed: retry later
+    # The client's own.
+    NOT_CONNECTED = 100      # never connected, or closed or lost before
+    CONNECT_FAILED = 101     # nothing answers at that host and port
+    AUTH_REJECTED = 102      # the server closed the handshake: wrong ServerPublicKey,
+                             # a key or node it doesn't allow, another version
+    SERVER_NOT_VERIFIED = 103  # the server couldn't prove its key
+    CONNECTION_LOST = 104    # broke during a request (a push may still be stored)
+    PROTOCOL_ERROR = 105     # an unexpected answer, the connection is closed
+    INVALID_ARGUMENT = 106
+    FILE_ERROR = 107
+    ATTACHMENT_MISMATCH = 108  # a downloaded attachment that doesn't match its SHA-256
+    ALREADY_CONNECTED = 109
+    INTERNAL = 110           # out of memory, the DLL missing or too old...
+
+    @property
+    def is_refusal(self) -> bool:
+        return 1 <= self.value <= 99
+
+
+def _error_code(value: int):
+    """An ErrorCode, or the int itself if this module doesn't know it."""
+    try:
+        return ErrorCode(value)
+    except ValueError:
+        return value
+
+
 class BakaShrotError(Exception):
-    """Something failed: the DLL couldn't be loaded, a bad argument, ..."""
+    """Something failed: code (an ErrorCode) tells what, see ErrorCode."""
+
+    def __init__(self, message: str, code: int = ErrorCode.INTERNAL):
+        super().__init__(message)
+        self.code = _error_code(code)
 
 
 class RefusedError(BakaShrotError):
-    """The server refused the request, the connection is still open."""
+    """The server refused the request, the connection is still open. code
+    says why (1-99, e.g. ErrorCode.NOT_FOUND), reason in the server's words."""
 
-    def __init__(self, reason: str):
-        super().__init__(reason or "Refused")
+    def __init__(self, reason: str, code: int):
+        super().__init__(reason or "Refused", code)
         self.reason = reason
 
 
 class ConnectionLostError(BakaShrotError):
-    """The connection failed or was closed, connect() again to go on."""
+    """Not connected, or the connection failed or was closed (code:
+    NOT_CONNECTED, CONNECT_FAILED, CONNECTION_LOST, PROTOCOL_ERROR):
+    connect() again to go on."""
+
+
+class AuthError(BakaShrotError):
+    """The server rejected the handshake (AUTH_REJECTED) or couldn't prove it
+    holds server_public_key's private key (SERVER_NOT_VERIFIED): a config to
+    fix, connecting again won't help."""
 
 
 @dataclass(frozen=True)
@@ -186,10 +254,10 @@ class _Dll:
 
         I, L, Q, P, S = ctypes.c_ssize_t, ctypes.c_int32, ctypes.c_int64, ctypes.c_char_p, ctypes.c_void_p
         signatures = {
+            "BakaShrot_GetLastError": (L, []),
             "BakaShrot_SetPrivateKeyA": (I, [P]),
             "BakaShrot_SetPublicKeyA": (I, [P]),
             "BakaShrot_SetServerPublicKeyA": (I, [P]),
-            "BakaShrot_SetTopicA": (I, [P]),
             "BakaShrot_SetNodeA": (I, [P]),
             "BakaShrot_ConnectA": (I, [P, L]),
             "BakaShrot_IsConnected": (I, []),
@@ -229,7 +297,7 @@ class _Dll:
             try:
                 function = getattr(self.lib, name)
             except AttributeError as error:
-                raise BakaShrotError(f"{path} has no {name}, is it an older build?") from error
+                raise BakaShrotError(f"{path} has no {name}, is it an older build?", ErrorCode.INTERNAL) from error
             function.restype = restype
             function.argtypes = argtypes
             setattr(self, name[len("BakaShrot_"):], function)
@@ -247,23 +315,24 @@ class _Dll:
 class Client:
     """A connection to a BakaShrot server, through the DLL.
 
-    private_key, public_key: the client's Ed25519 keys in Base64 (KeyGen.exe).
+    private_key, public_key: the client's Ed25519 keys in Base64 (BakaShrotGenerateKeyPairs.exe).
     server_public_key: the server's Ed25519 public key in Base64, it must
     prove it holds the matching private key.
-    topic, node: who the client is, names or ids, as the server's
-    [BakaShrot.Client.<name>] Identities lists them.
+    node: the node the client writes as, a name or an id, which the
+    server's [BakaShrot.Client.<name>] must give its key (Node). Its
+    default topic, for pushes that don't name one, is the server's to say
+    (that section's DefaultTopic).
     """
 
     _connected_client: Optional["Client"] = None
 
-    def __init__(self, private_key: str, public_key: str, server_public_key: str, topic: Ref, node: Ref,
+    def __init__(self, private_key: str, public_key: str, server_public_key: str, node: Ref,
                  host: str = "127.0.0.1", port: int = 12345, dll_path: Optional[str] = None):
         self._dll = _Dll.get(dll_path)
         self._lock = threading.RLock()
         self.private_key = private_key
         self.public_key = public_key
         self.server_public_key = server_public_key
-        self.topic = topic
         self.node = node
         self.host = host
         self.port = int(port)
@@ -271,45 +340,48 @@ class Client:
     @classmethod
     def from_ini(cls, path: str, dll_path: Optional[str] = None) -> "Client":
         """From a client.ini as the tools read it: [BakaShrot] PrivateKey,
-        PublicKey, ServerPublicKey, Topic, Node, ServerHost, ServerPort."""
+        PublicKey, ServerPublicKey, Node, ServerHost, ServerPort (a Topic
+        left in it is ignored)."""
         parser = configparser.ConfigParser(interpolation=None)
         if not parser.read(path, encoding="utf-8-sig"):
-            raise BakaShrotError(f"Failed to open '{path}'")
+            raise BakaShrotError(f"Failed to open '{path}'", ErrorCode.FILE_ERROR)
         section = parser["BakaShrot"] if parser.has_section("BakaShrot") else {}
 
         def get(key, fallback=None):
             value = section.get(key, fallback)
             if value is None:
-                raise BakaShrotError(f"'{path}' has no [BakaShrot] {key}")
+                raise BakaShrotError(f"'{path}' has no [BakaShrot] {key}", ErrorCode.INVALID_ARGUMENT)
             return value.strip()
 
         return cls(get("PrivateKey"), get("PublicKey"), get("ServerPublicKey"),
-                   get("Topic", section.get("TopicId")), get("Node", section.get("NodeId")),
+                   get("Node", section.get("NodeId")),
                    get("ServerHost"), int(get("ServerPort")), dll_path)
 
     # --- Connection --------------------------------------------------------
 
     def connect(self) -> "Client":
-        """Connects and authenticates, raises BakaShrotError on failure."""
+        """Connects and authenticates. Raises ConnectionLostError when the
+        server can't be reached (CONNECT_FAILED), AuthError when it rejects
+        the handshake or can't prove its key, BakaShrotError on a bad setting
+        (INVALID_ARGUMENT) or another Client holding the DLL's connection
+        (ALREADY_CONNECTED)."""
         with self._lock:
             owner = Client._connected_client
             if owner is not None and owner is not self and owner.connected:
-                raise BakaShrotError("The DLL holds one connection, another Client is connected")
+                raise BakaShrotError("The DLL holds one connection, another Client is connected", ErrorCode.ALREADY_CONNECTED)
             if self.connected:
                 return self
             dll = self._dll
             if not dll.SetPrivateKeyA(self.private_key.encode("ascii")):
-                raise BakaShrotError("Invalid private key")
+                raise BakaShrotError("Invalid private key", dll.GetLastError())
             if not dll.SetPublicKeyA(self.public_key.encode("ascii")):
-                raise BakaShrotError("Invalid public key")
+                raise BakaShrotError("Invalid public key", dll.GetLastError())
             if not dll.SetServerPublicKeyA(self.server_public_key.encode("ascii")):
-                raise BakaShrotError("Invalid server public key")
-            if not dll.SetTopicA(_ref(self.topic)):
-                raise BakaShrotError(f"Invalid topic {self.topic!r}")
+                raise BakaShrotError("Invalid server public key", dll.GetLastError())
             if not dll.SetNodeA(_ref(self.node)):
-                raise BakaShrotError(f"Invalid node {self.node!r}")
+                raise BakaShrotError(f"Invalid node {self.node!r}", dll.GetLastError())
             if not dll.ConnectA(self.host.encode("utf-8"), self.port):
-                raise ConnectionLostError(f"Failed to connect and authenticate to {self.host}:{self.port}")
+                raise self._failed(f"Connect to {self.host}:{self.port}")
             Client._connected_client = self
             return self
 
@@ -331,22 +403,39 @@ class Client:
 
     def _check_connected(self) -> None:
         if not self.connected:
-            raise ConnectionLostError("Not connected")
+            raise ConnectionLostError("Not connected", ErrorCode.NOT_CONNECTED)
+
+    _MESSAGES = {
+        ErrorCode.NOT_CONNECTED: "not connected",
+        ErrorCode.CONNECT_FAILED: "nothing answers there",
+        ErrorCode.AUTH_REJECTED: "the server closed the connection during the handshake: wrong server public key, "
+                                 "a key or node it doesn't allow, or another version (its log says which)",
+        ErrorCode.SERVER_NOT_VERIFIED: "the server couldn't prove it holds the server public key's private key",
+        ErrorCode.CONNECTION_LOST: "the connection to the server failed",
+        ErrorCode.PROTOCOL_ERROR: "the server answered something unexpected, the connection is closed",
+    }
 
     def _failed(self, what: str) -> BakaShrotError:
-        """The error for a failed request: refused, or the connection is gone."""
-        if self._dll.IsConnected():
-            reason = self._dll.string(self._dll.GetRefusalReasonA)
-            return RefusedError(reason) if reason else BakaShrotError(f"{what} failed")
-        if Client._connected_client is self:
+        """The error for a failed call, by the DLL's BakaShrot_GetLastError()."""
+        code = _error_code(self._dll.GetLastError())
+        reason = self._dll.string(self._dll.GetRefusalReasonA)
+        if isinstance(code, int) and 1 <= int(code) <= 99:
+            return RefusedError(reason, code)
+        if not self._dll.IsConnected() and Client._connected_client is self:
             Client._connected_client = None
-        return ConnectionLostError(f"{what}: the connection to the server failed")
+        name = code.name if isinstance(code, ErrorCode) else str(code)
+        message = f"{what} ({name}): {reason or self._MESSAGES.get(code, 'failed')}"
+        if code in (ErrorCode.NOT_CONNECTED, ErrorCode.CONNECT_FAILED, ErrorCode.CONNECTION_LOST, ErrorCode.PROTOCOL_ERROR):
+            return ConnectionLostError(message, code)
+        if code in (ErrorCode.AUTH_REJECTED, ErrorCode.SERVER_NOT_VERIFIED):
+            return AuthError(message, code)
+        return BakaShrotError(message, code if code else ErrorCode.INTERNAL)
 
     # --- Requests ----------------------------------------------------------
 
     def push(self, data: Any, topic: Optional[Ref] = None,
              attachment: Union[None, bytes, bytearray, memoryview, str, os.PathLike] = None) -> int:
-        """Pushes a message into topic (default: the client's own), under
+        """Pushes a message into topic (default: the client's default one, its server's DefaultTopic), under
         the client's node. data is stored as is if it's a str (JSON or not),
         anything else is turned into JSON first. Returns its message id.
 
@@ -357,7 +446,7 @@ class Client:
             data = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         encoded = data.encode("utf-8")
         if len(encoded) > MAX_MESSAGE_SIZE:
-            raise BakaShrotError(f"The message is too big: {len(encoded)} bytes, at most {MAX_MESSAGE_SIZE}")
+            raise BakaShrotError(f"The message is too big: {len(encoded)} bytes, at most {MAX_MESSAGE_SIZE}", ErrorCode.INVALID_ARGUMENT)
         topic_ref = b"" if topic is None else _ref(topic)
         with self._lock:
             self._check_connected()
@@ -366,13 +455,13 @@ class Client:
             elif isinstance(attachment, (bytes, bytearray, memoryview)):
                 raw = bytes(attachment)
                 if not raw:
-                    raise BakaShrotError("The attachment is empty")
+                    raise BakaShrotError("The attachment is empty", ErrorCode.INVALID_ARGUMENT)
                 buffer = ctypes.create_string_buffer(raw, len(raw))
                 message_id = self._dll.PushMessageWithDataA(topic_ref, encoded, ctypes.cast(buffer, ctypes.c_void_p), len(raw))
             else:
                 path = os.fspath(attachment)
                 if not os.path.isfile(path) or os.path.getsize(path) == 0:
-                    raise BakaShrotError(f"Can't attach {path!r}: no such file, or empty")
+                    raise BakaShrotError(f"Can't attach {path!r}: no such file, or empty", ErrorCode.FILE_ERROR)
                 message_id = self._dll.PushMessageWithFileA(topic_ref, encoded, path.encode("utf-8"))
             if message_id < 1:
                 raise self._failed("Push")
@@ -418,7 +507,7 @@ class Client:
             self._check_connected()
             if not self._dll.GetLatestMessageOfA(_ref(topic), _ref(node)):
                 error = self._failed("Latest message")
-                if isinstance(error, RefusedError) and error.reason.startswith("No message for"):
+                if isinstance(error, RefusedError) and error.code == ErrorCode.NOT_FOUND:
                     return None
                 raise error
             return self._current()
@@ -460,7 +549,8 @@ class Client:
         """Every message of topic/node after `after`, then new ones as they
         come, checking every `interval` seconds once caught up. Forever:
         stop iterating to stop. after="latest" starts with the next new one.
-        Raises ConnectionLostError if the connection fails."""
+        Raises ConnectionLostError if the connection fails: nothing
+        reconnects by itself, connect() again and follow from the last id."""
         if after == "latest":
             latest = self.latest(topic, node)
             after = latest.id if latest else 0
