@@ -14,19 +14,24 @@ Where things stand and what's next, as of 2026-11-09. A new session: read
 | `Design/Suggestions.md` | Improvements not done yet: pipelined pushes, faster replication, smaller ones. |
 | `Design/Release.md` | The release smoke test, what's missing for 1.0.0, the (fixed) silent query failure, notes for CI/CD. |
 
-## Right now (2026-11-09)
+## Right now (2026-11-10)
 
-- **Nothing since `df61ef9` is committed**, on `timestamps-retention`: the
-  tool renames, protocols 5 and 6 (node identities, error codes), names-only
-  configs, `Synchronous`, schema v8 (`browse`), `Examples/`,
-  `Restart-Test.ps1`. Every suite passes on it (8, see `CLAUDE.md`), it
-  compiles with 5.73 and 6.40, the push bench gives ~17,000 msg/s for 4
-  servers with `Synchronous = FULL`.
+- **Everything is committed**, on `timestamps-retention`: protocol 6 and
+  the rest (`488ffe4`: the tool renames, protocols 5 and 6, node
+  identities, error codes, names-only configs, `Synchronous`, schema v8
+  (`browse`), `Examples/`, `Restart-Test.ps1`), the Linux fixes
+  (`5270f25`), then the server without a console on Linux and `Docker/`.
+  Every suite passes on it (8, see `CLAUDE.md`), it compiles with 5.73 and
+  6.40, the push bench gives ~17,000 msg/s for 4 servers with
+  `Synchronous = FULL`.
 - **`Release\20261109-df61ef9-dirty\` is out of date** (before
   `Synchronous`, `browse` and the error codes): commit, then
   `Release.ps1` again.
+- **On Linux** (2026-11-10, `Done: Linux, Docker images`): every suite
+  passes, the server runs without a console (SIGTERM/SIGINT), `Docker/`
+  builds it into an image.
 - **Suggested next** (not decided by the owner): the server without a
-  console (item 1), then whatever the real-world test shows. The run on a
+  console on Windows (item 1), then whatever the real-world test shows. The run on a
   clean Windows is the owner's, not an item here.
 
 ## Where things stand
@@ -324,8 +329,8 @@ As judged for the threat model below (internal tool, trusted machines).
   process loses nothing committed). Often fine internally, to decide.
 - Client: one connection per process, `--follow` polls, no reconnect.
 - Tests run by hand, on fixed ports, no runner, no CI.
-- Linux untested; keys in plain-text inis (file permissions are enough
-  here).
+- Linux tested, Docker images (2026-11-10); keys in plain-text inis (file
+  permissions are enough here).
 
 **Bad**
 - The server can't run unattended: it needs a console, stops at once
@@ -644,6 +649,37 @@ still say the old names where they tell what was done then.
   double-start guard, the README's Python snippet. `Start-Server.ps1 -Here`
   wasn't (it needs an interactive console).
 
+## Done: Linux, Docker images (2026-11-10)
+
+- **Every suite passes on Linux** (Ubuntu, x64) with 6.41's asm and C
+  backends: `Tests/*.ps1` through PowerShell 7, once `-WindowStyle Hidden`
+  is dropped (not supported there), the binaries named as on Windows
+  (`BakaShrot_Client.dll` is the `.so`), `-Build` given. 5.73 compiles and
+  passes the rest, but can't restart a server on the same port within
+  ~60 s (its listener doesn't set `SO_REUSEADDR`): Names, Restart and
+  AttachmentEdges.
+- **Fixed on the way:** SQLite on Linux is the system's `libsqlite3.so.0`
+  (`#BakaShrot_Storage_SqliteLibrary`), so the query error check and the
+  writer's prepared statements work there too; `BakaShrot_SendPacket()`
+  retries when the send buffer is full (`EAGAIN`, it aborted clients
+  reading big answers); four tests that relied on Windows timing.
+- **The server runs without a console on Linux** (item 1, there): SIGTERM
+  and SIGINT stop it like `quit`, and with no console input it runs on
+  until one comes. `Input()` can't do it: on Linux it returns `""` (quit)
+  at the end of the input, and PureBasic's console moves descriptor 0
+  elsewhere, so `ReadCommand()` reads a `dup` of it taken before
+  `OpenConsole()`, `poll()`ing 250 ms at a time. Checked with no input,
+  piped commands (CRLF too), a terminal, `quit`, both signals, on 5.73 and
+  6.41.
+- **`Docker/`**: `Compiler/` (PureBasic 6.41 on `debian:trixie-slim`, the
+  archive copied in by hand, never committed) and `Server/` (multi-stage:
+  built with the C backend and the optimizer, run on `debian:trixie-slim`
+  with libsodium and SQLite only, as user `bakashrot`). Config
+  `/etc/bakashrot/server.ini`, data volume `/var/lib/bakashrot`, port 12345.
+  Checked: pushes, reads and queries through the port, `docker stop` clean
+  (~0.3 s, exit 0), data kept over a restart, commands with `-i`. Alpine was
+  tried: PureBasic needs glibc 2.38+.
+
 ## Threat model (2026-11-08)
 
 BakaShrot is an **internal tool, on trusted machines and a trusted
@@ -669,6 +705,8 @@ network**, not exposed to the internet. So:
    no clean stop from a script (tests force-kill it). Fix: a stop file like
    `BenchServer.exe`'s, and/or a local admin connection, then a way to run
    it as a service. (`Design/Release.md` smoke test #4)
+   Done on Linux (2026-11-10): SIGTERM/SIGINT stop it, it runs on without
+   console input (`Done: Linux, Docker images`). Windows still needs it.
 2. **The 1.0.0 smoke test, what's left:** replication between two servers
    built by `Release.ps1` (the suites use `BenchServer.exe`, the same server
    code). Done: the release's own smoke test and the example from its zip
@@ -721,7 +759,7 @@ network**, not exposed to the internet. So:
    two threads failing on their own connections 20,000 times each, never
    once the other's message, with 5.73 and 6.40 (`/THREAD`).
    `sqlite3_errmsg16()` on the connection gives the same messages, kept as
-   is. Linux untested (item 18).
+   is. Linux: not checked the same way, its suites pass (2026-11-10).
 9. **Limits:** the sync state must fit in one packet (65536 topic/node
    pairs); `ReplicatingTopicIds` ranges are expanded to every id they cover.
    (`Design/ReplicationIssues.md` #7)
@@ -764,8 +802,8 @@ network**, not exposed to the internet. So:
 17. **Review.md rules** not checked against the newer code (`.i` in
     networking structures, explicit enumeration values), see below. The
     file itself says to ignore it for now.
-18. **Linux is untested** (libsodium via `-lsodium`, the query error check
-    falls back to `DatabaseError()`).
+18. ~~**Linux is untested**~~ Done (2026-11-10): every suite passes, see
+    `Done: Linux, Docker images`.
 19. **Console commands can't be scripted** (see 1).
 
 ### Done recently (details in the sections above and `Design/`)
@@ -792,6 +830,8 @@ network**, not exposed to the internet. So:
   acknowledged lost (`Restart-Test.ps1`, 2026-11-09).
 - Protocol 6: error codes everywhere, at-least-once delivery accepted
   (2026-11-09).
+- Linux: every suite passes, the server runs without a console there,
+  `Docker/` images for the compiler and the server (2026-11-10).
 
 ## To check against Review.md
 
@@ -812,8 +852,10 @@ network**, not exposed to the internet. So:
 - **Test the server's console commands** with a small driver that includes
   `Server/Root.pbi` and calls `BakaShrot_Root_*` directly. Piping commands
   into the server doesn't work.
-- **With no console input,** `Input()` returns `Chr(4)` on every call, and the
-  server stops on it.
+- **With no console input,** `Input()` returns `Chr(4)` on every call on
+  Windows, and the server stops on it. On Linux it returns `""`, and the
+  server reads its commands itself (`ReadCommand()`): piping commands into
+  it works there.
 - **Don't trust timestamps** from PowerShell's `Register-ObjectEvent`: lines
   queue up during `Start-Sleep`. PureBasic's console output into a pipe is
   also buffered until exit. Trust the order, not the times.

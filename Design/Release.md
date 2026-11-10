@@ -90,7 +90,8 @@ in `Tests/` already, to be pointed at the release instead.
    Needs a way to stop it without a console: a stop file like
    `BenchServer.exe`'s, or a local admin connection (`Notes.md`, console
    commands can't be scripted). Then check it stops within a few seconds,
-   with its last messages committed.
+   with its last messages committed. On Linux, SIGTERM does it (2026-11-10,
+   checked through `docker stop`).
 5. **Refusals**:
    - an unknown public key, and a known one with the wrong private key:
      not authenticated;

@@ -39,6 +39,9 @@ operations come before security hardening (`Notes.md`, "Threat model").
 
 - `Release.ps1 [-Force]` builds the release with 6.40 into `Release\` and
   smoke-tests it (`-Force` replaces an existing folder of the same name).
+- Linux: same sources and flags (`-t`, `-e`, `-so` for the DLL), with
+  `libsodium-dev`. `Docker/Compiler/` and `Docker/Server/` build the
+  compiler and server images, see their Dockerfiles.
 
 ## Test
 
@@ -86,8 +89,9 @@ suite: they take a few minutes in all.
   `-File`.
 - **Bash tool heredocs collapse `\\`**, and PureBasic uses `\` for fields:
   write edit scripts to files, or use the Edit tool.
-- **The real server needs a console** (it stops at once without input):
-  tests use `BenchServer.exe` and its stop file instead.
+- **The real server needs a console on Windows** (it stops at once without
+  input): tests use `BenchServer.exe` and its stop file instead. On Linux
+  it runs on without one, SIGTERM/SIGINT stop it.
 
 ## Working rules
 
