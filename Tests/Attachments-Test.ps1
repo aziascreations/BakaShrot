@@ -283,8 +283,18 @@ finally {
 }
 
 "--- Logs"
-$LogA = Get-Content (Join-Path $Dir "a.log") -Raw
-$LogB = Get-Content (Join-Path $Dir "b.log") -Raw
+# A and B start together: until its first link, the other one may not be
+# listening yet. Refused at once on Linux, while Windows retries the connect
+# for about a second, by which time it usually is. Those attempts are left out.
+function Skip-EarlyLinkFailures([string[]]$Lines) {
+    $Linked = $false
+    foreach ($Line in $Lines) {
+        if ($Line -match "^\[Peer\] Linked to") { $Linked = $true }
+        if ($Linked -or $Line -notmatch "^\[Peer\] (Failed to link|Retrying)") { $Line }
+    }
+}
+$LogA = @(Skip-EarlyLinkFailures (Get-Content (Join-Path $Dir "a.log"))) -join "`n"
+$LogB = @(Skip-EarlyLinkFailures (Get-Content (Join-Path $Dir "b.log"))) -join "`n"
 Check "A sent B the attachments it takes" ($LogA -match "Sent the attachment of logs:kitchen#1 to 'b'" -and $LogA -match "Sent the attachment of logs:kitchen#3 to 'b'") "checked"
 Check "A never sent #2 (not kept by B)" (-not ($LogA -match "Sent the attachment of logs:kitchen#2")) "checked"
 Check "B sent A its photo" ($LogB -match "Sent the attachment of photos:garage#1 to 'a'") "checked"

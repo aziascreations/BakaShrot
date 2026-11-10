@@ -218,6 +218,11 @@ EndProcedure
 ; next packets.
 #BakaShrot_InboxKeptCapacity = 256 * 1024
 
+; How long a send waits for the other end to make room, without a single
+; byte going out, before it gives up. Same as how long a client waits for
+; each packet (#BakaShrot_Outbound_Timeout).
+#BakaShrot_SendStallTimeout = 10000
+
 Enumeration BakaShrot_InboxResults
 	#BakaShrot_Inbox_Incomplete
 	#BakaShrot_Inbox_Packet
@@ -264,8 +269,13 @@ EndProcedure
 ; *Cipher is 0: only the Hello (sealed on its own) and the ChallengeRequest.
 ; Returns #False if the packet is too big, *Cipher isn't set up, or the data
 ; couldn't be sent.
+; PureBasic's sockets don't block: SendNetworkData() returns -1 once the
+; system's send buffer is full (EAGAIN on Linux, a few hundred KB), so -1 is
+; retried until nothing went out for #BakaShrot_SendStallTimeout. PureBasic
+; doesn't tell that from a broken connection, which then takes that long to
+; give up on.
 Procedure.i BakaShrot_SendPacket(ConnectionId.i, *Packet, PacketSize.i, *Cipher.BakaShrot_Cipher)
-	Protected *Frame, FrameSize.i, PayloadSize.i, Offset.i, Sent.i
+	Protected *Frame, FrameSize.i, PayloadSize.i, Offset.i, Sent.i, LastProgress.i
 
 	If PacketSize < 1 Or PacketSize > #BakaShrot_MaxPacketSize
 		ProcedureReturn #False
@@ -294,13 +304,19 @@ Procedure.i BakaShrot_SendPacket(ConnectionId.i, *Packet, PacketSize.i, *Cipher.
 		CopyMemory(*Packet, *Frame + #BakaShrot_FrameHeaderSize, PacketSize)
 	EndIf
 
+	LastProgress = ElapsedMilliseconds()
 	While Offset < FrameSize
 		Sent = SendNetworkData(ConnectionId, *Frame + Offset, FrameSize - Offset)
-		If Sent <= 0
+		If Sent > 0
+			Offset + Sent
+			LastProgress = ElapsedMilliseconds()
+		ElseIf ElapsedMilliseconds() - LastProgress > #BakaShrot_SendStallTimeout
 			FreeMemory(*Frame)
 			ProcedureReturn #False
+		Else
+			; Full, until the other end reads some of it.
+			Delay(1)
 		EndIf
-		Offset + Sent
 	Wend
 
 	FreeMemory(*Frame)

@@ -10,6 +10,11 @@
 ; bundled with PureBasic 5.73 (3.33.0) doesn't have. On Windows, the official
 ; sqlite3.dll is used instead, it must be next to the program. Build.ps1
 ; extracts it from Libs/sqlite-dll-win-*.zip and copies it.
+; On Linux, the system's libsqlite3.so.0 (libsqlite3-0 on Debian/Ubuntu,
+; sqlite-libs on Fedora) is used, whatever the compiler, it must be 3.38+.
+; Either way it's #BakaShrot_Storage_SqliteLibrary, which RunReadOnlyQuery()
+; and the writer (Writer.pbi) also call directly. Elsewhere, PureBasic's own
+; SQLite is linked in, and they make do without it.
 ;
 ; Threads: ONE CONNECTION PER THREAD, never share a handle.
 ; The SetDatabase*() parameters and query results belong to a handle, so two
@@ -30,8 +35,20 @@ XIncludeFile "../../Commons/Networking/Packets/SyncStatePacket.pbi"
 XIncludeFile "../../Commons/Networking/Packets/ReplicateMessagesPacket.pbi"
 
 
-CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-	UseSQLiteDatabase("sqlite3.dll")
+CompilerSelect #PB_Compiler_OS
+	CompilerCase #PB_OS_Windows
+		#BakaShrot_Storage_ExternalSqlite = #True
+		#BakaShrot_Storage_SqliteLibrary  = "sqlite3.dll"
+	CompilerCase #PB_OS_Linux
+		#BakaShrot_Storage_ExternalSqlite = #True
+		#BakaShrot_Storage_SqliteLibrary  = "libsqlite3.so.0"
+	CompilerDefault
+		#BakaShrot_Storage_ExternalSqlite = #False
+		#BakaShrot_Storage_SqliteLibrary  = ""
+CompilerEndSelect
+
+CompilerIf #BakaShrot_Storage_ExternalSqlite
+	UseSQLiteDatabase(#BakaShrot_Storage_SqliteLibrary)
 CompilerElse
 	UseSQLiteDatabase()
 CompilerEndIf
@@ -67,7 +84,7 @@ Procedure.q BakaShrot_NowUtcMs()
 		GetSystemTimeAsFileTime_(@FileTime)
 		ProcedureReturn (FileTime - 116444736000000000) / 10000
 	CompilerElse
-		; Untested: Linux isn't built yet. struct timeval, 64-bit.
+		; struct timeval, 64-bit (checked on Linux x64 by Tests/Retention-Test.ps1).
 		Protected Dim TimeVal.q(1)
 		BakaShrot_GetTimeOfDay(@TimeVal(0), 0)
 		ProcedureReturn TimeVal(0) * 1000 + TimeVal(1) / 1000
@@ -616,15 +633,16 @@ EndProcedure
 ; the query looked like it simply had no (more) rows. So once the rows end,
 ; SQLite itself is asked: sqlite3_errcode() on the connection is SQLITE_DONE
 ; (or SQLITE_ROW/SQLITE_OK) if they really ended, the error otherwise, with
-; sqlite3_errmsg16() telling which. Same sqlite3.dll as PureBasic's
-; (DatabaseID() is its sqlite3 handle), like Writer.pbi.
-; Elsewhere than Windows, PureBasic's own SQLite is linked in and not
-; reachable this way: DatabaseError() is checked instead, which misses it.
+; sqlite3_errmsg16() telling which. Same #BakaShrot_Storage_SqliteLibrary as
+; PureBasic's (DatabaseID() is its sqlite3 handle), like Writer.pbi.
+; Without #BakaShrot_Storage_ExternalSqlite, PureBasic's own SQLite is linked
+; in and not reachable this way: DatabaseError() is checked instead, which
+; misses it.
 #BakaShrot_Query_SqliteOk   = 0
 #BakaShrot_Query_SqliteRow  = 100
 #BakaShrot_Query_SqliteDone = 101
 
-CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+CompilerIf #BakaShrot_Storage_ExternalSqlite
 	PrototypeC.l BakaShrot_Query_SqliteErrCode(Db.i)
 	PrototypeC.i BakaShrot_Query_SqliteErrMsg16(Db.i)
 
@@ -638,14 +656,14 @@ CompilerIf #PB_Compiler_OS = #PB_OS_Windows
 	; Queries run on every client's thread, the first one loads it.
 	Global BakaShrot_Query_SqliteMutex.i = CreateMutex()
 
-	; Returns #False if sqlite3.dll or its functions can't be found.
+	; Returns #False if the SQLite library or its functions can't be found.
 	Procedure.i BakaShrot_Query_LoadSqlite()
 		Protected Loaded.i
 
 		LockMutex(BakaShrot_Query_SqliteMutex)
 		With BakaShrot_Query_Sqlite
 			If Not \Library
-				\Library = OpenLibrary(#PB_Any, "sqlite3.dll")
+				\Library = OpenLibrary(#PB_Any, #BakaShrot_Storage_SqliteLibrary)
 				If \Library
 					\ErrCode  = GetFunction(\Library, "sqlite3_errcode")
 					\ErrMsg16 = GetFunction(\Library, "sqlite3_errmsg16")
@@ -693,7 +711,7 @@ Procedure.i RunReadOnlyQuery(DatabasePath.s, Sql.s, *Result.String, *Error.Strin
 	EndIf
 
 	; Without it, errors in the rows would go unnoticed: refused instead.
-	CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+	CompilerIf #BakaShrot_Storage_ExternalSqlite
 		If Not BakaShrot_Query_LoadSqlite()
 			*Error\s = "Queries can't be checked for errors: sqlite3_errcode() not found"
 			ProcedureReturn #False
@@ -767,7 +785,7 @@ Procedure.i RunReadOnlyQuery(DatabasePath.s, Sql.s, *Result.String, *Error.Strin
 	; Asked before FinishDatabaseQuery(), while the failed step is the last
 	; thing done on this connection. A false alarm would refuse a good
 	; query, it can't hide a bad one.
-	CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+	CompilerIf #BakaShrot_Storage_ExternalSqlite
 		ErrorCode = BakaShrot_Query_Sqlite\ErrCode(DatabaseID(DbId))
 		If ErrorCode <> #BakaShrot_Query_SqliteOk And ErrorCode <> #BakaShrot_Query_SqliteRow And ErrorCode <> #BakaShrot_Query_SqliteDone
 			*Error\s = PeekS(BakaShrot_Query_Sqlite\ErrMsg16(DatabaseID(DbId)), -1, #PB_Unicode)
@@ -785,11 +803,11 @@ Procedure.i RunReadOnlyQuery(DatabasePath.s, Sql.s, *Result.String, *Error.Strin
 	CompilerEndIf
 	FinishDatabaseQuery(DbId)
 
-	; Elsewhere than Windows, the only check there is. It misses errors in the
-	; rows: PureBasic doesn't report them.
+	; Without #BakaShrot_Storage_ExternalSqlite, the only check there is. It
+	; misses errors in the rows: PureBasic doesn't report them.
 	; !!! DatabaseError() may be shared by every thread, see
 	; !!! Design/StorageConcurrency.md, another thread's error could show up here.
-	CompilerIf #PB_Compiler_OS <> #PB_OS_Windows
+	CompilerIf Not #BakaShrot_Storage_ExternalSqlite
 		If DatabaseError() <> ""
 			*Error\s = DatabaseError()
 			FreeJSON(JsonId)

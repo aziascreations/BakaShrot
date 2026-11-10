@@ -4,7 +4,8 @@ Usage: restart_pusher.py <BakaShrot_Client.dll> <client.ini> <stop file> <out fi
 Pushes {"by": tag, "seq": n} to the client's DefaultTopic until the stop
 file exists, writing "<message id> <seq>" to the out file once each push is
 acknowledged. Ends with "STOPPED", or "ERR <code> <why>" when the server
-goes away (the test kills it; code 104, ConnectionLost): what was
+goes away (the test kills it; code 104, ConnectionLost, during a push, or
+100, NotConnected, between two): what was
 acknowledged before is what must survive.
 """
 

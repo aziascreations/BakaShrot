@@ -299,12 +299,22 @@ try {
 "--- Logs"
 # Up to the last real activity: whichever stops first, the other loses its
 # link to it.
+# A and B start together: until its first link, the other one may not be
+# listening yet. Refused at once on Linux, while Windows retries the connect
+# for about a second, by which time it usually is. Those attempts are left out.
+function Skip-EarlyLinkFailures([string[]]$Lines) {
+    $Linked = $false
+    foreach ($Line in $Lines) {
+        if ($Line -match "^\[Peer\] Linked to") { $Linked = $true }
+        if ($Linked -or $Line -notmatch "^\[Peer\] (Failed to link|Retrying)") { $Line }
+    }
+}
 function Read-Log($Name) {
     $L = @(Get-Content (Join-Path $Dir "$Name.log"))
     $End = [array]::IndexOf($L, "Stopping...")
     if ($End -lt 0) { $End = $L.Count }
     while ($End -gt 0 -and $L[$End - 1] -match "Lost the link|Dropping the link|Retrying|disconnected|aborted|didn't answer") { $End-- }
-    ($L[0..([math]::Max($End - 1, 0))]) -join "`n"
+    @(Skip-EarlyLinkFailures $L[0..([math]::Max($End - 1, 0))]) -join "`n"
 }
 $LogA = Read-Log "a"
 $LogB = Read-Log "b"

@@ -212,7 +212,9 @@ try {
     Start-Sleep -Seconds 3                                   # A goes on alone
     Stop-Pusher $PK
     $KSeen = Read-Pusher $PK
-    Check "the garage pusher noticed B was gone: ConnectionLostError, code 104" ($PG.P.HasExited -and (Read-Pusher $PG).End -like "ERR 104 ConnectionLostError*") (Read-Pusher $PG).End
+    # 104 (ConnectionLost) if killed during a push, 100 (NotConnected) if
+    # between two: the next push finds the connection already gone.
+    Check "the garage pusher noticed B was gone: ConnectionLostError, code 104 or 100" ($PG.P.HasExited -and (Read-Pusher $PG).End -match "^ERR 10[04] ConnectionLostError") (Read-Pusher $PG).End
     Check "kitchen kept pushing on A meanwhile" ($KSeen.Count -gt 100 -and $KSeen.End -eq "STOPPED") ("{0} acknowledged" -f $KSeen.Count)
 
     $SB = Start-Srv "b"; Wait-Port 12416 $SB
@@ -256,7 +258,7 @@ try {
     Start-Sleep -Seconds 3                                   # B goes on alone
     Stop-Pusher $PG
     $GSeen = Read-Pusher $PG
-    Check "the kitchen pusher noticed A was gone: ConnectionLostError, code 104" ($PK.P.HasExited -and (Read-Pusher $PK).End -like "ERR 104 ConnectionLostError*") (Read-Pusher $PK).End
+    Check "the kitchen pusher noticed A was gone: ConnectionLostError, code 104 or 100" ($PK.P.HasExited -and (Read-Pusher $PK).End -match "^ERR 10[04] ConnectionLostError") (Read-Pusher $PK).End
 
     $SA = Start-Srv "a"; Wait-Port 12415 $SA
     Check-Survived "A" "kitchen" $PK $OnA

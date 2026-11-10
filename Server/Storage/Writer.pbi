@@ -19,9 +19,10 @@
 ;     that were waiting find theirs done. The busier, the bigger the groups.
 ;   - Prepared statements, kept for as long as the writer is open, through
 ;     SQLite's own API: PureBasic prepares a statement again on every call.
-;     Same sqlite3.dll as PureBasic's (DatabaseID() is its sqlite3 handle).
-;     Elsewhere than Windows, PureBasic's own SQLite is linked in, so its
-;     functions are used instead (slower, same behaviour).
+;     Same #BakaShrot_Storage_SqliteLibrary as PureBasic's (DatabaseID() is
+;     its sqlite3 handle). Without #BakaShrot_Storage_ExternalSqlite (see
+;     Storage.pbi), PureBasic's own SQLite is linked in, so its functions
+;     are used instead (slower, same behaviour).
 ;   - The next message id of every topic/node id kept in memory, instead of
 ;     a MAX(message_id) on every push. Read from the database the first time
 ;     a pair is pushed to (node_heads, which deleting messages leaves as is:
@@ -62,11 +63,7 @@
 #BakaShrot_Storage_WalSizeLimit = 67108864
 
 
-CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-	#BakaShrot_Storage_RawSqlite = #True
-CompilerElse
-	#BakaShrot_Storage_RawSqlite = #False
-CompilerEndIf
+#BakaShrot_Storage_RawSqlite = #BakaShrot_Storage_ExternalSqlite
 
 #BakaShrot_Sqlite_Done   = 101
 #BakaShrot_Sqlite_Row    = 100
@@ -387,7 +384,7 @@ CompilerIf #BakaShrot_Storage_RawSqlite
 				ProcedureReturn #True
 			EndIf
 			; The one PureBasic's SQLite driver already loaded.
-			\Library = OpenLibrary(#PB_Any, "sqlite3.dll")
+			\Library = OpenLibrary(#PB_Any, #BakaShrot_Storage_SqliteLibrary)
 			If Not \Library
 				ProcedureReturn #False
 			EndIf
@@ -527,7 +524,7 @@ Procedure.i OpenStorageWriter(DatabasePath.s, *Error.String)
 
 		CompilerIf #BakaShrot_Storage_RawSqlite
 			If Not BakaShrot_Writer_LoadSqlite()
-				*Error\s = "sqlite3.dll doesn't have the functions needed"
+				*Error\s = #BakaShrot_Storage_SqliteLibrary + " doesn't have the functions needed"
 				BakaShrot_Writer_Release()
 				UnlockMutex(BakaShrot_Storage_WriteMutex)
 				ProcedureReturn #False

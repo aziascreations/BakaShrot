@@ -315,10 +315,20 @@ finally {
 "--- Logs"
 $LogA = Get-Content (Join-Path $Dir "a.log") -Raw
 $LogB = Get-Content (Join-Path $Dir "b.log") -Raw
+# How many messages of Topic a log says were deleted. Pushed a few ms apart,
+# they can fall on both sides of a retention check (every 1 s), and be
+# deleted over two of them.
+function Count-Deleted($Log, $Topic) {
+    $N = 0
+    foreach ($M in [regex]::Matches($Log, "Retention: deleted (\d+) messages of topic '$Topic' pushed before \d{4}-")) { $N += [int]$M.Groups[1].Value }
+    $N
+}
 Check "A logged its rule" ($LogA -match "Retention: short = 3s") "checked"
-Check "A logged what it deleted" ($LogA -match "Retention: deleted 3 messages of topic 'short' pushed before \d{4}-") "checked"
+$N = Count-Deleted $LogA "short"
+Check "A logged what it deleted: short #1-#3, maybe #4 since" ($N -ge 3) "$N deleted"
 Check "B logged its rules" ($LogB -match "Retention: ke\* = 4s" -and $LogB -match "Retention: \* = 1h") "checked"
-Check "B deleted keep" ($LogB -match "Retention: deleted 2 messages of topic 'keep'") "checked"
+$N = Count-Deleted $LogB "keep"
+Check "B deleted keep: #1-#2, maybe #3 since" ($N -ge 2) "$N deleted"
 Check "B never sent A short messages (A is ahead, deleted or not)" (-not ($LogB -match "Sent \d+ messages of short")) "checked"
 Check "A sent B late once each: #1-#2, then #3 alone" (([regex]::Matches($LogA, "Sent 2 messages of late:kitchen")).Count -eq 1 -and ([regex]::Matches($LogA, "Sent 1 messages of late:kitchen")).Count -eq 1) "checked"
 Check "B never stored late #1-#2" (-not ($LogB -match "deleted [23] messages of topic 'late'")) "checked"

@@ -270,7 +270,9 @@ db.commit(); print("flipped")
         $Drops = [regex]::Matches($LogB, "attachment of logs:kitchen#$BadId from peer 'a' doesn't match its SHA-256, dropped").Count
         Check "B drops it: doesn't match" ($Drops -ge 1) "$Drops times in 6 s"
         Expect "B doesn't serve it" (Tool "BakaShrotGetAttachment.exe" @("logs", "kitchen", $BadId, $Copy, $KitchenB)) "isn't here yet" 1
-        $R = Query "SELECT a.state, COALESCE(a.blob_id, 0) FROM attachments a JOIN topics t ON t.topic_id = a.topic_id WHERE t.name = 'logs' AND a.message_id = $BadId" $KitchenB
+        # A sends it again at every check-in, so B can be receiving (1) it
+        # again when asked: back to missing once that copy is dropped too.
+        $R = Wait-Query "SELECT a.state, COALESCE(a.blob_id, 0) FROM attachments a JOIN topics t ON t.topic_id = a.topic_id WHERE t.name = 'logs' AND a.message_id = $BadId" $KitchenB '\[\["0","0"\]\]' 5
         Check "B's attachment is back to missing (0), no blob" ($R.Out -match '\[\["0","0"\]\]') $R.Out
         Expect "B: no blob left behind, once cleaned" (Wait-Query "SELECT COUNT(*) FROM blobs WHERE state <> 2" $KitchenB '\[\["0"\]\]' 5) '\[\["0"\]\]'
         "INFO A sends it again at every check-in: $Drops times in 6 s (PeerSyncInterval 1)"
