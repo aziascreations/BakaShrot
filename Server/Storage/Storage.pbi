@@ -3,12 +3,18 @@
 ;
 ; Opens the SQLite database file that backs the node's local storage, and
 ; provides the basic read/write operations on top of it.
-; Schema: see db_schema_v5.dbml in this same folder.
+; Schema: see db_schema_v8.dbml in this same folder. Attachments: see
+; Attachments.pbi and Design/Attachments.md.
 ;
 ; Needs SQLite 3.38+ with its JSON functions (json_valid, ->>), which the one
 ; bundled with PureBasic 5.73 (3.33.0) doesn't have. On Windows, the official
 ; sqlite3.dll is used instead, it must be next to the program. Build.ps1
 ; extracts it from Libs/sqlite-dll-win-*.zip and copies it.
+; On Linux, the system's libsqlite3.so.0 (libsqlite3-0 on Debian/Ubuntu,
+; sqlite-libs on Fedora) is used, whatever the compiler, it must be 3.38+.
+; Either way it's #BakaShrot_Storage_SqliteLibrary, which RunReadOnlyQuery()
+; and the writer (Writer.pbi) also call directly. Elsewhere, PureBasic's own
+; SQLite is linked in, and they make do without it.
 ;
 ; Threads: ONE CONNECTION PER THREAD, never share a handle.
 ; The SetDatabase*() parameters and query results belong to a handle, so two
@@ -29,18 +35,61 @@ XIncludeFile "../../Commons/Networking/Packets/SyncStatePacket.pbi"
 XIncludeFile "../../Commons/Networking/Packets/ReplicateMessagesPacket.pbi"
 
 
-CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-	UseSQLiteDatabase("sqlite3.dll")
+CompilerSelect #PB_Compiler_OS
+	CompilerCase #PB_OS_Windows
+		#BakaShrot_Storage_ExternalSqlite = #True
+		#BakaShrot_Storage_SqliteLibrary  = "sqlite3.dll"
+	CompilerCase #PB_OS_Linux
+		#BakaShrot_Storage_ExternalSqlite = #True
+		#BakaShrot_Storage_SqliteLibrary  = "libsqlite3.so.0"
+	CompilerDefault
+		#BakaShrot_Storage_ExternalSqlite = #False
+		#BakaShrot_Storage_SqliteLibrary  = ""
+CompilerEndSelect
+
+CompilerIf #BakaShrot_Storage_ExternalSqlite
+	UseSQLiteDatabase(#BakaShrot_Storage_SqliteLibrary)
 CompilerElse
 	UseSQLiteDatabase()
 CompilerEndIf
 
 
-; One row of the "data" table (see db_schema_v5.dbml).
+; One row of the "data" table (see db_schema_v8.dbml).
+; PushedAt: when it was pushed, ms since 1970 UTC (Packets.pbi).
+; AttachmentSize: its attachment's size, 0 for none (the "attachments"
+; table), AttachmentReady #True once all of it is here, AttachmentSha256 its
+; SHA-256.
 Structure BakaShrot_Message
 	MessageId.q
+	PushedAt.q
 	JsonData.s
+	AttachmentSize.q
+	AttachmentReady.i
+	AttachmentSha256.a[#BakaShrot_Sha256Size]
 EndStructure
+
+
+CompilerIf #PB_Compiler_OS <> #PB_OS_Windows
+	ImportC ""
+		BakaShrot_GetTimeOfDay.l(*TimeVal, *TimeZone) As "gettimeofday"
+	EndImport
+CompilerEndIf
+
+; Now, in milliseconds since 1970-01-01 00:00:00 UTC: what a pushed message
+; is stamped with (pushed_at).
+Procedure.q BakaShrot_NowUtcMs()
+	CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+		; 100 ns intervals since 1601-01-01 UTC.
+		Protected FileTime.q
+		GetSystemTimeAsFileTime_(@FileTime)
+		ProcedureReturn (FileTime - 116444736000000000) / 10000
+	CompilerElse
+		; struct timeval, 64-bit (checked on Linux x64 by Tests/Retention-Test.ps1).
+		Protected Dim TimeVal.q(1)
+		BakaShrot_GetTimeOfDay(@TimeVal(0), 0)
+		ProcedureReturn TimeVal(0) * 1000 + TimeVal(1) / 1000
+	CompilerEndIf
+EndProcedure
 
 
 ; How long a connection waits for another one's lock before a statement
@@ -50,15 +99,18 @@ EndStructure
 ; The database runs in WAL mode (set up by SetupStorageDatabase(), stored in
 ; the file): readers and the writer don't block each other anymore, so a
 ; long raw query no longer stalls every push.
-; With WAL, NORMAL only syncs to disk at checkpoints instead of on every
-; commit, which is most of what a push used to cost. The database can't get
-; corrupted, but the last commits before a power loss or an OS crash (not a
-; crash of the server itself) can be lost. Those messages were acknowledged,
-; and maybe replicated already, so their ids could then be handed out again
-; for other messages: drift, see Design/ReplicationIssues.md #1.
-; FULL syncs every commit, like before, but still lets reads and writes run
-; side by side.
-#BakaShrot_Storage_Synchronous = "NORMAL"
+; PRAGMA synchronous of every connection: [BakaShrot.Server] Synchronous,
+; set by the root before it opens any (Server/Root.pbi). FULL by default.
+; FULL syncs the WAL on every commit: an acknowledged push is on disk. It
+; costs one flush per transaction, shared by a group commit's pushes.
+; NORMAL only syncs at checkpoints (about every second, Writer.pbi): the
+; database can't get corrupted, but the last commits before a power loss or
+; an OS crash (not a crash of the server itself) can be lost. Those messages
+; were acknowledged, and maybe replicated already, so their ids could then
+; be handed out again for other messages: drift, see
+; Design/ReplicationIssues.md #1. Measured: Design/StorageConcurrency.md.
+#BakaShrot_Storage_DefaultSynchronous = "FULL"
+Global BakaShrot_Storage_Synchronous.s = #BakaShrot_Storage_DefaultSynchronous
 
 
 ; Opens (and creates, if missing) the SQLite database at DatabasePath, as a
@@ -88,8 +140,8 @@ Procedure.i OpenStorageDatabase(DatabasePath.s)
 		ProcedureReturn 0
 	EndIf
 
-	; Per connection, see #BakaShrot_Storage_Synchronous.
-	If Not DatabaseUpdate(DbId, "PRAGMA synchronous = " + #BakaShrot_Storage_Synchronous)
+	; Per connection, see BakaShrot_Storage_Synchronous.
+	If Not DatabaseUpdate(DbId, "PRAGMA synchronous = " + BakaShrot_Storage_Synchronous)
 		CloseDatabase(DbId)
 		ProcedureReturn 0
 	EndIf
@@ -165,7 +217,42 @@ Procedure.i MigrateStorageTopicIds(DbId.i)
 EndProcedure
 
 
-; Creates the tables and indexes described by db_schema_v5.dbml, if they
+; v5 -> v6: "data" got pushed_at. Adds it to a database made before, every
+; message stamped with the time of the upgrade (their real one is unknown),
+; in one transaction. Nothing to do on a new or already upgraded database.
+Procedure.i MigrateStoragePushedAt(DbId.i)
+	Protected Has.i
+
+	Has = StorageHasColumn(DbId, "data", "pushed_at")
+	If Has = -1
+		ProcedureReturn #False
+	ElseIf Has
+		ProcedureReturn #True
+	EndIf
+
+	If Not DatabaseUpdate(DbId, "BEGIN IMMEDIATE")
+		ProcedureReturn #False
+	EndIf
+	If Not DatabaseUpdate(DbId, "ALTER TABLE data ADD COLUMN pushed_at INTEGER NOT NULL DEFAULT 0")
+		DatabaseUpdate(DbId, "ROLLBACK")
+		ProcedureReturn #False
+	EndIf
+	; Bound for the next statement run, so right before it.
+	SetDatabaseQuad(DbId, 0, BakaShrot_NowUtcMs())
+	If Not DatabaseUpdate(DbId, "UPDATE data SET pushed_at = ?")
+		DatabaseUpdate(DbId, "ROLLBACK")
+		ProcedureReturn #False
+	EndIf
+	If Not DatabaseUpdate(DbId, "COMMIT")
+		DatabaseUpdate(DbId, "ROLLBACK")
+		ProcedureReturn #False
+	EndIf
+
+	ProcedureReturn #True
+EndProcedure
+
+
+; Creates the tables and indexes described by db_schema_v8.dbml, if they
 ; don't exist yet. Plain "CREATE IF NOT EXISTS" for now - a real versioned
 ; upgrade mechanism (DbUpdater) will replace this later.
 ; Fails on a database made with an older schema, since it would be left as is.
@@ -190,13 +277,15 @@ Procedure.i SetupStorageDatabase(DbId.i)
 		ProcedureReturn #False
 	EndIf
 
-	If Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS archives (" +
-	                             "delete_by INTEGER NOT NULL, " +
-	                             "message_data TEXT NOT NULL)")
+	; A leftover of the first schemas, never used: the retention deletes
+	; instead (Retention.pbi).
+	If Not DatabaseUpdate(DbId, "DROP TABLE IF EXISTS archives")
 		ProcedureReturn #False
 	EndIf
 
 	; is_json is set by SQLite on insert, and can't be written.
+	; pushed_at: when it was pushed to its origin, ms since 1970 UTC, kept as
+	; is when replicated. Last, like the ALTER TABLE below adds it.
 	; The UNIQUE constraint's index also serves (topic_id, node_id) lookups.
 	If Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS data (" +
 	                             "topic_id INTEGER NOT NULL, " +
@@ -204,6 +293,7 @@ Procedure.i SetupStorageDatabase(DbId.i)
 	                             "message_id INTEGER NOT NULL, " +
 	                             "message_data TEXT NOT NULL, " +
 	                             "is_json INTEGER NOT NULL GENERATED ALWAYS AS (json_valid(message_data)) STORED, " +
+	                             "pushed_at INTEGER NOT NULL DEFAULT 0, " +
 	                             "UNIQUE (topic_id, node_id, message_id))")
 		ProcedureReturn #False
 	EndIf
@@ -218,19 +308,72 @@ Procedure.i SetupStorageDatabase(DbId.i)
 		ProcedureReturn #False
 	EndIf
 
-	; Not used yet, but created now so the on-disk schema already matches
-	; db_schema_v1.dbml.
-	If Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS attachements (" +
+	; A database from before pushed_at: its messages get the time of this
+	; upgrade, so a topic's max age (Server/Storage/Retention.pbi) counts
+	; from now for them instead of deleting them all at once.
+	If Not MigrateStoragePushedAt(DbId)
+		ProcedureReturn #False
+	EndIf
+
+	; What the retention deletes by: a topic's messages pushed before a time.
+	If Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_data_topic_pushed_at ON data (topic_id, pushed_at)")
+		ProcedureReturn #False
+	EndIf
+
+	; The first schemas' placeholder, never used (and misspelled), replaced
+	; by the three tables below. Its indexes go with it.
+	If Not DatabaseUpdate(DbId, "DROP TABLE IF EXISTS attachements")
+		ProcedureReturn #False
+	EndIf
+
+	; Attachments, see Attachments.pbi and Design/Attachments.md.
+	; blobs: an attachment's data, being uploaded or replicated, or stored.
+	;   topic_id, node_id: an upload's, who may attach it (or the message's).
+	;   received: bytes stored so far, in blob_chunks.
+	;   state: 0 receiving, 1 complete (an upload waiting for its message),
+	;   2 attached to its message, 3 to delete (Retention.pbi deletes it).
+	;   created_at: ms since 1970 UTC, uploads left incomplete expire.
+	; blob_chunks: its parts, #BakaShrot_AttachmentChunkSize bytes each.
+	; attachments: a message's (one at most), with its size and SHA-256
+	;   from the start, its data in blob_id once any is here.
+	;   state: 0 missing (a replicated message, none of it here yet),
+	;   1 receiving, 2 ready, 3 not kept (bigger than this server takes).
+	If Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS blobs (" +
+	                             "blob_id INTEGER PRIMARY KEY, " +
+	                             "topic_id INTEGER NOT NULL, " +
+	                             "node_id INTEGER NOT NULL, " +
+	                             "size INTEGER NOT NULL, " +
+	                             "sha256 BLOB NOT NULL, " +
+	                             "received INTEGER NOT NULL DEFAULT 0, " +
+	                             "state INTEGER NOT NULL, " +
+	                             "created_at INTEGER NOT NULL)") Or
+	   Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS blob_chunks (" +
+	                             "blob_id INTEGER NOT NULL, " +
+	                             "chunk_index INTEGER NOT NULL, " +
+	                             "chunk_data BLOB NOT NULL, " +
+	                             "PRIMARY KEY (blob_id, chunk_index))") Or
+	   Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS attachments (" +
 	                             "topic_id INTEGER NOT NULL, " +
 	                             "node_id INTEGER NOT NULL, " +
 	                             "message_id INTEGER NOT NULL, " +
-	                             "attachement_data BLOB NOT NULL)")
+	                             "size INTEGER NOT NULL, " +
+	                             "sha256 BLOB NOT NULL, " +
+	                             "blob_id INTEGER, " +
+	                             "state INTEGER NOT NULL, " +
+	                             "PRIMARY KEY (topic_id, node_id, message_id)) WITHOUT ROWID") Or
+	   Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_blobs_state ON blobs (state)") Or
+	   Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_attachments_state ON attachments (state)")
 		ProcedureReturn #False
 	EndIf
-	If Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_attachements_topic_node ON attachements (topic_id, node_id)")
-		ProcedureReturn #False
-	EndIf
-	If Not DatabaseUpdate(DbId, "CREATE INDEX IF NOT EXISTS idx_attachements_message_id ON attachements (message_id)")
+
+	; A message deleted (the retention) takes its attachment with it, and an
+	; attachment its data: marked, Retention.pbi deletes it a bit at a time.
+	If Not DatabaseUpdate(DbId, "CREATE TRIGGER IF NOT EXISTS trg_data_attachments AFTER DELETE ON data BEGIN " +
+	                             "DELETE FROM attachments WHERE topic_id = OLD.topic_id AND node_id = OLD.node_id AND message_id = OLD.message_id; " +
+	                             "END") Or
+	   Not DatabaseUpdate(DbId, "CREATE TRIGGER IF NOT EXISTS trg_attachments_blobs AFTER DELETE ON attachments WHEN OLD.blob_id IS NOT NULL BEGIN " +
+	                             "UPDATE blobs SET state = 3 WHERE blob_id = OLD.blob_id; " +
+	                             "END")
 		ProcedureReturn #False
 	EndIf
 
@@ -238,7 +381,9 @@ Procedure.i SetupStorageDatabase(DbId.i)
 	; every insert, whoever does it. The sync state comes from it instead of
 	; a GROUP BY over every message (131 ms at 1.9M rows, on every check-in).
 	; Filled from "data" when it's created on an existing database.
-	; !!! Nothing deletes from "data" yet: whatever does must update it too.
+	; Deleting from "data" (the retention) leaves it alone, on purpose: a
+	; pair's head stays its highest id ever, so the next push still gets the
+	; id after it, and peers aren't sent again what was deleted here.
 	If Not DatabaseQuery(DbId, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'node_heads'")
 		ProcedureReturn #False
 	EndIf
@@ -294,10 +439,41 @@ Procedure.i SetupStorageDatabase(DbId.i)
 	EndIf
 
 	; For queries by name: SELECT * FROM messages WHERE topic = 'logs' AND
-	; node = 'kitchen' still goes through the indexes.
-	If Not DatabaseUpdate(DbId, "CREATE VIEW IF NOT EXISTS messages AS " +
-	                             "SELECT t.name AS topic, n.name AS node, d.message_id, d.message_data, d.is_json, d.topic_id, d.node_id " +
+	; node = 'kitchen' still goes through the indexes. pushed_utc is
+	; pushed_at as text, "2026-11-08T14:03:59.123Z".
+	; Made again on every start, so an older one gets the newer columns.
+	If Not DatabaseUpdate(DbId, "DROP VIEW IF EXISTS messages") Or
+	   Not DatabaseUpdate(DbId, "CREATE VIEW messages AS " +
+	                             "SELECT t.name AS topic, n.name AS node, d.message_id, d.message_data, d.is_json, d.topic_id, d.node_id, " +
+	                             "d.pushed_at, strftime('%Y-%m-%dT%H:%M:%fZ', d.pushed_at / 1000.0, 'unixepoch') AS pushed_utc " +
 	                             "FROM data d JOIN topics t ON t.topic_id = d.topic_id JOIN nodes n ON n.node_id = d.node_id")
+		ProcedureReturn #False
+	EndIf
+
+	; For browsing with a database tool: set browse's one row to a topic
+	; (and optionally a node), open browse_messages. The foreign keys are
+	; only there for the tools: SQLiteStudio shows a dropdown of the names
+	; for a column that references them. The server never turns foreign keys
+	; on, so they never get in its way (a topic renamed in the config only
+	; leaves a stale name here). The server never writes to browse either.
+	If Not DatabaseUpdate(DbId, "CREATE TABLE IF NOT EXISTS browse (" +
+	                             "id INTEGER PRIMARY KEY CHECK (id = 1), " +
+	                             "topic TEXT COLLATE NOCASE REFERENCES topics (name), " +
+	                             "node TEXT COLLATE NOCASE REFERENCES nodes (name))") Or
+	   Not DatabaseUpdate(DbId, "INSERT OR IGNORE INTO browse (id) VALUES (1)")
+		ProcedureReturn #False
+	EndIf
+
+	; Newest first, by the (topic_id, pushed_at) index. Made again on every
+	; start, like messages.
+	If Not DatabaseUpdate(DbId, "DROP VIEW IF EXISTS browse_messages") Or
+	   Not DatabaseUpdate(DbId, "CREATE VIEW browse_messages AS " +
+	                             "SELECT m.node, m.message_id, m.pushed_utc, m.message_data, m.is_json, " +
+	                             "a.size AS attachment_size, m.topic " +
+	                             "FROM browse b JOIN messages m ON m.topic = b.topic " +
+	                             "LEFT JOIN attachments a ON a.topic_id = m.topic_id AND a.node_id = m.node_id AND a.message_id = m.message_id " +
+	                             "WHERE b.id = 1 AND (b.node IS NULL OR m.node = b.node) " +
+	                             "ORDER BY m.pushed_at DESC, m.node, m.message_id DESC")
 		ProcedureReturn #False
 	EndIf
 
@@ -305,14 +481,15 @@ Procedure.i SetupStorageDatabase(DbId.i)
 EndProcedure
 
 
-; Inserts one JSON message into the "data" table.
+; Inserts one JSON message into the "data" table, pushed now.
 Procedure.i Insert(DbId.i, TopicId.i, NodeId.i, MessageId.i, JsonData.s)
 	SetDatabaseLong(DbId, 0, TopicId)
 	SetDatabaseLong(DbId, 1, NodeId)
 	SetDatabaseLong(DbId, 2, MessageId)
 	SetDatabaseString(DbId, 3, JsonData)
+	SetDatabaseQuad(DbId, 4, BakaShrot_NowUtcMs())
 
-	ProcedureReturn DatabaseUpdate(DbId, "INSERT INTO data (topic_id, node_id, message_id, message_data) VALUES (?, ?, ?, ?)")
+	ProcedureReturn DatabaseUpdate(DbId, "INSERT INTO data (topic_id, node_id, message_id, message_data, pushed_at) VALUES (?, ?, ?, ?, ?)")
 EndProcedure
 
 
@@ -405,6 +582,18 @@ EndProcedure
 
 
 
+; Reads the attachment's size, state and SHA-256 (COALESCE(a.size, 0),
+; COALESCE(a.state, 0), a.sha256) from Column on into *Message.
+Procedure BakaShrot_ReadAttachmentColumns(DbId.i, Column.i, *Message.BakaShrot_Message)
+	*Message\AttachmentSize  = GetDatabaseQuad(DbId, Column)
+	*Message\AttachmentReady = Bool(*Message\AttachmentSize > 0 And GetDatabaseLong(DbId, Column + 1) = 2)
+	FillMemory(@*Message\AttachmentSha256[0], #BakaShrot_Sha256Size, 0)
+	If *Message\AttachmentSize > 0 And DatabaseColumnSize(DbId, Column + 2) = #BakaShrot_Sha256Size
+		GetDatabaseBlob(DbId, Column + 2, @*Message\AttachmentSha256[0], #BakaShrot_Sha256Size)
+	EndIf
+EndProcedure
+
+
 ; Fills *Message with the message that has the highest message_id for a
 ; topic_id/node_id pair.
 ; Returns #False if there's none, or if the query failed.
@@ -413,7 +602,9 @@ Procedure.i GetLatestMessage(DbId.i, TopicId.i, NodeId.i, *Message.BakaShrot_Mes
 
 	SetDatabaseLong(DbId, 0, TopicId)
 	SetDatabaseLong(DbId, 1, NodeId)
-	If Not DatabaseQuery(DbId, "SELECT message_id, message_data FROM data WHERE topic_id = ? AND node_id = ? ORDER BY message_id DESC LIMIT 1")
+	If Not DatabaseQuery(DbId, "SELECT d.message_id, d.message_data, d.pushed_at, COALESCE(a.size, 0), COALESCE(a.state, 0), a.sha256 " +
+	                           "FROM data d LEFT JOIN attachments a ON a.topic_id = d.topic_id AND a.node_id = d.node_id AND a.message_id = d.message_id " +
+	                           "WHERE d.topic_id = ? AND d.node_id = ? ORDER BY d.message_id DESC LIMIT 1")
 		ProcedureReturn #False
 	EndIf
 
@@ -421,6 +612,8 @@ Procedure.i GetLatestMessage(DbId.i, TopicId.i, NodeId.i, *Message.BakaShrot_Mes
 	If Found
 		*Message\MessageId = GetDatabaseQuad(DbId, 0)
 		*Message\JsonData  = GetDatabaseString(DbId, 1)
+		*Message\PushedAt  = GetDatabaseQuad(DbId, 2)
+		BakaShrot_ReadAttachmentColumns(DbId, 3, *Message)
 	EndIf
 	FinishDatabaseQuery(DbId)
 
@@ -440,15 +633,16 @@ EndProcedure
 ; the query looked like it simply had no (more) rows. So once the rows end,
 ; SQLite itself is asked: sqlite3_errcode() on the connection is SQLITE_DONE
 ; (or SQLITE_ROW/SQLITE_OK) if they really ended, the error otherwise, with
-; sqlite3_errmsg16() telling which. Same sqlite3.dll as PureBasic's
-; (DatabaseID() is its sqlite3 handle), like Writer.pbi.
-; Elsewhere than Windows, PureBasic's own SQLite is linked in and not
-; reachable this way: DatabaseError() is checked instead, which misses it.
+; sqlite3_errmsg16() telling which. Same #BakaShrot_Storage_SqliteLibrary as
+; PureBasic's (DatabaseID() is its sqlite3 handle), like Writer.pbi.
+; Without #BakaShrot_Storage_ExternalSqlite, PureBasic's own SQLite is linked
+; in and not reachable this way: DatabaseError() is checked instead, which
+; misses it.
 #BakaShrot_Query_SqliteOk   = 0
 #BakaShrot_Query_SqliteRow  = 100
 #BakaShrot_Query_SqliteDone = 101
 
-CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+CompilerIf #BakaShrot_Storage_ExternalSqlite
 	PrototypeC.l BakaShrot_Query_SqliteErrCode(Db.i)
 	PrototypeC.i BakaShrot_Query_SqliteErrMsg16(Db.i)
 
@@ -462,14 +656,14 @@ CompilerIf #PB_Compiler_OS = #PB_OS_Windows
 	; Queries run on every client's thread, the first one loads it.
 	Global BakaShrot_Query_SqliteMutex.i = CreateMutex()
 
-	; Returns #False if sqlite3.dll or its functions can't be found.
+	; Returns #False if the SQLite library or its functions can't be found.
 	Procedure.i BakaShrot_Query_LoadSqlite()
 		Protected Loaded.i
 
 		LockMutex(BakaShrot_Query_SqliteMutex)
 		With BakaShrot_Query_Sqlite
 			If Not \Library
-				\Library = OpenLibrary(#PB_Any, "sqlite3.dll")
+				\Library = OpenLibrary(#PB_Any, #BakaShrot_Storage_SqliteLibrary)
 				If \Library
 					\ErrCode  = GetFunction(\Library, "sqlite3_errcode")
 					\ErrMsg16 = GetFunction(\Library, "sqlite3_errmsg16")
@@ -517,7 +711,7 @@ Procedure.i RunReadOnlyQuery(DatabasePath.s, Sql.s, *Result.String, *Error.Strin
 	EndIf
 
 	; Without it, errors in the rows would go unnoticed: refused instead.
-	CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+	CompilerIf #BakaShrot_Storage_ExternalSqlite
 		If Not BakaShrot_Query_LoadSqlite()
 			*Error\s = "Queries can't be checked for errors: sqlite3_errcode() not found"
 			ProcedureReturn #False
@@ -591,7 +785,7 @@ Procedure.i RunReadOnlyQuery(DatabasePath.s, Sql.s, *Result.String, *Error.Strin
 	; Asked before FinishDatabaseQuery(), while the failed step is the last
 	; thing done on this connection. A false alarm would refuse a good
 	; query, it can't hide a bad one.
-	CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+	CompilerIf #BakaShrot_Storage_ExternalSqlite
 		ErrorCode = BakaShrot_Query_Sqlite\ErrCode(DatabaseID(DbId))
 		If ErrorCode <> #BakaShrot_Query_SqliteOk And ErrorCode <> #BakaShrot_Query_SqliteRow And ErrorCode <> #BakaShrot_Query_SqliteDone
 			*Error\s = PeekS(BakaShrot_Query_Sqlite\ErrMsg16(DatabaseID(DbId)), -1, #PB_Unicode)
@@ -609,11 +803,11 @@ Procedure.i RunReadOnlyQuery(DatabasePath.s, Sql.s, *Result.String, *Error.Strin
 	CompilerEndIf
 	FinishDatabaseQuery(DbId)
 
-	; Elsewhere than Windows, the only check there is. It misses errors in the
-	; rows: PureBasic doesn't report them.
+	; Without #BakaShrot_Storage_ExternalSqlite, the only check there is. It
+	; misses errors in the rows: PureBasic doesn't report them.
 	; !!! DatabaseError() may be shared by every thread, see
 	; !!! Design/StorageConcurrency.md, another thread's error could show up here.
-	CompilerIf #PB_Compiler_OS <> #PB_OS_Windows
+	CompilerIf Not #BakaShrot_Storage_ExternalSqlite
 		If DatabaseError() <> ""
 			*Error\s = DatabaseError()
 			FreeJSON(JsonId)
@@ -672,7 +866,9 @@ Procedure.i GetMessagesAfter(DbId.i, TopicId.i, NodeId.i, AfterMessageId.q, Limi
 	SetDatabaseLong(DbId, 1, NodeId)
 	SetDatabaseQuad(DbId, 2, AfterMessageId)
 	SetDatabaseLong(DbId, 3, Limit + 1)
-	If Not DatabaseQuery(DbId, "SELECT message_id, message_data FROM data WHERE topic_id = ? AND node_id = ? AND message_id > ? ORDER BY message_id LIMIT ?")
+	If Not DatabaseQuery(DbId, "SELECT d.message_id, d.message_data, d.pushed_at, COALESCE(a.size, 0), COALESCE(a.state, 0), a.sha256 " +
+	                           "FROM data d LEFT JOIN attachments a ON a.topic_id = d.topic_id AND a.node_id = d.node_id AND a.message_id = d.message_id " +
+	                           "WHERE d.topic_id = ? AND d.node_id = ? AND d.message_id > ? ORDER BY d.message_id LIMIT ?")
 		ProcedureReturn #False
 	EndIf
 
@@ -684,6 +880,8 @@ Procedure.i GetMessagesAfter(DbId.i, TopicId.i, NodeId.i, AfterMessageId.q, Limi
 		AddElement(Messages())
 		Messages()\MessageId = GetDatabaseQuad(DbId, 0)
 		Messages()\JsonData  = GetDatabaseString(DbId, 1)
+		Messages()\PushedAt  = GetDatabaseQuad(DbId, 2)
+		BakaShrot_ReadAttachmentColumns(DbId, 3, @Messages())
 		Chars + Len(Messages()\JsonData)
 	Wend
 	FinishDatabaseQuery(DbId)
@@ -700,19 +898,24 @@ EndProcedure
 ; new one is dropped, even if it differs. See Design/ReplicationIssues.md.
 ; On its own connection: for tools writing while the server is stopped
 ; (BenchSeed). The server itself writes through Writer.pbi.
+; PushedAt: when it was pushed to its origin, ms since 1970 UTC.
 ; Returns #False if the insert failed.
-Procedure.i InsertReplicatedMessage(DbId.i, TopicId.i, NodeId.i, MessageId.q, JsonData.s)
+Procedure.i InsertReplicatedMessage(DbId.i, TopicId.i, NodeId.i, MessageId.q, JsonData.s, PushedAt.q)
 	SetDatabaseLong(DbId, 0, TopicId)
 	SetDatabaseLong(DbId, 1, NodeId)
 	SetDatabaseQuad(DbId, 2, MessageId)
 	SetDatabaseString(DbId, 3, JsonData)
-	ProcedureReturn DatabaseUpdate(DbId, "INSERT OR IGNORE INTO data (topic_id, node_id, message_id, message_data) VALUES (?, ?, ?, ?)")
+	SetDatabaseQuad(DbId, 4, PushedAt)
+	ProcedureReturn DatabaseUpdate(DbId, "INSERT OR IGNORE INTO data (topic_id, node_id, message_id, message_data, pushed_at) VALUES (?, ?, ?, ?, ?)")
 EndProcedure
 
 
 
 ; Every write: pushes (group commit), replicated batches, the WAL checkpoints.
 XIncludeFile "Writer.pbi"
+
+; Attachments: uploads, parts, reading them back, the replicated ones.
+XIncludeFile "Attachments.pbi"
 
 
 ; Usage example. Only compiled when this file is run directly (F5 in the

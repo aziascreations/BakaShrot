@@ -20,7 +20,7 @@ $Port = 12406
 $ProxyPort = 12407
 
 function New-KeyPair {
-    $L = & (Join-Path $Build "KeyGen.exe")
+    $L = & (Join-Path $Build "BakaShrotGenerateKeyPairs.exe")
     @{ Priv = $L[0] -replace "^PrivateKey = ", ""; Pub = $L[1] -replace "^PublicKey = ", "" }
 }
 function Test-Port($P) {
@@ -33,7 +33,6 @@ $S = New-KeyPair; $K = New-KeyPair; $L = New-KeyPair
 Set-Content (Join-Path $Dir "server.ini") -Encoding Ascii -Value @"
 [BakaShrot]
 PrivateKey = $($S.Priv)
-Topic = logs
 Node = server
 
 [BakaShrot.Topics]
@@ -52,20 +51,22 @@ DatabasePath = $(Join-Path $Dir "server.sqlite")
 
 [BakaShrot.Client.kitchen]
 PublicKeys = $($K.Pub)
-Identities = logs:kitchen
+Node = kitchen
+DefaultTopic = logs
 PushTopics = logs;secret
 ReadTopics = *
 AllowQuery = 1
 
 [BakaShrot.Client.lounge]
 PublicKeys = $($L.Pub)
-Identities = logs:lounge
+Node = lounge
+DefaultTopic = logs
 ReadTopics = logs
 "@
 
 function Client-Ini($Name, $Keys) {
     $P = Join-Path $Dir "$Name.ini"
-    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($Keys.Priv)`r`nPublicKey = $($Keys.Pub)`r`nTopic = logs`r`nNode = $Name`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($S.Pub)"
+    Set-Content $P -Encoding Ascii -Value "[BakaShrot]`r`nPrivateKey = $($Keys.Priv)`r`nPublicKey = $($Keys.Pub)`r`nNode = $Name`r`nServerHost = 127.0.0.1`r`nServerPort = $Port`r`nServerPublicKey = $($S.Pub)"
     $P
 }
 $Kitchen = Client-Ini "kitchen" $K
@@ -89,7 +90,9 @@ try {
     & $Python (Join-Path $PSScriptRoot "..\Interactors\Python\check_bakashrot.py") (Join-Path $Build "BakaShrot_Client.dll") $Kitchen $Lounge
     $Code = $LASTEXITCODE
 
-    $Bad = @(Get-Content (Join-Path $Dir "server.log") | Where-Object { $_ -match "invalid|unexpected|Failed|decrypt|sealed" })
+    # Refusals are expected (the checks ask for them), their codes' names
+    # (QueryFailed, InvalidRequest) aren't problems.
+    $Bad = @(Get-Content (Join-Path $Dir "server.log") | Where-Object { $_ -notmatch "Refused a request" -and $_ -match "invalid|unexpected|Failed|decrypt|sealed" })
     if ($Bad.Count) { "FAIL Server log: $($Bad -join ' / ')"; $Code = 1 } else { "PASS Server log: no invalid or unexpected packets" }
 
     # The wire: encrypted, tampering and a wrong server key refused. Another

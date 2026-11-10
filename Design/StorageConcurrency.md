@@ -37,15 +37,47 @@ not done yet: `Design/Suggestions.md`.
 ## WAL and the write mutex (2026-11-07)
 
 - **WAL mode,** set by `SetupStorageDatabase()` (stored in the file), with
-  `synchronous = NORMAL` on every connection (`#BakaShrot_Storage_Synchronous`
-  in `Storage.pbi`). Readers no longer block the writer: a 0.5 s raw query
-  used to stall pushes for seconds and once made one fail with "database is
-  locked", now pushes run next to it at full speed.
-- **The tradeoff of NORMAL:** commits are only synced at checkpoints. The
-  file can't get corrupted, but the last commits before a power loss or an
-  OS crash can be lost. Those messages were acknowledged and maybe already
-  replicated, so their ids could be handed out again: drift
-  (`ReplicationIssues.md` #1). Set it to `FULL` to sync every commit again.
+  the config's `synchronous` on every connection (see below). Readers no
+  longer block the writer: a 0.5 s raw query used to stall pushes for
+  seconds and once made one fail with "database is locked", now pushes run
+  next to it at full speed.
+- **`synchronous` is `[BakaShrot.Server] Synchronous`** since 2026-11-09,
+  `FULL` by default (it was `NORMAL`, fixed). The root sets
+  `BakaShrot_Storage_Synchronous` (`Storage.pbi`) before it opens any
+  connection. `OFF` is refused (a power loss could corrupt the file),
+  `EXTRA` too (the same as `FULL` in WAL mode, it only adds a directory
+  sync for the other journal modes).
+  - `FULL`: every commit flushes the WAL. An acknowledged push survives a
+    power loss or an OS crash. The flush is per transaction, so a group
+    commit's pushes share it.
+  - `NORMAL`: the WAL is only flushed at checkpoints (about every second,
+    `Writer.pbi`). The file can't get corrupted, but the last second or so
+    of commits before a power loss or an OS crash can be lost. Those
+    messages were acknowledged and maybe already replicated, so their ids
+    could be handed out again: drift (`ReplicationIssues.md` #1).
+
+### Measured (2026-11-09)
+
+`Bench-Replication.ps1 -Ramp "1x0,10x0,10x20" -Parts Ramp -Synchronous ...`,
+4 servers in a Y, totals of the 4, one run each (±5-10%). On a VM whose
+virtual disk flushes in 0.60 ms (p99 0.78 ms).
+
+| | OFF | NORMAL | FULL | EXTRA |
+|---|---|---|---|---|
+| 1 pusher per server, flat out: msg/s | 28,785 | 22,595 | 5,100 | 5,026 |
+| ... push p50 / p99 | 0.1 / 0.8 ms | 0.1 / 0.8 ms | 0.7 / 5.3 ms | 0.7 / 3.3 ms |
+| 10 pushers per server, flat out: msg/s | 42,854 | 33,870 | 17,207 | 17,763 |
+| ... push p50 / p99 / max | 0.6 / 4.8 / 95 ms | 0.5 / 3.3 / 1,113 ms | 1.6 / 9.3 / 123 ms | 1.6 / 8.7 / 129 ms |
+| 800 msg/s steady: push p50 / p99 | 0.2 / 0.5 ms | 0.2 / 0.9 ms | 0.9 / 5.0 ms | 0.8 / 4.6 ms |
+| Lost on a power loss / OS crash | the file may be corrupted | ~1 s of acknowledged pushes | nothing acknowledged | same as FULL |
+
+No failed pushes, replication kept up in every case. `FULL`'s cost is the
+disk's flush time: one client pushing one message at a time gets about
+1 / (flush + 0.15 ms) pushes/s, ~1,300/s here; many clients share flushes
+through the group commit, so the total drops much less (half here). On a
+server SSD with power-loss protection a flush is far under 0.1 ms (close
+to `NORMAL`), on a consumer SSD 1-5 ms, on a hard disk ~10 ms (~100/s for
+one sequential client): time one on the target machine to know.
 - **`BakaShrot_Storage_WriteMutex`** around every write. A connection that
   finds the database locked sleeps in SQLite's busy handler (1, 2, 5, 10...
   ms) and retries; with 10+ threads pushing, that's where the time went, and
@@ -137,12 +169,11 @@ ids exactly 1-800 on both servers.
   the push or batch is refused and retried at the next check-in for
   replication. Fine at current loads; decide later whether pushes should
   retry.
-- **Whether PureBasic's `DatabaseError()` is per thread** in thread-safe
-  mode. If it's shared by the whole program, an error message could show up
-  in the wrong thread's log or refusal. The data isn't affected.
-  `RunReadOnlyQuery()` only checks it after reading the rows on Linux, where
-  it could refuse a valid query because of another thread's error. On
-  Windows it asks SQLite instead (`sqlite3_errcode()` on its own
-  connection), see `Design/Release.md`.
+- ~~**Whether PureBasic's `DatabaseError()` is per thread**~~: it is, in
+  thread-safe mode (`/THREAD`), checked 2026-11-09 with 5.73 and 6.40: two
+  threads failing on their own connections 20,000 times each never saw the
+  other's message. `sqlite3_errmsg16()` on the connection gives the same
+  text. (`RunReadOnlyQuery()` still asks SQLite on Windows, for the errors
+  `DatabaseError()` doesn't report at all, see `Design/Release.md`.)
 - **A single storage thread with a job queue,** only if writes ever become
   the bottleneck. SQLite only has one writer anyway.

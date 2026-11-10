@@ -31,6 +31,10 @@
 ;   C->S QueryRequest       -> S->C QueryResult or RequestRefused
 ;   C->S ResolveName        -> S->C NameResolved or RequestRefused
 ;   C->S ListNames          -> S->C NamesList
+;   C->S UploadStart        -> S->C UploadStarted or RequestRefused
+;   C->S UploadChunk        -> S->C ChunkStored or RequestRefused
+;        then a PushMessage with the UploadId attaches it to the message
+;   C->S GetAttachment      -> S->C AttachmentChunk or RequestRefused
 ; Topics and nodes are given by name or id, see Names.pbi.
 ; A refusal keeps the connection open, a malformed or unexpected packet
 ; still aborts it.
@@ -39,6 +43,9 @@
 ; link it opened to the server:
 ;   P->S SyncStateRequest   -> S->P SyncState or RequestRefused
 ;   P->S ReplicateMessages  -> S->P MessagePushed (last id) or RequestRefused
+;   once the messages are caught up:
+;   P->S MissingAttachmentsRequest -> S->P MissingAttachments or RequestRefused
+;   P->S ReplicateAttachmentChunk  -> S->P ChunkStored or RequestRefused
 ;
 ;
 ; Framing: every packet is sent as its size (4 bytes, little-endian),
@@ -73,6 +80,15 @@ XIncludeFile "Packets/ListNamesPacket.pbi"
 XIncludeFile "Packets/NamesListPacket.pbi"
 XIncludeFile "Packets/GetMessagesPacket.pbi"
 XIncludeFile "Packets/MessagesPacket.pbi"
+XIncludeFile "Packets/UploadStartPacket.pbi"
+XIncludeFile "Packets/UploadStartedPacket.pbi"
+XIncludeFile "Packets/UploadChunkPacket.pbi"
+XIncludeFile "Packets/ChunkStoredPacket.pbi"
+XIncludeFile "Packets/GetAttachmentPacket.pbi"
+XIncludeFile "Packets/AttachmentChunkPacket.pbi"
+XIncludeFile "Packets/MissingAttachmentsRequestPacket.pbi"
+XIncludeFile "Packets/MissingAttachmentsPacket.pbi"
+XIncludeFile "Packets/ReplicateAttachmentChunkPacket.pbi"
 
 
 ; Reads the type of a received packet, to know which decoder to use.
@@ -113,9 +129,11 @@ CompilerEndIf
 Structure BakaShrot_ConnectionMetadata
 	Status.i
 
-	; Identity from the Hello, as the server's own ids (unused on the client
-	; side), only trusted once Status is Authenticated.
-	TopicId.u
+	; Server side only, trusted once Status is Authenticated: the node from
+	; the Hello, and the default topic of its pushes from its client
+	; section's DefaultTopic (-1 without one: pushes must name their topic),
+	; both as the server's own ids.
+	DefaultTopicId.l
 	NodeId.u
 	; The client's Ed25519 public key, on both sides.
 	PublicKey.a[#BakaShrot_Ed25519_PublicKeySize]
@@ -200,6 +218,11 @@ EndProcedure
 ; next packets.
 #BakaShrot_InboxKeptCapacity = 256 * 1024
 
+; How long a send waits for the other end to make room, without a single
+; byte going out, before it gives up. Same as how long a client waits for
+; each packet (#BakaShrot_Outbound_Timeout).
+#BakaShrot_SendStallTimeout = 10000
+
 Enumeration BakaShrot_InboxResults
 	#BakaShrot_Inbox_Incomplete
 	#BakaShrot_Inbox_Packet
@@ -246,8 +269,13 @@ EndProcedure
 ; *Cipher is 0: only the Hello (sealed on its own) and the ChallengeRequest.
 ; Returns #False if the packet is too big, *Cipher isn't set up, or the data
 ; couldn't be sent.
+; PureBasic's sockets don't block: SendNetworkData() returns -1 once the
+; system's send buffer is full (EAGAIN on Linux, a few hundred KB), so -1 is
+; retried until nothing went out for #BakaShrot_SendStallTimeout. PureBasic
+; doesn't tell that from a broken connection, which then takes that long to
+; give up on.
 Procedure.i BakaShrot_SendPacket(ConnectionId.i, *Packet, PacketSize.i, *Cipher.BakaShrot_Cipher)
-	Protected *Frame, FrameSize.i, PayloadSize.i, Offset.i, Sent.i
+	Protected *Frame, FrameSize.i, PayloadSize.i, Offset.i, Sent.i, LastProgress.i
 
 	If PacketSize < 1 Or PacketSize > #BakaShrot_MaxPacketSize
 		ProcedureReturn #False
@@ -276,13 +304,19 @@ Procedure.i BakaShrot_SendPacket(ConnectionId.i, *Packet, PacketSize.i, *Cipher.
 		CopyMemory(*Packet, *Frame + #BakaShrot_FrameHeaderSize, PacketSize)
 	EndIf
 
+	LastProgress = ElapsedMilliseconds()
 	While Offset < FrameSize
 		Sent = SendNetworkData(ConnectionId, *Frame + Offset, FrameSize - Offset)
-		If Sent <= 0
+		If Sent > 0
+			Offset + Sent
+			LastProgress = ElapsedMilliseconds()
+		ElseIf ElapsedMilliseconds() - LastProgress > #BakaShrot_SendStallTimeout
 			FreeMemory(*Frame)
 			ProcedureReturn #False
+		Else
+			; Full, until the other end reads some of it.
+			Delay(1)
 		EndIf
-		Offset + Sent
 	Wend
 
 	FreeMemory(*Frame)

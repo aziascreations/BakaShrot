@@ -6,12 +6,12 @@
 XIncludeFile "../Packets.pbi"
 
 ; C2S auth request, sent sealed for the server's public key (Connections.pbi).
-; ClientTopic, ClientNode: who the client is, each a name or an id in digits
-; (Commons/Networking/Names.pbi), resolved by the server in its own names.
+; ClientNode: who the client is, the node it writes as, a name or an id in
+; digits (Commons/Networking/Names.pbi), resolved by the server in its own
+; names. Its default topic is the server's to say, not the client's.
 ; ClientSessionKey: the public half of the client's key pair for this
 ; connection (Commons/Cryptography/Session.pbi).
 Structure BakaShrot_AuthHello Extends BakaShrot_PacketBase
-    ClientTopic.s
     ClientNode.s
     ClientPubKeyB64.s
     ClientSessionKey.a[#BakaShrot_SessionKeySize]
@@ -34,10 +34,6 @@ Procedure.i BakaShrot_HelloPacket_Encode(*Hello.BakaShrot_AuthHello, *OutSize.In
     EndIf
 
     If Not BakaShrot_WritePacketBase(*Hello, *MsgPackData)
-        Goto EncodeFailed
-    EndIf
-
-    If MsgPackWriteString(*MsgPackData, *Hello\ClientTopic) <> #MsgPack_Error_Success
         Goto EncodeFailed
     EndIf
 
@@ -81,15 +77,6 @@ Procedure.i BakaShrot_HelloPacket_Decode(*MsgPackData.MsgPackData)
 
     ; The base parser doesn't check which packet it is, that's on us.
     If Not BakaShrot_ReadPacketBase(*Hello, *MsgPackData) Or *Hello\PacketType <> #BakaShrot_PacketType_ClientHello
-        Goto DecodeFailed
-    EndIf
-
-    ; ClientTopic
-    If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_String
-        Goto DecodeFailed
-    EndIf
-    *Hello\ClientTopic = MsgPackReadString(*MsgPackData)
-    If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success
         Goto DecodeFailed
     EndIf
 

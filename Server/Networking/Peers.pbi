@@ -27,6 +27,10 @@
 ;      bigger message goes alone, see ReplicateMessagesPacket.pbi), each
 ;      batch stored in one transaction and answered before the next. The
 ;      batches carry the names, the peer stores them under its own ids.
+;      A message's attachment only has its size and SHA-256 in the batch.
+;   4. Once the messages are caught up, asks the peer which attachments it's
+;      missing (MissingAttachmentsRequest) and sends those it has, a part
+;      (1 MB) per request, from where the peer stopped (Design/Attachments.md).
 ; The peer does the same over its own link to this server, which covers the
 ; other direction. Any packet from the peer outside of a check-in drops the
 ; link as unexpected.
@@ -137,8 +141,146 @@ Procedure.i BakaShrot_PeerLink_LogRefusal(*Link.BakaShrot_PeerLink, *Answer, Ans
 		ProcedureReturn #False
 	EndIf
 
-	PrintN("[Peer] '" + *Link\Name + "' refused: " + *Refused\Reason)
+	PrintN("[Peer] '" + *Link\Name + "' refused (" + BakaShrot_ErrorName(*Refused\Code) + "): " + *Refused\Reason)
 	FreeStructure(*Refused)
+	ProcedureReturn #True
+EndProcedure
+
+
+; Sends the peer the attachment it's missing, *Missing, from the part it
+; asked for on, if this server has all of it and sends that topic/node to it.
+; Returns 1 once the peer has it, 0 if it's skipped (not here, not sent to
+; that peer, refused: logged), -1 if the link must be dropped.
+Procedure.i BakaShrot_PeerLink_SendAttachment(*Link.BakaShrot_PeerLink, *Missing.BakaShrot_MissingAttachment)
+	Protected *Links.BakaShrot_PeerLinks = *Link\Links
+	Protected Attachment.BakaShrot_StorageAttachment, Chunk.BakaShrot_ReplicateAttachmentChunk
+	Protected *Stored.BakaShrot_ChunkStored
+	Protected TopicId.i, NodeId.i, Index.q, Count.q, DataSize.Integer, Complete.i
+	Protected *Packet, PacketSize.Integer, *Answer, AnswerSize.Integer, *View.MsgPackData, IsRefusal.i
+
+	TopicId = BakaShrot_Names_TopicByName(*Missing\Topic)
+	NodeId  = BakaShrot_Names_NodeByName(*Missing\Node)
+	If TopicId < 0 Or NodeId < 0
+		ProcedureReturn 0
+	EndIf
+	If Not NameSetHas(@*Link\SendTopics, TopicId, *Missing\Topic) Or Not NameSetHas(@*Link\SendNodes, NodeId, *Missing\Node)
+		ProcedureReturn 0
+	EndIf
+	; Not here either (yet, or not kept): another server may have it.
+	If Not GetStorageAttachment(*Link\DbId, TopicId, NodeId, *Missing\MessageId, @Attachment) Or Attachment\State <> #BakaShrot_Attachment_Ready
+		ProcedureReturn 0
+	EndIf
+
+	Count = BakaShrot_AttachmentChunkCount(Attachment\Size)
+	Chunk\Topic     = *Missing\Topic
+	Chunk\Node      = *Missing\Node
+	Chunk\MessageId = *Missing\MessageId
+	For Index = *Missing\NextChunk To Count - 1
+		If *Links\StopRequested
+			ProcedureReturn -1
+		EndIf
+
+		Chunk\ChunkIndex = Index
+		Chunk\Data = ReadStorageBlobChunk(*Link\DbId, Attachment\BlobId, Index, @DataSize)
+		If Not Chunk\Data
+			PrintN("[Peer] Can't read part " + Str(Index) + " of the attachment of " + *Missing\Topic + ":" + *Missing\Node + "#" + Str(*Missing\MessageId) + " for '" + *Link\Name + "'")
+			ProcedureReturn 0
+		EndIf
+		Chunk\DataSize = DataSize\i
+		*Packet = BakaShrot_ReplicateAttachmentChunkPacket_Encode(@Chunk, @PacketSize)
+		FreeMemory(Chunk\Data)
+		Chunk\Data = 0
+		If Not *Packet
+			ProcedureReturn -1
+		EndIf
+		*Answer = BakaShrot_PeerLink_Request(*Link, *Packet, PacketSize\i, @AnswerSize)
+		FreeMemory(*Packet)
+		If Not *Answer
+			ProcedureReturn -1
+		EndIf
+
+		If BakaShrot_GetPacketType(*Answer, AnswerSize\i) = #BakaShrot_PacketType_RequestRefused
+			IsRefusal = BakaShrot_PeerLink_LogRefusal(*Link, *Answer, AnswerSize\i)
+			FreeMemory(*Answer)
+			If Not IsRefusal
+				ProcedureReturn -1
+			EndIf
+			ProcedureReturn 0
+		EndIf
+
+		*Stored = 0
+		*View = MsgPackWrapMsgBuffer(*Answer, AnswerSize\i)
+		If *View
+			*Stored = BakaShrot_ChunkStoredPacket_Decode(*View)
+			MsgPackFree(*View, #False)
+		EndIf
+		FreeMemory(*Answer)
+		If Not *Stored
+			PrintN("[Peer] '" + *Link\Name + "' sent an invalid answer to an attachment's part")
+			ProcedureReturn -1
+		EndIf
+		Complete = *Stored\Complete
+		FreeStructure(*Stored)
+		If Complete
+			ProcedureReturn 1
+		EndIf
+	Next
+
+	; All sent, and the peer didn't say it's complete: it'll ask again.
+	ProcedureReturn 0
+EndProcedure
+
+
+; Once the messages are caught up: asks the peer which attachments it's
+; missing, and sends those this server has, one after the other.
+; Returns #False if the link must be dropped.
+Procedure.i BakaShrot_PeerLink_SendAttachments(*Link.BakaShrot_PeerLink)
+	Protected Request.BakaShrot_MissingAttachmentsRequest, *Missing.BakaShrot_MissingAttachments
+	Protected *Packet, PacketSize.Integer, *Answer, AnswerSize.Integer, *View.MsgPackData, IsRefusal.i
+	Protected Result.i, StartTime.i, Attachment.BakaShrot_StorageAttachment, Key.s
+
+	*Packet = BakaShrot_MissingAttachmentsRequestPacket_Encode(@Request, @PacketSize)
+	If Not *Packet
+		ProcedureReturn #False
+	EndIf
+	*Answer = BakaShrot_PeerLink_Request(*Link, *Packet, PacketSize\i, @AnswerSize)
+	FreeMemory(*Packet)
+	If Not *Answer
+		PrintN("[Peer] '" + *Link\Name + "' didn't answer which attachments it's missing")
+		ProcedureReturn #False
+	EndIf
+
+	If BakaShrot_GetPacketType(*Answer, AnswerSize\i) = #BakaShrot_PacketType_RequestRefused
+		IsRefusal = BakaShrot_PeerLink_LogRefusal(*Link, *Answer, AnswerSize\i)
+		FreeMemory(*Answer)
+		ProcedureReturn IsRefusal
+	EndIf
+
+	*Missing = 0
+	*View = MsgPackWrapMsgBuffer(*Answer, AnswerSize\i)
+	If *View
+		*Missing = BakaShrot_MissingAttachmentsPacket_Decode(*View)
+		MsgPackFree(*View, #False)
+	EndIf
+	FreeMemory(*Answer)
+	If Not *Missing
+		PrintN("[Peer] '" + *Link\Name + "' sent an invalid list of missing attachments")
+		ProcedureReturn #False
+	EndIf
+
+	ForEach *Missing\Attachments()
+		StartTime = ElapsedMilliseconds()
+		Result = BakaShrot_PeerLink_SendAttachment(*Link, @*Missing\Attachments())
+		If Result < 0
+			FreeStructure(*Missing)
+			ProcedureReturn #False
+		EndIf
+		If Result > 0
+			Key = *Missing\Attachments()\Topic + ":" + *Missing\Attachments()\Node + "#" + Str(*Missing\Attachments()\MessageId)
+			PrintN("[Peer] Sent the attachment of " + Key + " to '" + *Link\Name + "' in " + Str(ElapsedMilliseconds() - StartTime) + " ms, from part " + Str(*Missing\Attachments()\NextChunk))
+		EndIf
+	Next
+	FreeStructure(*Missing)
 	ProcedureReturn #True
 EndProcedure
 
@@ -239,7 +381,13 @@ Procedure.i BakaShrot_PeerLink_SendMissing(*Link.BakaShrot_PeerLink, TopicId.i, 
 
 			AddElement(Batch\Messages())
 			Batch\Messages()\MessageId = Messages()\MessageId
+			; As stored: when it was pushed to its origin, whichever server that was.
+			Batch\Messages()\PushedAt  = Messages()\PushedAt
 			Batch\Messages()\JsonData  = Messages()\JsonData
+			; Its attachment's size and SHA-256 only: the data goes once the
+			; messages are caught up (BakaShrot_PeerLink_SendAttachments()).
+			Batch\Messages()\AttachmentSize = Messages()\AttachmentSize
+			CopyMemory(@Messages()\AttachmentSha256[0], @Batch\Messages()\AttachmentSha256[0], #BakaShrot_Sha256Size)
 		Next
 
 		If ListSize(Batch\Messages()) = 0
@@ -392,7 +540,8 @@ Procedure.i BakaShrot_PeerLink_CheckIn(*Link.BakaShrot_PeerLink)
 		EndIf
 	Next
 
-	ProcedureReturn #True
+	; 4. Then the attachments: only for messages the peer has now.
+	ProcedureReturn BakaShrot_PeerLink_SendAttachments(*Link)
 EndProcedure
 
 
@@ -516,7 +665,6 @@ Procedure.i BakaShrot_PeerLinks_Start(*Config.BakaShrot_CoreConfig)
 	GetPublicKeyFromPrivateKey(@*Links\PrivateKey[0], @*Links\PublicKey[0])
 
 	; By name: the peer has its own ids for them.
-	*Links\Identity\Topic      = BakaShrot_Names_TopicRef(*Config\TopicId)
 	*Links\Identity\Node       = BakaShrot_Names_NodeRef(*Config\NodeId)
 	*Links\Identity\PublicKey  = EncodeKeyToString(@*Links\PublicKey[0], #BakaShrot_Ed25519_PublicKeySize)
 	*Links\Identity\PrivateKey = @*Links\PrivateKey[0]

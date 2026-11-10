@@ -18,17 +18,20 @@ warning, not an error).
 Its smoke test, from the release folder, on one server with a throwaway
 database:
 
-- generates keys with `KeyGen.exe`, writes a server and a client config;
+- generates keys with `BakaShrotGenerateKeyPairs.exe`, writes a server and a client config;
 - pushes two messages, reads the latest back by name, reads both with
-  `GetMessages.exe`, resolves a name, queries them through the `messages`
+  `BakaShrotGetMessages.exe`, resolves a name, queries them through the `messages`
   view with `is_json = 1`;
 - if `python` is on the PATH, reads them and pushes one with
   `python\bakashrot.py`;
+- pushes a 3 MB attachment with `BakaShrotPushMessage.exe -a` and reads it back
+  identical with `BakaShrotGetAttachment.exe`;
 - then force-kills the server and deletes everything.
 
 The end-to-end tests in `Tests/` cover much more (names, replication, big
-messages, GetMessages, the Python client), but against `Build\` (PB 5.73)
-and `BenchServer.exe`, not the release.
+messages, GetMessages, the Python client, retention, attachments and their
+edge cases), but against `Build\` (PB 5.73) and `BenchServer.exe`, not the
+release. The list is in `CLAUDE.md`.
 
 ## Fixed: the release needed the Visual C++ runtime
 
@@ -76,16 +79,19 @@ in `Tests/` already, to be pointed at the release instead.
    first time a pair is pushed to (`Writer.pbi`), `node_heads` is kept by a
    trigger in the same transaction as the messages, and every check-in
    with a peer starts from both sync states, read from the databases. A
-   killed process loses nothing committed, even with `synchronous =
-   NORMAL` (only a power loss or an OS crash can). **Not tested against
-   the release yet**, `Names-Test.ps1` restarts a server but doesn't check
-   these.
+   killed process loses nothing committed, whatever `Synchronous` says
+   (with `NORMAL`, a power loss or an OS crash can lose the last second). **Tested** by
+   `Tests/Restart-Test.ps1` (2026-11-09): kills with traffic in flight,
+   once in the middle of a catch-up, both directions, all hold. With
+   `BenchServer.exe` (the same server code plus a stop file), not the
+   release's exe itself.
 4. **A clean shutdown**: the release server only stops from its console
    (`quit`), so the test force-kills it, and the clean path never runs.
    Needs a way to stop it without a console: a stop file like
    `BenchServer.exe`'s, or a local admin connection (`Notes.md`, console
    commands can't be scripted). Then check it stops within a few seconds,
-   with its last messages committed.
+   with its last messages committed. On Linux, SIGTERM does it (2026-11-10,
+   checked through `docker stop`).
 5. **Refusals**:
    - an unknown public key, and a known one with the wrong private key:
      not authenticated;
@@ -105,12 +111,12 @@ in `Tests/` already, to be pointed at the release instead.
    - a 1 MB message reads back whole, on both servers;
    - a JSON query over non-JSON rows without `is_json = 1` is refused with
      SQLite's error, not answered with no rows (fixed, see below).
-9. **Every shipped tool runs once**: `ListNames`, `GetMessages --follow`
+9. **Every shipped tool runs once**: `BakaShrotList`, `BakaShrotGetMessages --follow`
    (picks up a new push, exits 1 once the server is gone) aren't yet.
 10. **Version hygiene**:
     - `-Version 1.0.0` refuses a dirty tree instead of appending `-dirty`;
     - the release commit is tagged (`v1.0.0`), the version comes from it;
-    - `VERSION.txt` gives the protocol version (3) and the runtime needed;
+    - `VERSION.txt` gives the protocol version (5 now) and the runtime needed;
     - the Python client is checked on the oldest version it claims (3.8),
       not only on the latest (3.14 here).
 
@@ -186,8 +192,9 @@ Not smoke-test items, but what the "1.0" label would promise. From
   Fixed (protocol 3).
 - Messages aren't signed by the node that first wrote them: a peer is
   trusted with what it replicates (`Design/ReplicationIssues.md` #3).
-- `synchronous = NORMAL`: the last commits can be lost on a power loss,
-  decide if that's fine (`Design/StorageConcurrency.md`).
+- ~~`synchronous = NORMAL`: the last commits can be lost on a power loss.~~
+  Decided: `[BakaShrot.Server] Synchronous`, `FULL` by default
+  (`Design/StorageConcurrency.md`).
 
 Either they're fixed, or they're documented limits of 1.0 (or it's a 0.9).
 
@@ -210,7 +217,7 @@ Notes for when the builds move to a pipeline.
   - `Build.ps1` ends by running the server, which waits on its console:
     needs a `-NoRun` switch. It also writes private keys into `Build\`,
     which must never be published as an artifact.
-  - The tests use fixed ports (12399 for the release, 12401-12407 for
+  - The tests use fixed ports (12399 for the release, 12401-12416 for
     `Tests/`): parallel jobs on one runner collide, make them parameters
     or pick free ones.
   - One entry point that runs every test (`Tests/*.ps1`, the handshake

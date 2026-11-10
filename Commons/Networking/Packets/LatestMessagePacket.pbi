@@ -8,13 +8,19 @@ XIncludeFile "../Packets.pbi"
 ; S2C, answers a GetLatestMessage with the latest message of that topic/node combination.
 ; TopicId, NodeId: the server's own ids for them.
 ; TopicName, NodeName: their names, or their ids in digits if they have none.
+; PushedAt: when it was pushed, see Packets.pbi.
 Structure BakaShrot_LatestMessage Extends BakaShrot_PacketBase
     TopicId.l
     NodeId.l
     TopicName.s
     NodeName.s
     MessageId.q
+    PushedAt.q
     JsonData.s
+    ; Its attachment's size in bytes, 0 for none, and whether this server has
+    ; all of it yet (a replicated one comes after its message).
+    AttachmentSize.q
+    AttachmentReady.l
 EndStructure
 
 
@@ -56,8 +62,17 @@ Procedure.i BakaShrot_LatestMessagePacket_Encode(*Latest.BakaShrot_LatestMessage
     If MsgPackWriteInteger(*MsgPackData, *Latest\MessageId) <> #MsgPack_Error_Success
         Goto EncodeFailed
     EndIf
+    If MsgPackWriteInteger(*MsgPackData, *Latest\PushedAt) <> #MsgPack_Error_Success
+        Goto EncodeFailed
+    EndIf
 
     If MsgPackWriteString(*MsgPackData, *Latest\JsonData) <> #MsgPack_Error_Success
+        Goto EncodeFailed
+    EndIf
+    If MsgPackWriteInteger(*MsgPackData, *Latest\AttachmentSize) <> #MsgPack_Error_Success
+        Goto EncodeFailed
+    EndIf
+    If MsgPackWriteInteger(*MsgPackData, *Latest\AttachmentReady) <> #MsgPack_Error_Success
         Goto EncodeFailed
     EndIf
 
@@ -139,12 +154,38 @@ Procedure.i BakaShrot_LatestMessagePacket_Decode(*MsgPackData.MsgPackData)
         Goto DecodeFailed
     EndIf
 
+    ; PushedAt
+    If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+        Goto DecodeFailed
+    EndIf
+    *Latest\PushedAt = MsgPackReadInteger(*MsgPackData)
+    If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or Not BakaShrot_IsValidTimestamp(*Latest\PushedAt)
+        Goto DecodeFailed
+    EndIf
+
     ; JsonData
     If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_String
         Goto DecodeFailed
     EndIf
     *Latest\JsonData = MsgPackReadString(*MsgPackData)
     If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success
+        Goto DecodeFailed
+    EndIf
+    ; AttachmentSize
+    If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+        Goto DecodeFailed
+    EndIf
+    *Latest\AttachmentSize = MsgPackReadInteger(*MsgPackData)
+    If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or *Latest\AttachmentSize < 0 Or *Latest\AttachmentSize > #BakaShrot_MaxAttachmentSize
+        Goto DecodeFailed
+    EndIf
+
+    ; AttachmentReady
+    If MsgPackFormatCodeToDataType(MsgPackGetFormatCode(*MsgPackData)) <> #MsgPack_DataTypes_Integer
+        Goto DecodeFailed
+    EndIf
+    *Latest\AttachmentReady = MsgPackReadInteger(*MsgPackData)
+    If MsgPackLastError(*MsgPackData) <> #MsgPack_Error_Success Or *Latest\AttachmentReady < 0 Or *Latest\AttachmentReady > 1
         Goto DecodeFailed
     EndIf
 

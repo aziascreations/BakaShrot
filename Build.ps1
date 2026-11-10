@@ -4,9 +4,10 @@
 # 0. Extracts libsodium's dynamic build from Libs/libsodium-*-msvc.zip, and
 #    sqlite3.dll from the latest Libs/sqlite-dll-win-*.zip, if not done yet.
 #    Delete Libs/libsodium/x64 or Libs/sqlite/x64 to extract them again.
-# 1. Compiles KeyGen, the server, the client DLL, its example app and the
-#    tools (PushMessage, GetLatestMessage, GetMessages, Query, Resolve,
-#    ListNames) into ./Build, next to copies of
+# 1. Compiles BakaShrotGenerateKeyPairs, the server, the client DLL, its
+#    example app and the tools (BakaShrotPushMessage,
+#    BakaShrotGetLatestMessage, BakaShrotGetMessages, BakaShrotGetAttachment,
+#    BakaShrotQuery, BakaShrotResolveIds, BakaShrotList) into ./Build, next to copies of
 #    libsodium.dll and sqlite3.dll
 # 2. Generates a keypair for two servers and one for a client
 # 3. Writes the servers' configs and the client's keys. Topics and nodes
@@ -21,11 +22,11 @@
 #                   run raw queries
 #      client2.ini  logs:local2 through server2, same client key, may not query
 #    Both servers replicate logs and sensors to each other, e.g.:
-#      .\PushMessage.exe -t sensors @msg.json client.ini
-#      .\GetLatestMessage.exe sensors local client2.ini
-#      .\GetMessages.exe logs local --follow client2.ini
-#      .\Resolve.exe topic sensors client2.ini     (201 there, 2 on server)
-#      .\Query.exe "SELECT topic, node, message_id FROM messages" client.ini
+#      .\BakaShrotPushMessage.exe -t sensors @msg.json client.ini
+#      .\BakaShrotGetLatestMessage.exe sensors local client2.ini
+#      .\BakaShrotGetMessages.exe logs local --follow client2.ini
+#      .\BakaShrotResolveIds.exe topic sensors client2.ini     (201 there, 2 on server)
+#      .\BakaShrotQuery.exe "SELECT topic, node, message_id FROM messages" client.ini
 # 4. Runs the first server, type "quit" or an empty line to stop it, or
 #    "restart" / "vacuum" / "help". Run the second one in
 #    another terminal to see them link: .\BakaShrot_Server.exe server2.ini
@@ -137,10 +138,10 @@ function Invoke-Compiler($Source, $Executable, $Flags) {
 }
 
 function New-KeyPair {
-    # KeyGen prints "PrivateKey = ..." then "PublicKey = ...".
-    $Lines = & (Join-Path $Output "KeyGen.exe")
+    # BakaShrotGenerateKeyPairs prints "PrivateKey = ..." then "PublicKey = ...".
+    $Lines = & (Join-Path $Output "BakaShrotGenerateKeyPairs.exe")
     if ($LASTEXITCODE -ne 0) {
-        throw "KeyGen failed: $Lines"
+        throw "BakaShrotGenerateKeyPairs failed: $Lines"
     }
     return @{
         PrivateKey = $Lines[0] -replace "^PrivateKey = ", ""
@@ -166,24 +167,26 @@ try {
     Copy-Item (Join-Path $SqliteDir "sqlite3.dll") $Output -Force
 
     # 1. Compile
-    Invoke-Compiler "Tools\KeyGen\KeyGen.pb"        "KeyGen.exe"            @("/CONSOLE")
+    Invoke-Compiler "Tools\BakaShrotGenerateKeyPairs\BakaShrotGenerateKeyPairs.pb" "BakaShrotGenerateKeyPairs.exe" @("/CONSOLE")
     Invoke-Compiler "Server\BakaShrot_Server.pb"    "BakaShrot_Server.exe"  @("/CONSOLE", "/THREAD")
     Invoke-Compiler "Client\BakaShrot_Client.pbi"   "BakaShrot_Client.dll"  @("/DLL", "/THREAD")
     # Example app using the DLL, run it from ./Build while the server runs.
     Invoke-Compiler "Client\BakaShrot_Client_Prototypes.pbi" "ClientExample.exe" @("/CONSOLE")
     # Tools using the DLL, same as the example:
-    #   PushMessage [-t <Topic>] <Json|@JsonFile> [ClientIni]
-    #   GetLatestMessage <Topic> <Node> [ClientIni]
-    Invoke-Compiler "Tools\PushMessage\PushMessage.pb"           "PushMessage.exe"       @("/CONSOLE")
-    Invoke-Compiler "Tools\GetLatestMessage\GetLatestMessage.pb" "GetLatestMessage.exe"  @("/CONSOLE")
-    #   GetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [ClientIni]
-    Invoke-Compiler "Tools\GetMessages\GetMessages.pb"           "GetMessages.exe"       @("/CONSOLE")
-    #   Query <Sql|@SqlFile> [ClientIni]
-    Invoke-Compiler "Tools\Query\Query.pb"                       "Query.exe"             @("/CONSOLE")
-    #   Resolve <topic|node> <NameOrId> [ClientIni]
-    Invoke-Compiler "Tools\Resolve\Resolve.pb"                   "Resolve.exe"           @("/CONSOLE")
-    #   ListNames [topics|nodes|all] [ClientIni] [--json]
-    Invoke-Compiler "Tools\ListNames\ListNames.pb"               "ListNames.exe"         @("/CONSOLE")
+    #   BakaShrotPushMessage [-t <Topic>] [-a <File>] <Json|@JsonFile> [ClientIni]
+    Invoke-Compiler "Tools\BakaShrotPushMessage\BakaShrotPushMessage.pb"               "BakaShrotPushMessage.exe"        @("/CONSOLE")
+    #   BakaShrotGetLatestMessage <Topic> <Node> [ClientIni]
+    Invoke-Compiler "Tools\BakaShrotGetLatestMessage\BakaShrotGetLatestMessage.pb"     "BakaShrotGetLatestMessage.exe"   @("/CONSOLE")
+    #   BakaShrotGetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [ClientIni]
+    Invoke-Compiler "Tools\BakaShrotGetMessages\BakaShrotGetMessages.pb"               "BakaShrotGetMessages.exe"        @("/CONSOLE")
+    #   BakaShrotGetAttachment <Topic> <Node> <MessageId> <OutFile> [ClientIni]
+    Invoke-Compiler "Tools\BakaShrotGetAttachment\BakaShrotGetAttachment.pb"           "BakaShrotGetAttachment.exe"      @("/CONSOLE")
+    #   BakaShrotQuery <Sql|@SqlFile> [ClientIni]
+    Invoke-Compiler "Tools\BakaShrotQuery\BakaShrotQuery.pb"                           "BakaShrotQuery.exe"              @("/CONSOLE")
+    #   BakaShrotResolveIds <topic|node> <NameOrId> [ClientIni]
+    Invoke-Compiler "Tools\BakaShrotResolveIds\BakaShrotResolveIds.pb"                 "BakaShrotResolveIds.exe"         @("/CONSOLE")
+    #   BakaShrotList [topics|nodes|all] [ClientIni] [--json]
+    Invoke-Compiler "Tools\BakaShrotList\BakaShrotList.pb"                             "BakaShrotList.exe"               @("/CONSOLE")
 
     # 2. Keys
     Write-Host "Generating keys"
@@ -197,7 +200,6 @@ try {
     $ServerConfig = @"
 [BakaShrot]
 PrivateKey = $($ServerKeys.PrivateKey)
-Topic = logs
 Node = server1
 
 ; This server's ids for the names every server shares.
@@ -219,13 +221,13 @@ PeerBatchSize = $PeerBatchSize
 [BakaShrot.Peer.server2]
 Host = $ServerHost
 Port = $Server2Port
-Topic = logs
 Node = server2
 PublicKey = $($Server2Keys.PublicKey)
 
 [BakaShrot.Client.local]
 PublicKeys = $($ClientKeys.PublicKey)
-Identities = logs:local
+Node = local
+DefaultTopic = logs
 PushTopics = logs;sensors
 ReadTopics = *
 AllowRead = 1
@@ -235,7 +237,7 @@ AllowQuery = 1
 ; The peer only replicates, it has no business reading or writing as a client.
 [BakaShrot.Client.server2]
 PublicKeys = $($Server2Keys.PublicKey)
-Identities = logs:server2
+Node = server2
 AllowRead = 0
 AllowWrite = 0
 AllowQuery = 0
@@ -245,7 +247,6 @@ AllowQuery = 0
     $Server2Config = @"
 [BakaShrot]
 PrivateKey = $($Server2Keys.PrivateKey)
-Topic = logs
 Node = server2
 
 ; Other ids than server's, same names: replication goes by name.
@@ -267,14 +268,13 @@ PeerBatchSize = $PeerBatchSize
 [BakaShrot.Peer.server]
 Host = $ServerHost
 Port = $ServerPort
-Topic = logs
 Node = server1
 PublicKey = $($ServerKeys.PublicKey)
 
 ; The peer only replicates, it has no business reading or writing as a client.
 [BakaShrot.Client.server]
 PublicKeys = $($ServerKeys.PublicKey)
-Identities = logs:server1
+Node = server1
 AllowRead = 0
 AllowWrite = 0
 AllowQuery = 0
@@ -282,7 +282,8 @@ AllowQuery = 0
 ; No raw queries through this server.
 [BakaShrot.Client.local]
 PublicKeys = $($ClientKeys.PublicKey)
-Identities = logs:local2
+Node = local2
+DefaultTopic = logs
 PushTopics = logs;sensors
 ReadTopics = *
 AllowRead = 1
@@ -295,7 +296,6 @@ AllowQuery = 0
 [BakaShrot]
 PrivateKey = $($ClientKeys.PrivateKey)
 PublicKey = $($ClientKeys.PublicKey)
-Topic = logs
 Node = local2
 ServerHost = $ServerHost
 ServerPort = $Server2Port
@@ -308,7 +308,6 @@ ServerPublicKey = $($Server2Keys.PublicKey)
 [BakaShrot]
 PrivateKey = $($ClientKeys.PrivateKey)
 PublicKey = $($ClientKeys.PublicKey)
-Topic = logs
 Node = local
 ServerHost = $ServerHost
 ServerPort = $ServerPort

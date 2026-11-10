@@ -34,6 +34,7 @@
 #   powershell -ExecutionPolicy Bypass -File Tests\Bench\Bench-Replication.ps1
 #   ... -Ramp "5x20,10x50" -SeedTotals @() -PushSeconds 10     quick run
 #   ... -Topology Mesh -PeerSyncInterval 1                     variations
+#   ... -Synchronous NORMAL      the servers' Synchronous (FULL by default)
 #   ... -Names Wildcard          each server only names its own nodes, and
 #                                takes the others' by AcceptNodes = n*
 #   ... -Parts Ramp                                            only part 1
@@ -62,6 +63,10 @@ param(
     [int]$PushSeconds = 30,
     [int]$PeerSyncInterval = 5,
     [int]$PeerBatchSize = 100,
+    # The servers' [BakaShrot.Server] Synchronous: FULL like their default,
+    # NORMAL to compare with the runs from before 2026-11-09.
+    [ValidateSet("FULL", "NORMAL")]
+    [string]$Synchronous = "FULL",
     [int]$PortBase = 13001,
     [string]$Ramp = "5x5,5x20,5x50,5x100,5x0,10x20,10x50,10x100,10x0",
     [int[]]$SeedTotals = @(250000, 1000000),
@@ -138,7 +143,7 @@ function Invoke-Build {
             @("Tests\Bench\BenchServer.pb", "BenchServer.exe", @("/CONSOLE", "/THREAD")),
             @("Tests\Bench\BenchClient.pb", "BenchClient.exe", @("/CONSOLE", "/THREAD")),
             @("Tests\Bench\BenchSeed.pb",   "BenchSeed.exe",   @("/CONSOLE")),
-            @("Tools\KeyGen\KeyGen.pb",     "KeyGen.exe",      @("/CONSOLE")))) {
+            @("Tools\BakaShrotGenerateKeyPairs\BakaShrotGenerateKeyPairs.pb",     "BakaShrotGenerateKeyPairs.exe",      @("/CONSOLE")))) {
         Write-Host "Compiling $($Item[0])"
         $Flags = $Item[2] + $Extra
         & $Pb (Join-Path $Root $Item[0]) @Flags /QUIET $OutputFlag (Join-Path $OutDir $Item[1])
@@ -147,8 +152,8 @@ function Invoke-Build {
 }
 
 function New-KeyPair {
-    $Lines = & (Join-Path $OutDir "KeyGen.exe")
-    if ($LASTEXITCODE -ne 0) { throw "KeyGen failed: $Lines" }
+    $Lines = & (Join-Path $OutDir "BakaShrotGenerateKeyPairs.exe")
+    if ($LASTEXITCODE -ne 0) { throw "BakaShrotGenerateKeyPairs failed: $Lines" }
     return @{
         PrivateKey = $Lines[0] -replace "^PrivateKey = ", ""
         PublicKey  = $Lines[1] -replace "^PublicKey = ", ""
@@ -203,7 +208,17 @@ function New-Servers {
 
 function Write-ServerConfig($Server, $Servers, $ClientKeys) {
     $LastNode   = $Server.FirstNode + $MaxNodesPerServer - 1
-    $Identities = (@($Server.FirstNode..$LastNode) + @($Server.MonitorNode, $Server.QueryNode) | ForEach-Object { "${TopicId}:$_" }) -join ";"
+    # The bench's one key writes as every node: a client section per node.
+    $ClientSections = (@($Server.FirstNode..$LastNode) + @($Server.MonitorNode, $Server.QueryNode) | ForEach-Object { @"
+[BakaShrot.Client.bench$_]
+PublicKeys = $($ClientKeys.PublicKey)
+Node = $_
+DefaultTopic = $TopicId
+AllowRead = 1
+AllowWrite = 1
+AllowQuery = 1
+
+"@ }) -join "`r`n"
 
     # Only named topics and nodes replicate, and they must be named on both
     # ends (Declared): every server names every node of every server, with
@@ -224,7 +239,6 @@ function Write-ServerConfig($Server, $Servers, $ClientKeys) {
     $Text = @"
 [BakaShrot]
 PrivateKey = $($Server.PrivateKey)
-Topic = $TopicId
 Node = $($Server.NodeId)
 
 [BakaShrot.Topics]
@@ -241,14 +255,9 @@ DatabasePath = $($Server.DatabasePath)
 PeerRetryDelay = 2
 PeerSyncInterval = $PeerSyncInterval
 PeerBatchSize = $PeerBatchSize
+Synchronous = $Synchronous
 
-[BakaShrot.Client.bench]
-PublicKeys = $($ClientKeys.PublicKey)
-Identities = $Identities
-AllowRead = 1
-AllowWrite = 1
-AllowQuery = 1
-
+$ClientSections
 "@
     foreach ($PeerIndex in $Server.Peers) {
         $Peer = $Servers[$PeerIndex]
@@ -256,14 +265,13 @@ AllowQuery = 1
 [BakaShrot.Peer.$($Peer.Name)]
 Host = 127.0.0.1
 Port = $($Peer.Port)
-Topic = $TopicId
 Node = $($Peer.NodeId)
 PublicKey = $($Peer.PublicKey)
 $(if ($Names -eq "Wildcard") { "AcceptNodes = n*" })
 
 [BakaShrot.Client.$($Peer.Name)]
 PublicKeys = $($Peer.PublicKey)
-Identities = ${TopicId}:$($Peer.NodeId)
+Node = $($Peer.NodeId)
 AllowRead = 0
 AllowWrite = 0
 AllowQuery = 0

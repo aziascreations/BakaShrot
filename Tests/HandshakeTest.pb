@@ -54,7 +54,6 @@ Check(Bool(OpenCryptRandom()), "Opened the secure random generator")
 
 ; --- 1. Client -> Server: Hello ---------------------------------------------
 
-ClientHello\ClientTopic     = "logs"
 ClientHello\ClientNode      = "34"
 ClientHello\ClientPubKeyB64 = "Q2xpZW50UHViS2V5"
 Check(Bool(CryptRandomData(@ClientHello\ClientSessionKey[0], #BakaShrot_SessionKeySize)), "Client made a session key")
@@ -69,7 +68,6 @@ MsgPackFree(*View, #False)
 FreeMemory(*Wire)
 
 Check(Bool(*ServerHello), "Server decoded the hello")
-Check(Bool(*ServerHello\ClientTopic = "logs"), "Hello's ClientTopic survived")
 Check(Bool(*ServerHello\ClientNode = "34"), "Hello's ClientNode survived")
 Check(Bool(*ServerHello\ClientPubKeyB64 = "Q2xpZW50UHViS2V5"), "Hello's ClientPubKeyB64 survived")
 Check(CompareMemory(@*ServerHello\ClientSessionKey[0], @ClientHello\ClientSessionKey[0], #BakaShrot_SessionKeySize), "Hello's ClientSessionKey survived")

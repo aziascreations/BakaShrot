@@ -5,9 +5,12 @@
 # Release\<version>\, ready to copy to a server or hand to a client:
 #   BakaShrot_Server.exe                the server
 #   BakaShrot_Client.dll                the client DLL, with
-#   BakaShrot_Client_Prototypes.pbi     its PureBasic prototypes
-#   PushMessage.exe, GetLatestMessage.exe, GetMessages.exe, Query.exe,
-#   Resolve.exe, ListNames.exe, KeyGen.exe   the tools
+#   BakaShrot_Client_Prototypes.pbi     its PureBasic prototypes, and
+#   BakaShrot_ErrorCodes.pbi            the error codes they include
+#   BakaShrotPushMessage.exe, BakaShrotGetLatestMessage.exe,
+#   BakaShrotGetMessages.exe, BakaShrotGetAttachment.exe, BakaShrotQuery.exe,
+#   BakaShrotResolveIds.exe, BakaShrotList.exe,
+#   BakaShrotGenerateKeyPairs.exe       the tools
 #   libsodium.dll, sqlite3.dll          what they need next to them
 #   vcruntime140.dll                    what libsodium.dll needs (Libs\redist)
 #   python\bakashrot.py, example.py     the Python client, over the DLL
@@ -15,7 +18,7 @@
 #   VERSION.txt                         commit, date, compiler, libraries
 # and Release\BakaShrot-<version>.zip of it, unless -NoZip.
 #
-# No keys and no configs with keys in it: generate them with KeyGen.exe.
+# No keys and no configs with keys in it: generate them with BakaShrotGenerateKeyPairs.exe.
 #
 # Then checks the build works, unless -SkipTest: generates keys, runs the
 # server from the release folder on a spare port with a throwaway database,
@@ -110,15 +113,16 @@ $Common = @("/QUIET")
 if (-not $NoOptimizer) { $Common += "/OPTIMIZER" }
 
 $Targets = @(
-    @("Server\BakaShrot_Server.pb",           "BakaShrot_Server.exe", @("/CONSOLE", "/THREAD")),
-    @("Client\BakaShrot_Client.pbi",          "BakaShrot_Client.dll", @("/DLL", "/THREAD")),
-    @("Tools\PushMessage\PushMessage.pb",     "PushMessage.exe",      @("/CONSOLE")),
-    @("Tools\GetLatestMessage\GetLatestMessage.pb", "GetLatestMessage.exe", @("/CONSOLE")),
-    @("Tools\GetMessages\GetMessages.pb",     "GetMessages.exe",      @("/CONSOLE")),
-    @("Tools\Query\Query.pb",                 "Query.exe",            @("/CONSOLE")),
-    @("Tools\Resolve\Resolve.pb",             "Resolve.exe",          @("/CONSOLE")),
-    @("Tools\ListNames\ListNames.pb",         "ListNames.exe",        @("/CONSOLE")),
-    @("Tools\KeyGen\KeyGen.pb",               "KeyGen.exe",           @("/CONSOLE"))
+    @("Server\BakaShrot_Server.pb",                                       "BakaShrot_Server.exe",           @("/CONSOLE", "/THREAD")),
+    @("Client\BakaShrot_Client.pbi",                                      "BakaShrot_Client.dll",           @("/DLL", "/THREAD")),
+    @("Tools\BakaShrotPushMessage\BakaShrotPushMessage.pb",               "BakaShrotPushMessage.exe",       @("/CONSOLE")),
+    @("Tools\BakaShrotGetLatestMessage\BakaShrotGetLatestMessage.pb",     "BakaShrotGetLatestMessage.exe",  @("/CONSOLE")),
+    @("Tools\BakaShrotGetMessages\BakaShrotGetMessages.pb",               "BakaShrotGetMessages.exe",       @("/CONSOLE")),
+    @("Tools\BakaShrotGetAttachment\BakaShrotGetAttachment.pb",           "BakaShrotGetAttachment.exe",     @("/CONSOLE")),
+    @("Tools\BakaShrotQuery\BakaShrotQuery.pb",                           "BakaShrotQuery.exe",             @("/CONSOLE")),
+    @("Tools\BakaShrotResolveIds\BakaShrotResolveIds.pb",                 "BakaShrotResolveIds.exe",        @("/CONSOLE")),
+    @("Tools\BakaShrotList\BakaShrotList.pb",                             "BakaShrotList.exe",              @("/CONSOLE")),
+    @("Tools\BakaShrotGenerateKeyPairs\BakaShrotGenerateKeyPairs.pb",     "BakaShrotGenerateKeyPairs.exe",  @("/CONSOLE"))
 )
 
 Push-Location $Root
@@ -141,6 +145,7 @@ Copy-Item $Sodium $OutDir
 foreach ($File in $Redist) { Copy-Item $File.FullName $OutDir }
 Copy-Item $SqliteDll (Join-Path $OutDir "sqlite3.dll")
 Copy-Item (Join-Path $Root "Client\BakaShrot_Client_Prototypes.pbi") $OutDir
+Copy-Item (Join-Path $Root "Client\BakaShrot_ErrorCodes.pbi") $OutDir
 New-Item -ItemType Directory -Force (Join-Path $OutDir "python") | Out-Null
 foreach ($File in @("bakashrot.py", "example.py")) {
     Copy-Item (Join-Path $Root "Interactors\Python\$File") (Join-Path $OutDir "python")
@@ -159,8 +164,8 @@ VC++ runtime: $RedistVersion (vcruntime140.dll, for libsodium.dll)
 Needs Windows 10 or later, 64-bit. Keep the DLLs next to the exes.
 
 Run the server:  BakaShrot_Server.exe config.ini
-  Its config: config.example.ini. Keys: KeyGen.exe, the private key goes in
-  [BakaShrot] PrivateKey, the public key in the configs that trust it, and
+  Its config: config.example.ini. Keys: BakaShrotGenerateKeyPairs.exe, the
+  private key goes in [BakaShrot] PrivateKey, the public key in the configs that trust it, and
   in its clients' client.ini as ServerPublicKey (it logs it when it starts).
   Every connection is encrypted, and only reaches the server holding the
   private key of the ServerPublicKey (or peer PublicKey) it was given.
@@ -168,18 +173,40 @@ Run the server:  BakaShrot_Server.exe config.ini
   needs one: it stops right away without console input.
   Topics and nodes go by name ([BakaShrot.Topics], [BakaShrot.Nodes]) or id,
   each server has its own ids for the same names.
+  [BakaShrot.Server] Synchronous = FULL (default) flushes every push to disk
+  before answering it; NORMAL is faster but a power loss can lose the last
+  second of messages. See config.example.ini.
 Tools, next to BakaShrot_Client.dll, with a client.ini:
-  PushMessage [-t <Topic>] <Json|@JsonFile> [ClientIni]
-  GetLatestMessage <Topic> <Node> [ClientIni]
-  GetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [--interval <Ms>] [ClientIni]
-  Resolve <topic|node> <NameOrId> [ClientIni]
-  ListNames [topics|nodes|all] [ClientIni] [--json]
-  Query <Sql|@SqlFile> [ClientIni]     e.g. SELECT * FROM messages WHERE topic = 'logs'
-  client.ini: [BakaShrot] PrivateKey, PublicKey, Topic, Node (names or
-  ids), ServerHost, ServerPort, ServerPublicKey.
+  BakaShrotPushMessage [-t <Topic>] [-a <File>] <Json|@JsonFile> [ClientIni]
+  BakaShrotGetLatestMessage <Topic> <Node> [ClientIni]
+  BakaShrotGetMessages <Topic> <Node> [--after <Id|latest>] [--limit <N>] [--follow] [--interval <Ms>] [--time] [ClientIni]
+  BakaShrotGetAttachment <Topic> <Node> <MessageId> <OutFile> [ClientIni]
+  BakaShrotResolveIds <topic|node> <NameOrId> [ClientIni]
+  BakaShrotList [topics|nodes|all] [ClientIni] [--json]
+  BakaShrotQuery <Sql|@SqlFile> [ClientIni]     e.g. SELECT * FROM messages WHERE topic = 'logs'
+  client.ini: [BakaShrot] PrivateKey, PublicKey, Node (the node it writes
+  as, a name or an id), ServerHost, ServerPort, ServerPublicKey. Where its
+  pushes go by default is the server's DefaultTopic for it.
 Python (3.8+, 64-bit): python\bakashrot.py, no dependencies, uses
   BakaShrot_Client.dll (set BAKASHROT_DLL, or pass dll_path). See its
   docstring, and python\example.py <ClientIni> <Topic> <Node>.
+Compatibility: protocol 6. Servers and clients (the DLL, the tools, the
+  Python client) must come from the same release: any other version
+  refuses the connection, there's no mixing. From an older release:
+  - server configs: [BakaShrot.Client.<name>] Identities = topic:node is
+    refused at start, write Node = node and DefaultTopic = topic (the
+    server's message says which); [BakaShrot] and peer sections' Topic is
+    ignored; [BakaShrot.Topics] can be names alone, [BakaShrot.Nodes] can
+    go; Synchronous = FULL is the default now (NORMAL was);
+  - client.ini: Topic is ignored, ServerPublicKey is required;
+  - apps: BakaShrot_ErrorCodes.pbi next to the prototypes, SetTopic() is
+    gone, and a database made before is upgraded in place at the first
+    start (keep a copy).
+Errors: every failure has a code, BakaShrot_GetLastError() in the DLL,
+  error.code in Python (bakashrot.ErrorCode), the name in the tools'
+  messages. BakaShrot_ErrorCodes.pbi lists them, and what to do about each.
+  Nothing reconnects by itself. A push whose answer was lost may have been
+  stored: pushed again, it's stored twice (at least once delivery).
 "@
 Set-Content -Path (Join-Path $OutDir "VERSION.txt") -Value $VersionText -Encoding UTF8
 
@@ -187,8 +214,8 @@ Set-Content -Path (Join-Path $OutDir "VERSION.txt") -Value $VersionText -Encodin
 # --- Test -------------------------------------------------------------------
 
 function New-KeyPair {
-    $Lines = & (Join-Path $OutDir "KeyGen.exe")
-    if ($LASTEXITCODE -ne 0) { throw "KeyGen failed: $Lines" }
+    $Lines = & (Join-Path $OutDir "BakaShrotGenerateKeyPairs.exe")
+    if ($LASTEXITCODE -ne 0) { throw "BakaShrotGenerateKeyPairs failed: $Lines" }
     return @{
         PrivateKey = $Lines[0] -replace "^PrivateKey = ", ""
         PublicKey  = $Lines[1] -replace "^PublicKey = ", ""
@@ -227,7 +254,6 @@ if (-not $SkipTest) {
         Set-Content -Path (Join-Path $TestDir "server.ini") -Encoding Ascii -Value @"
 [BakaShrot]
 PrivateKey = $($ServerKeys.PrivateKey)
-Topic = releasetest
 Node = server
 
 [BakaShrot.Topics]
@@ -245,7 +271,8 @@ DatabasePath = $(Join-Path $TestDir "test.sqlite")
 
 [BakaShrot.Client.test]
 PublicKeys = $($ClientKeys.PublicKey)
-Identities = releasetest:tester
+Node = tester
+DefaultTopic = releasetest
 AllowRead = 1
 AllowWrite = 1
 AllowQuery = 1
@@ -254,7 +281,6 @@ AllowQuery = 1
 [BakaShrot]
 PrivateKey = $($ClientKeys.PrivateKey)
 PublicKey = $($ClientKeys.PublicKey)
-Topic = releasetest
 Node = tester
 ServerHost = 127.0.0.1
 ServerPort = $TestPort
@@ -274,26 +300,26 @@ ServerPublicKey = $($ServerKeys.PublicKey)
         }
 
         $ClientIni = Join-Path $TestDir "client.ini"
-        $Pushed = Invoke-Tool "PushMessage.exe" @("@$(Join-Path $TestDir 'message.json')", $ClientIni)
+        $Pushed = Invoke-Tool "BakaShrotPushMessage.exe" @("@$(Join-Path $TestDir 'message.json')", $ClientIni)
         if ($Pushed -notmatch "message #1") { throw "Unexpected push answer: $Pushed" }
 
-        $Latest = Invoke-Tool "GetLatestMessage.exe" @("releasetest", "tester", $ClientIni)
+        $Latest = Invoke-Tool "BakaShrotGetLatestMessage.exe" @("releasetest", "tester", $ClientIni)
         if ($Latest -notmatch '"release"\s*:\s*"test"' -or $Latest -notmatch '\(ids 7:2\)') { throw "Unexpected latest message: $Latest" }
 
-        $Pushed = Invoke-Tool "PushMessage.exe" @("@$(Join-Path $TestDir 'message.json')", $ClientIni)
+        $Pushed = Invoke-Tool "BakaShrotPushMessage.exe" @("@$(Join-Path $TestDir 'message.json')", $ClientIni)
         if ($Pushed -notmatch "message #2") { throw "Unexpected second push answer: $Pushed" }
         # message.json ends with a line break, kept in the data: one empty line after each.
-        $Messages = @(& (Join-Path $OutDir "GetMessages.exe") "releasetest" "tester" $ClientIni | Where-Object { $_ -ne "" })
+        $Messages = @(& (Join-Path $OutDir "BakaShrotGetMessages.exe") "releasetest" "tester" $ClientIni | Where-Object { $_ -ne "" })
         if ($LASTEXITCODE -ne 0 -or $Messages.Count -ne 2 -or $Messages[0] -notmatch '^1\t\{"release"' -or $Messages[1] -notmatch '^2\t') {
             throw "Unexpected messages: $($Messages -join ' | ')"
         }
 
-        $Resolved = Invoke-Tool "Resolve.exe" @("topic", "releasetest", $ClientIni)
+        $Resolved = Invoke-Tool "BakaShrotResolveIds.exe" @("topic", "releasetest", $ClientIni)
         if ($Resolved -notmatch "topic releasetest = 7") { throw "Unexpected resolved topic: $Resolved" }
 
         $Sql = Join-Path $TestDir "query.sql"
         Set-Content -Path $Sql -Encoding Ascii -Value "SELECT message_data ->> '$.value', is_json, topic_id FROM messages WHERE topic = 'releasetest' AND node = 'tester' AND is_json = 1"
-        $Queried = Invoke-Tool "Query.exe" @("@$Sql", $ClientIni)
+        $Queried = Invoke-Tool "BakaShrotQuery.exe" @("@$Sql", $ClientIni)
         if ($Queried -notmatch '\[\["42","1","7"\],\["42","1","7"\]\]') { throw "Unexpected query result: $Queried" }
 
         Write-Host "  Pushed, read back by name, resolved and queried messages: OK"
@@ -310,6 +336,19 @@ ServerPublicKey = $($ServerKeys.PublicKey)
         else {
             Write-Host "  No python on the PATH, the Python client wasn't checked"
         }
+
+        # An attachment of 3 parts and a bit, up and back.
+        $Attach = Join-Path $TestDir "attach.bin"
+        $Bytes = New-Object byte[] (3 * 1024 * 1024 + 17)
+        (New-Object System.Random 5).NextBytes($Bytes)
+        [IO.File]::WriteAllBytes($Attach, $Bytes)
+        $Pushed = Invoke-Tool "BakaShrotPushMessage.exe" @("-a", $Attach, "@$(Join-Path $TestDir 'message.json')", $ClientIni)
+        if ($Pushed -notmatch "message #(\d+), with an attachment of 3145745 bytes") { throw "Unexpected push with an attachment: $Pushed" }
+        $AttachedId = $Matches[1]
+        $Copy = Join-Path $TestDir "attach-copy.bin"
+        $Saved = Invoke-Tool "BakaShrotGetAttachment.exe" @("releasetest", "tester", $AttachedId, $Copy, $ClientIni)
+        if ($Saved -notmatch "Saved 3145745 bytes" -or (Get-FileHash $Attach).Hash -ne (Get-FileHash $Copy).Hash) { throw "Unexpected attachment read back: $Saved" }
+        Write-Host "  Pushed and read back an attachment: OK"
     }
     finally {
         if ($Server -and -not $Server.HasExited) {

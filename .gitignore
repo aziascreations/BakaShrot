@@ -21,3 +21,8 @@ Release/
 
 # Python
 __pycache__/
+
+# The examples run their server in their own folder: its database, and
+# what their client scripts write
+Examples/**/*.sqlite*
+Examples/**/out/

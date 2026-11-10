@@ -7,12 +7,18 @@ behind on, with their original ids. Each peer does the same over its own link.
 
 Issues below are roughly ordered by how much they matter.
 
-## 1. Drift: the same message id with different content (accepted for now)
+## 1. Drift: the same message id with different content (ruled out by config)
 
-**When:** the same topic/node id is written to on two servers, for example
-when a client identity is registered on both and pushes to each while they
-can't reach each other. This is a configuration issue that """shouldn't"""
-happen in real use.
+**The rule: a node pushes to one server.** Each client node has its
+`[BakaShrot.Client.<name>]` section (its `Node`) on one server only, the
+one it pushes to; the other servers get its messages by replication. Then
+every topic/node pair has a single writer and this can't happen. Reading
+from any server is fine, only pushing matters. Breaking the rule isn't
+detected: it's the config's to keep.
+
+**When it would happen:** the same topic/node id written to on two
+servers, for example a client node registered on both, pushing to each
+while they can't reach each other.
 
 **What happens:** both servers are at `1:2#1`, the link drops, then:
 

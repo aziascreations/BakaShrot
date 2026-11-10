@@ -4,7 +4,7 @@ Usage: python example.py <ClientIni> <Topic> <Node> [--from-start]
 Run it from Build\\ (Build.ps1) while BakaShrot_Server.exe runs, e.g.:
     python ..\\Interactors\\Python\\example.py client.ini logs local
 and push from another terminal:
-    .\\PushMessage.exe @msg.json client.ini
+    .\\BakaShrotPushMessage.exe @msg.json client.ini
 Ctrl+C to stop.
 """
 
@@ -27,7 +27,7 @@ dll = os.environ.get("BAKASHROT_DLL") or os.path.join(os.path.dirname(os.path.ab
 
 try:
     with Client.from_ini(ini, dll) as client:
-        print(f"Connected to {client.host}:{client.port} as {client.topic}:{client.node}, following {topic}:{node}")
+        print(f"Connected to {client.host}:{client.port} as node {client.node}, following {topic}:{node}")
         for message in client.follow(topic, node, after=after):
             # Parsing is the app's business: the server stores anything.
             try:

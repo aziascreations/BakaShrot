@@ -1,6 +1,8 @@
 
 XIncludeFile "../../Includes/PB-MessagePack/Includes/MessagePack.pbi"
 XIncludeFile "Names.pbi"
+; The refusal codes (RequestRefused) and the client's error codes.
+XIncludeFile "../../Client/BakaShrot_ErrorCodes.pbi"
 
 
 ; Represents the root of all BakaShrot packets.
@@ -18,8 +20,13 @@ EndStructure
 #BakaShrot_ProtocolMagic   = $42534854 ; "BSHT"
 ; 2: topics and nodes by name (Commons/Networking/Names.pbi), see Design/Packets.md.
 ; 3: the Hello sealed for the server, a key per connection, everything after
-;    the ChallengeRequest encrypted (Connections.pbi).
-#BakaShrot_ProtocolVersion = 3
+;    the ChallengeRequest encrypted (Connections.pbi). Messages carry when
+;    they were pushed (PushedAt).
+; 4: attachments (Design/Attachments.md).
+; 5: the Hello carries the client's node only: its default topic is the
+;    server's to say (DefaultTopic in its client section).
+; 6: RequestRefused carries a Code (Client/BakaShrot_ErrorCodes.pbi).
+#BakaShrot_ProtocolVersion = 6
 
 ; Size in bytes of the nonce sent in a challenge request and echoed in its response.
 ; It MUST be filled with CryptRandomData(), never reused, and be checked against the one the
@@ -38,6 +45,42 @@ EndStructure
 ; Size in bytes of the server's signature in a ChallengeRequest
 ; (#BakaShrot_Ed25519_SignatureSize).
 #BakaShrot_HandshakeSignatureSize = 64
+
+; When a message was pushed: milliseconds since 1970-01-01 00:00:00 UTC, set
+; by the server it was pushed to, and kept as is by every server it's
+; replicated to. Anything outside 1 to #BakaShrot_MaxTimestamp (9999-12-31)
+; is invalid on the wire.
+#BakaShrot_MaxTimestamp = 253402300799999
+
+Procedure.i BakaShrot_IsValidTimestamp(Timestamp.q)
+	ProcedureReturn Bool(Timestamp >= 1 And Timestamp <= #BakaShrot_MaxTimestamp)
+EndProcedure
+
+; Attachments (Design/Attachments.md): at most one per message, sent and
+; stored in parts of #BakaShrot_AttachmentChunkSize bytes (the last one what's
+; left), checked with their SHA-256. #BakaShrot_MaxAttachmentSize is the
+; protocol's limit, each server sets its own ([BakaShrot.Server]
+; MaxAttachmentSize).
+#BakaShrot_AttachmentChunkSize = 1048576
+#BakaShrot_MaxAttachmentSize   = 1099511627776
+#BakaShrot_MaxAttachmentChunks = #BakaShrot_MaxAttachmentSize / #BakaShrot_AttachmentChunkSize
+#BakaShrot_Sha256Size          = 32
+
+; How many parts Size bytes take.
+Procedure.q BakaShrot_AttachmentChunkCount(Size.q)
+	ProcedureReturn (Size + #BakaShrot_AttachmentChunkSize - 1) / #BakaShrot_AttachmentChunkSize
+EndProcedure
+
+; How big part Index of Size bytes is, 0 if there's no such part.
+Procedure.i BakaShrot_AttachmentChunkBytes(Size.q, Index.q)
+	Protected Left.q = Size - Index * #BakaShrot_AttachmentChunkSize
+	If Index < 0 Or Left <= 0
+		ProcedureReturn 0
+	ElseIf Left > #BakaShrot_AttachmentChunkSize
+		ProcedureReturn #BakaShrot_AttachmentChunkSize
+	EndIf
+	ProcedureReturn Left
+EndProcedure
 
 ; Biggest packet accepted on the wire once authenticated, anything bigger
 ; aborts the connection. Before that, only #BakaShrot_MaxHandshakePacketSize
@@ -86,6 +129,20 @@ Enumeration BakaShrot_PacketTypes
 	; A run of messages of a topic/node, only accepted once authenticated.
 	#BakaShrot_PacketType_GetMessages       = 22
 	#BakaShrot_PacketType_Messages          = 23
+
+	; Attachments, only accepted once authenticated: uploading one (before
+	; its PushMessage), and reading one, in parts.
+	#BakaShrot_PacketType_UploadStart       = 24
+	#BakaShrot_PacketType_UploadStarted     = 25
+	#BakaShrot_PacketType_UploadChunk       = 26
+	#BakaShrot_PacketType_ChunkStored       = 27
+	#BakaShrot_PacketType_GetAttachment     = 28
+	#BakaShrot_PacketType_AttachmentChunk   = 29
+
+	; Replicating attachments, only accepted from peers, once their messages are.
+	#BakaShrot_PacketType_MissingAttachmentsRequest = 30
+	#BakaShrot_PacketType_MissingAttachments        = 31
+	#BakaShrot_PacketType_ReplicateAttachmentChunk  = 32
 EndEnumeration
 
 

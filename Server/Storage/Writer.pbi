@@ -2,8 +2,11 @@
 ; BakaShrot Storage Writer
 ;
 ; Every write the server does to its database goes through here:
-;   InsertNextMessage()         pushes, grouped (group commit)
-;   InsertReplicatedMessages()  batches from peers
+;   InsertNextMessage()         pushes, grouped (group commit), stamped
+;                               with the time they arrived (pushed_at)
+;   InsertReplicatedMessages()  batches from peers, with their pushed_at,
+;                               skipping those already past their max age
+;   DeleteStorageMessagesBefore()  the retention (Retention.pbi)
 ; on ONE connection, the writer, only ever used while holding
 ; BakaShrot_Storage_WriteMutex. Opened by OpenStorageWriter() when the
 ; workers start, closed by CloseStorageWriter() once they're stopped (see
@@ -16,12 +19,14 @@
 ;     that were waiting find theirs done. The busier, the bigger the groups.
 ;   - Prepared statements, kept for as long as the writer is open, through
 ;     SQLite's own API: PureBasic prepares a statement again on every call.
-;     Same sqlite3.dll as PureBasic's (DatabaseID() is its sqlite3 handle).
-;     Elsewhere than Windows, PureBasic's own SQLite is linked in, so its
-;     functions are used instead (slower, same behaviour).
+;     Same #BakaShrot_Storage_SqliteLibrary as PureBasic's (DatabaseID() is
+;     its sqlite3 handle). Without #BakaShrot_Storage_ExternalSqlite (see
+;     Storage.pbi), PureBasic's own SQLite is linked in, so its functions
+;     are used instead (slower, same behaviour).
 ;   - The next message id of every topic/node id kept in memory, instead of
 ;     a MAX(message_id) on every push. Read from the database the first time
-;     a pair is pushed to, raised by the replicated messages, forgotten on a
+;     a pair is pushed to (node_heads, which deleting messages leaves as is:
+;     ids never go back), raised by the replicated messages, forgotten on a
 ;     rollback. Only right as long as this writer is the only one writing,
 ;     which the write mutex ensures within the server.
 ;   - Checkpoints mostly off the write path: the writer only checkpoints by
@@ -58,11 +63,7 @@
 #BakaShrot_Storage_WalSizeLimit = 67108864
 
 
-CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-	#BakaShrot_Storage_RawSqlite = #True
-CompilerElse
-	#BakaShrot_Storage_RawSqlite = #False
-CompilerEndIf
+#BakaShrot_Storage_RawSqlite = #BakaShrot_Storage_ExternalSqlite
 
 #BakaShrot_Sqlite_Done   = 101
 #BakaShrot_Sqlite_Row    = 100
@@ -104,6 +105,10 @@ Structure BakaShrot_PushJob
 	TopicId.i
 	NodeId.i
 	JsonData.s
+	; When it arrived, ms since 1970 UTC.
+	PushedAt.q
+	; Its attachment, a complete upload (blobs), 0 for none.
+	BlobId.q
 
 	; Filled in by whoever writes it, under the write mutex.
 	MessageId.q
@@ -132,6 +137,8 @@ Structure BakaShrot_StorageWriter
 	Insert.i
 	InsertOrIgnore.i
 	MaxId.i
+	Delete.i
+	RaiseHead.i
 
 	; "TopicId:NodeId" -> the next message id to hand out.
 	Map NextIds.q()
@@ -255,7 +262,7 @@ EndProcedure
 
 ; Inserts one row with Statement (Insert or InsertOrIgnore).
 ; Returns 1 if inserted, 0 if ignored, -1 if it failed.
-Procedure.i BakaShrot_Writer_InsertRow(Statement.i, TopicId.i, NodeId.i, MessageId.q, JsonData.s)
+Procedure.i BakaShrot_Writer_InsertRow(Statement.i, TopicId.i, NodeId.i, MessageId.q, JsonData.s, PushedAt.q)
 	CompilerIf #BakaShrot_Storage_RawSqlite
 		Protected Result.l
 
@@ -264,6 +271,7 @@ Procedure.i BakaShrot_Writer_InsertRow(Statement.i, TopicId.i, NodeId.i, Message
 		BakaShrot_Sqlite\BindInt64(Statement, 3, MessageId)
 		; Static: JsonData outlives the step, the next insert binds it again.
 		BakaShrot_Sqlite\BindText16(Statement, 4, @JsonData, -1, #BakaShrot_Sqlite_Static)
+		BakaShrot_Sqlite\BindInt64(Statement, 5, PushedAt)
 		Result = BakaShrot_Sqlite\Step_(Statement)
 		If Result <> #BakaShrot_Sqlite_Done
 			BakaShrot_Storage_Writer\LastError = BakaShrot_Writer_Error()
@@ -278,6 +286,7 @@ Procedure.i BakaShrot_Writer_InsertRow(Statement.i, TopicId.i, NodeId.i, Message
 		SetDatabaseLong(DbId, 1, NodeId)
 		SetDatabaseQuad(DbId, 2, MessageId)
 		SetDatabaseString(DbId, 3, JsonData)
+		SetDatabaseQuad(DbId, 4, PushedAt)
 		If Not DatabaseUpdate(DbId, PeekS(Statement))
 			BakaShrot_Storage_Writer\LastError = DatabaseError()
 			ProcedureReturn -1
@@ -287,7 +296,8 @@ Procedure.i BakaShrot_Writer_InsertRow(Statement.i, TopicId.i, NodeId.i, Message
 EndProcedure
 
 
-; The highest message id stored for a topic/node id, 0 if none, -1 on failure.
+; The highest message id ever stored for a topic/node id, 0 if none, -1 on
+; failure. Still there once deleted: node_heads keeps it.
 Procedure.q BakaShrot_Writer_ReadMaxId(TopicId.i, NodeId.i)
 	Protected MaxId.q = -1
 
@@ -319,6 +329,35 @@ Procedure.q BakaShrot_Writer_ReadMaxId(TopicId.i, NodeId.i)
 EndProcedure
 
 
+; Raises a topic/node id's head (node_heads) to MessageId, if it's lower,
+; like inserting that message would. Returns #False if it failed.
+Procedure.i BakaShrot_Writer_RaiseHead(TopicId.i, NodeId.i, MessageId.q)
+	CompilerIf #BakaShrot_Storage_RawSqlite
+		Protected Statement.i = BakaShrot_Storage_Writer\RaiseHead
+		BakaShrot_Sqlite\BindInt64(Statement, 1, TopicId)
+		BakaShrot_Sqlite\BindInt64(Statement, 2, NodeId)
+		BakaShrot_Sqlite\BindInt64(Statement, 3, MessageId)
+		If BakaShrot_Sqlite\Step_(Statement) <> #BakaShrot_Sqlite_Done
+			BakaShrot_Storage_Writer\LastError = BakaShrot_Writer_Error()
+			BakaShrot_Sqlite\Reset(Statement)
+			ProcedureReturn #False
+		EndIf
+		BakaShrot_Sqlite\Reset(Statement)
+		ProcedureReturn #True
+	CompilerElse
+		Protected DbId.i = BakaShrot_Storage_Writer\DbId
+		SetDatabaseLong(DbId, 0, TopicId)
+		SetDatabaseLong(DbId, 1, NodeId)
+		SetDatabaseQuad(DbId, 2, MessageId)
+		If Not DatabaseUpdate(DbId, PeekS(BakaShrot_Storage_Writer\RaiseHead))
+			BakaShrot_Storage_Writer\LastError = DatabaseError()
+			ProcedureReturn #False
+		EndIf
+		ProcedureReturn #True
+	CompilerEndIf
+EndProcedure
+
+
 ; The next message id to hand out for a topic/node id, -1 on failure.
 Procedure.q BakaShrot_Writer_NextId(Key.s, TopicId.i, NodeId.i)
 	Protected MaxId.q
@@ -345,7 +384,7 @@ CompilerIf #BakaShrot_Storage_RawSqlite
 				ProcedureReturn #True
 			EndIf
 			; The one PureBasic's SQLite driver already loaded.
-			\Library = OpenLibrary(#PB_Any, "sqlite3.dll")
+			\Library = OpenLibrary(#PB_Any, #BakaShrot_Storage_SqliteLibrary)
 			If Not \Library
 				ProcedureReturn #False
 			EndIf
@@ -446,6 +485,8 @@ Procedure BakaShrot_Writer_Release()
 		BakaShrot_Writer_Finalize(@\Insert)
 		BakaShrot_Writer_Finalize(@\InsertOrIgnore)
 		BakaShrot_Writer_Finalize(@\MaxId)
+		BakaShrot_Writer_Finalize(@\Delete)
+		BakaShrot_Writer_Finalize(@\RaiseHead)
 		If \DbId
 			CloseDatabase(\DbId)
 		EndIf
@@ -483,7 +524,7 @@ Procedure.i OpenStorageWriter(DatabasePath.s, *Error.String)
 
 		CompilerIf #BakaShrot_Storage_RawSqlite
 			If Not BakaShrot_Writer_LoadSqlite()
-				*Error\s = "sqlite3.dll doesn't have the functions needed"
+				*Error\s = #BakaShrot_Storage_SqliteLibrary + " doesn't have the functions needed"
 				BakaShrot_Writer_Release()
 				UnlockMutex(BakaShrot_Storage_WriteMutex)
 				ProcedureReturn #False
@@ -503,10 +544,18 @@ Procedure.i OpenStorageWriter(DatabasePath.s, *Error.String)
 		\Begin          = BakaShrot_Writer_Prepare("BEGIN IMMEDIATE")
 		\Commit         = BakaShrot_Writer_Prepare("COMMIT")
 		\Rollback       = BakaShrot_Writer_Prepare("ROLLBACK")
-		\Insert         = BakaShrot_Writer_Prepare("INSERT INTO data (topic_id, node_id, message_id, message_data) VALUES (?1, ?2, ?3, ?4)")
-		\InsertOrIgnore = BakaShrot_Writer_Prepare("INSERT OR IGNORE INTO data (topic_id, node_id, message_id, message_data) VALUES (?1, ?2, ?3, ?4)")
-		\MaxId          = BakaShrot_Writer_Prepare("SELECT COALESCE(MAX(message_id), 0) FROM data WHERE topic_id = ?1 AND node_id = ?2")
-		If Not \Begin Or Not \Commit Or Not \Rollback Or Not \Insert Or Not \InsertOrIgnore Or Not \MaxId
+		\Insert         = BakaShrot_Writer_Prepare("INSERT INTO data (topic_id, node_id, message_id, message_data, pushed_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+		\InsertOrIgnore = BakaShrot_Writer_Prepare("INSERT OR IGNORE INTO data (topic_id, node_id, message_id, message_data, pushed_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+		; node_heads first: it outlives the deleted messages. data too, in
+		; case a database was written to by something without the trigger.
+		\MaxId          = BakaShrot_Writer_Prepare("SELECT COALESCE(MAX(m), 0) FROM (SELECT max_message_id AS m FROM node_heads WHERE topic_id = ?1 AND node_id = ?2 " +
+		                                           "UNION ALL SELECT MAX(message_id) FROM data WHERE topic_id = ?1 AND node_id = ?2)")
+		; Some at a time (?3), so pushes get the write mutex in between.
+		\Delete         = BakaShrot_Writer_Prepare("DELETE FROM data WHERE rowid IN (SELECT rowid FROM data WHERE topic_id = ?1 AND pushed_at < ?2 LIMIT ?3)")
+		; What the trigger does on an insert, for the messages skipped instead.
+		\RaiseHead      = BakaShrot_Writer_Prepare("INSERT INTO node_heads (topic_id, node_id, max_message_id) VALUES (?1, ?2, ?3) " +
+		                                           "ON CONFLICT (topic_id, node_id) DO UPDATE SET max_message_id = MAX(max_message_id, excluded.max_message_id)")
+		If Not \Begin Or Not \Commit Or Not \Rollback Or Not \Insert Or Not \InsertOrIgnore Or Not \MaxId Or Not \Delete Or Not \RaiseHead
 			*Error\s = "can't prepare its statements: " + \LastError
 			BakaShrot_Writer_Release()
 			UnlockMutex(BakaShrot_Storage_WriteMutex)
@@ -591,6 +640,77 @@ Procedure BakaShrot_Writer_LogStats()
 EndProcedure
 
 
+; Claims a complete upload (blobs state 1) of TopicId/NodeId for a message:
+; state 2. Returns #False if it isn't one, someone else's, or attached already.
+Procedure.i BakaShrot_Writer_ClaimBlob(BlobId.q, TopicId.i, NodeId.i)
+	Protected DbId.i = BakaShrot_Storage_Writer\DbId
+	SetDatabaseQuad(DbId, 0, BlobId)
+	SetDatabaseLong(DbId, 1, TopicId)
+	SetDatabaseLong(DbId, 2, NodeId)
+	If Not DatabaseUpdate(DbId, "UPDATE blobs SET state = 2 WHERE blob_id = ? AND topic_id = ? AND node_id = ? AND state = 1")
+		BakaShrot_Storage_Writer\LastError = DatabaseError()
+		ProcedureReturn #False
+	EndIf
+	If AffectedDatabaseRows(DbId) <> 1
+		BakaShrot_Storage_Writer\LastError = "the upload isn't complete, or isn't this client's for that topic"
+		ProcedureReturn #False
+	EndIf
+	ProcedureReturn #True
+EndProcedure
+
+; Gives a claimed upload back (state 1), its message couldn't be stored.
+Procedure BakaShrot_Writer_UnclaimBlob(BlobId.q)
+	Protected DbId.i = BakaShrot_Storage_Writer\DbId
+	SetDatabaseQuad(DbId, 0, BlobId)
+	DatabaseUpdate(DbId, "UPDATE blobs SET state = 1 WHERE blob_id = ?")
+EndProcedure
+
+; The attachments row of a pushed message, from its claimed upload.
+Procedure.i BakaShrot_Writer_LinkBlob(TopicId.i, NodeId.i, MessageId.q, BlobId.q)
+	Protected DbId.i = BakaShrot_Storage_Writer\DbId
+	SetDatabaseLong(DbId, 0, TopicId)
+	SetDatabaseLong(DbId, 1, NodeId)
+	SetDatabaseQuad(DbId, 2, MessageId)
+	SetDatabaseQuad(DbId, 3, BlobId)
+	If Not DatabaseUpdate(DbId, "INSERT INTO attachments (topic_id, node_id, message_id, size, sha256, blob_id, state) " +
+	                            "SELECT ?, ?, ?, size, sha256, blob_id, 2 FROM blobs WHERE blob_id = ?") Or AffectedDatabaseRows(DbId) <> 1
+		BakaShrot_Storage_Writer\LastError = "can't attach the upload: " + DatabaseError()
+		ProcedureReturn #False
+	EndIf
+	ProcedureReturn #True
+EndProcedure
+
+; Deletes a message just inserted in this transaction, its attachment failed.
+Procedure BakaShrot_Writer_DropMessage(TopicId.i, NodeId.i, MessageId.q)
+	Protected DbId.i = BakaShrot_Storage_Writer\DbId
+	SetDatabaseLong(DbId, 0, TopicId)
+	SetDatabaseLong(DbId, 1, NodeId)
+	SetDatabaseQuad(DbId, 2, MessageId)
+	DatabaseUpdate(DbId, "DELETE FROM data WHERE topic_id = ? AND node_id = ? AND message_id = ?")
+EndProcedure
+
+; The attachments row of a replicated message: its data comes later
+; (Attachments.pbi), state 0 (missing), or 3 (not kept here) past MaxSize.
+Procedure.i BakaShrot_Writer_AddReplicatedAttachment(TopicId.i, NodeId.i, *Message.BakaShrot_ReplicatedMessage, MaxSize.q)
+	Protected DbId.i = BakaShrot_Storage_Writer\DbId
+	SetDatabaseLong(DbId, 0, TopicId)
+	SetDatabaseLong(DbId, 1, NodeId)
+	SetDatabaseQuad(DbId, 2, *Message\MessageId)
+	SetDatabaseQuad(DbId, 3, *Message\AttachmentSize)
+	SetDatabaseBlob(DbId, 4, @*Message\AttachmentSha256[0], #BakaShrot_Sha256Size)
+	If *Message\AttachmentSize > MaxSize
+		SetDatabaseLong(DbId, 5, 3)
+	Else
+		SetDatabaseLong(DbId, 5, 0)
+	EndIf
+	If Not DatabaseUpdate(DbId, "INSERT OR IGNORE INTO attachments (topic_id, node_id, message_id, size, sha256, blob_id, state) VALUES (?, ?, ?, ?, ?, NULL, ?)")
+		BakaShrot_Storage_Writer\LastError = DatabaseError()
+		ProcedureReturn #False
+	EndIf
+	ProcedureReturn #True
+EndProcedure
+
+
 ; Writes queued pushes in one transaction, filling in their MessageId (-1 and
 ; Error if that one failed) and setting Done. Holding the write mutex.
 Procedure BakaShrot_Writer_WriteJobs(List Jobs.i())
@@ -606,12 +726,28 @@ Procedure BakaShrot_Writer_WriteJobs(List Jobs.i())
 		Key = Str(*Job\TopicId) + ":" + Str(*Job\NodeId)
 		MessageId = BakaShrot_Writer_NextId(Key, *Job\TopicId, *Job\NodeId)
 		JsonData  = *Job\JsonData
-		If MessageId > 0 And BakaShrot_Writer_InsertRow(BakaShrot_Storage_Writer\Insert, *Job\TopicId, *Job\NodeId, MessageId, JsonData) = 1
-			*Job\MessageId = MessageId
+		*Job\MessageId = -1
+
+		; Its upload first: nothing is stored if it can't be claimed.
+		If MessageId > 0 And *Job\BlobId And Not BakaShrot_Writer_ClaimBlob(*Job\BlobId, *Job\TopicId, *Job\NodeId)
+			MessageId = -1
+		EndIf
+
+		If MessageId > 0 And BakaShrot_Writer_InsertRow(BakaShrot_Storage_Writer\Insert, *Job\TopicId, *Job\NodeId, MessageId, JsonData, *Job\PushedAt) = 1
+			If *Job\BlobId And Not BakaShrot_Writer_LinkBlob(*Job\TopicId, *Job\NodeId, MessageId, *Job\BlobId)
+				BakaShrot_Writer_DropMessage(*Job\TopicId, *Job\NodeId, MessageId)
+				BakaShrot_Writer_UnclaimBlob(*Job\BlobId)
+			Else
+				*Job\MessageId = MessageId
+			EndIf
+			; Taken either way: node_heads went up.
 			BakaShrot_Storage_Writer\NextIds(Key) = MessageId + 1
-		Else
-			*Job\MessageId = -1
-			*Job\Error     = BakaShrot_Storage_Writer\LastError
+		ElseIf MessageId > 0 And *Job\BlobId
+			BakaShrot_Writer_UnclaimBlob(*Job\BlobId)
+		EndIf
+
+		If *Job\MessageId < 1
+			*Job\Error = BakaShrot_Storage_Writer\LastError
 		EndIf
 	Next
 
@@ -635,9 +771,12 @@ EndProcedure
 
 ; Inserts one JSON message for a topic_id/node_id pair, with the next
 ; message_id for that pair, starting at 1, grouped with the other pushes
-; arriving meanwhile. Returns the new message's id once committed, or -1 with
+; arriving meanwhile. Stamped with the time it got here (pushed_at).
+; BlobId: its attachment, a complete upload of this topic and node
+; (Attachments.pbi), 0 for none: attached in the same transaction.
+; Returns the new message's id once committed, or -1 with
 ; the reason in *Error\s.
-Procedure.q InsertNextMessage(TopicId.i, NodeId.i, JsonData.s, *Error.String)
+Procedure.q InsertNextMessage(TopicId.i, NodeId.i, JsonData.s, *Error.String, BlobId.q = 0)
 	Protected Job.BakaShrot_PushJob
 	Protected NewList Jobs.i()
 	Protected StartTicks.q
@@ -645,6 +784,8 @@ Procedure.q InsertNextMessage(TopicId.i, NodeId.i, JsonData.s, *Error.String)
 	Job\TopicId   = TopicId
 	Job\NodeId    = NodeId
 	Job\JsonData  = JsonData
+	Job\PushedAt  = BakaShrot_NowUtcMs()
+	Job\BlobId    = BlobId
 	Job\MessageId = -1
 
 	LockMutex(BakaShrot_Storage_QueueMutex)
@@ -703,12 +844,18 @@ EndProcedure
 
 
 ; Stores a batch of messages replicated from a peer, all of one topic/node
-; id, under the ids they have on their origin, in a single transaction:
+; id, under the ids and pushed_at they have on their origin, in a single transaction:
 ; either all of them are stored, or none. An id that's already stored is kept
 ; as is, the new one is dropped, even if it differs (Design/ReplicationIssues.md).
+; Messages pushed before SkipBeforeMs (ms since 1970 UTC, 0 for none) are
+; past this server's max age for the topic already: not stored, but the
+; pair's head still goes up to them, so the peer doesn't send them again.
+; *Skipped\i, if given, gets how many.
+; A message's attachment gets its row, its data comes later (Attachments.pbi),
+; unless it's bigger than MaxAttachmentSize: not kept here then.
 ; Returns #False with the reason in *Error\s, the transaction is rolled back.
-Procedure.i InsertReplicatedMessages(TopicId.i, NodeId.i, List Messages.BakaShrot_ReplicatedMessage(), *Error.String)
-	Protected Stored.i, Inserted.i, Key.s, JsonData.s
+Procedure.i InsertReplicatedMessages(TopicId.i, NodeId.i, List Messages.BakaShrot_ReplicatedMessage(), *Error.String, SkipBeforeMs.q = 0, *Skipped.Integer = 0, MaxAttachmentSize.q = #BakaShrot_MaxAttachmentSize)
+	Protected Stored.i, Inserted.i, Key.s, JsonData.s, Skipped.i, LastMessageId.q
 
 	Key = Str(TopicId) + ":" + Str(NodeId)
 
@@ -724,9 +871,18 @@ Procedure.i InsertReplicatedMessages(TopicId.i, NodeId.i, List Messages.BakaShro
 	Stored = BakaShrot_Writer_Run(BakaShrot_Storage_Writer\Begin)
 	If Stored
 		ForEach Messages()
+			LastMessageId = Messages()\MessageId
+			If SkipBeforeMs > 0 And Messages()\PushedAt < SkipBeforeMs
+				Skipped + 1
+				Continue
+			EndIf
 			JsonData = Messages()\JsonData
-			Inserted = BakaShrot_Writer_InsertRow(BakaShrot_Storage_Writer\InsertOrIgnore, TopicId, NodeId, Messages()\MessageId, JsonData)
+			Inserted = BakaShrot_Writer_InsertRow(BakaShrot_Storage_Writer\InsertOrIgnore, TopicId, NodeId, Messages()\MessageId, JsonData, Messages()\PushedAt)
 			If Inserted < 0
+				Stored = #False
+				Break
+			EndIf
+			If Inserted = 1 And Messages()\AttachmentSize > 0 And Not BakaShrot_Writer_AddReplicatedAttachment(TopicId, NodeId, @Messages(), MaxAttachmentSize)
 				Stored = #False
 				Break
 			EndIf
@@ -737,6 +893,20 @@ Procedure.i InsertReplicatedMessages(TopicId.i, NodeId.i, List Messages.BakaShro
 				EndIf
 			EndIf
 		Next
+
+		; The skipped ones count as received: the head covers the whole batch,
+		; and the next push goes after it.
+		If Stored And Skipped > 0
+			If BakaShrot_Writer_RaiseHead(TopicId, NodeId, LastMessageId)
+				If FindMapElement(BakaShrot_Storage_Writer\NextIds(), Key)
+					If LastMessageId + 1 > BakaShrot_Storage_Writer\NextIds()
+						BakaShrot_Storage_Writer\NextIds() = LastMessageId + 1
+					EndIf
+				EndIf
+			Else
+				Stored = #False
+			EndIf
+		EndIf
 
 		If Stored And Not BakaShrot_Writer_Run(BakaShrot_Storage_Writer\Commit)
 			Stored = #False
@@ -751,7 +921,53 @@ Procedure.i InsertReplicatedMessages(TopicId.i, NodeId.i, List Messages.BakaShro
 	EndIf
 
 	UnlockMutex(BakaShrot_Storage_WriteMutex)
+	If *Skipped
+		*Skipped\i = Skipped
+	EndIf
 	ProcedureReturn Stored
+EndProcedure
+
+
+; Deletes up to Limit messages of TopicId pushed before BeforeMs (ms since
+; 1970 UTC), in one statement under the write mutex: call it again while it
+; deletes Limit, pushes get their turn in between. node_heads is left as is
+; (see SetupStorageDatabase()).
+; Returns how many were deleted, -1 with the reason in *Error\s.
+Procedure.i DeleteStorageMessagesBefore(TopicId.i, BeforeMs.q, Limit.i, *Error.String)
+	Protected Deleted.i = -1
+
+	LockMutex(BakaShrot_Storage_WriteMutex)
+	If Not BakaShrot_Storage_Writer\DbId
+		UnlockMutex(BakaShrot_Storage_WriteMutex)
+		*Error\s = "the storage writer isn't open"
+		ProcedureReturn -1
+	EndIf
+
+	CompilerIf #BakaShrot_Storage_RawSqlite
+		Protected Statement.i = BakaShrot_Storage_Writer\Delete
+		BakaShrot_Sqlite\BindInt64(Statement, 1, TopicId)
+		BakaShrot_Sqlite\BindInt64(Statement, 2, BeforeMs)
+		BakaShrot_Sqlite\BindInt64(Statement, 3, Limit)
+		If BakaShrot_Sqlite\Step_(Statement) = #BakaShrot_Sqlite_Done
+			Deleted = BakaShrot_Sqlite\Changes(BakaShrot_Storage_Writer\Handle)
+		Else
+			*Error\s = BakaShrot_Writer_Error()
+		EndIf
+		BakaShrot_Sqlite\Reset(Statement)
+	CompilerElse
+		Protected DbId.i = BakaShrot_Storage_Writer\DbId
+		SetDatabaseLong(DbId, 0, TopicId)
+		SetDatabaseQuad(DbId, 1, BeforeMs)
+		SetDatabaseLong(DbId, 2, Limit)
+		If DatabaseUpdate(DbId, PeekS(BakaShrot_Storage_Writer\Delete))
+			Deleted = AffectedDatabaseRows(DbId)
+		Else
+			*Error\s = DatabaseError()
+		EndIf
+	CompilerEndIf
+
+	UnlockMutex(BakaShrot_Storage_WriteMutex)
+	ProcedureReturn Deleted
 EndProcedure
 
 

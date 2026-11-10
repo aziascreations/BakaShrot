@@ -1,0 +1,5 @@
+Daily report
+============
+
+Any file can be attached to a message: bytes of any kind, up to the
+server's MaxAttachmentSize. The message's JSON says what it is.

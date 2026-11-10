@@ -104,11 +104,9 @@ protocol change).
 
 ## 3. Smaller ones
 
-- **Decide on `synchronous = NORMAL`** (`#BakaShrot_Storage_Synchronous`):
-  the last commits before a power loss or an OS crash can be lost, and their
-  ids handed out again (drift). With group commit, `FULL` costs one sync per
-  transaction, not per push, so it may cost much less than it used to: worth
-  one benchmark run before deciding.
+- ~~**Decide on `synchronous = NORMAL`**~~: done 2026-11-09, a config
+  option (`Synchronous`), `FULL` by default, measured in
+  `Design/StorageConcurrency.md`.
 - **`Build.ps1`:** the compiler path and `-Compiler` are fixed (2026-11-07),
   but the `Libs\` zips for libsodium and SQLite are gone: it only works while
   the extracted DLLs are still in `Libs\*d`.

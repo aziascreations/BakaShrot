@@ -1,0 +1,8 @@
+# Only what the server is compiled from: Build/ alone can hold gigabytes of
+# test databases, and private keys.
+*
+!Client/BakaShrot_ErrorCodes.pbi
+!Commons
+!Includes
+!Server
+**/.git

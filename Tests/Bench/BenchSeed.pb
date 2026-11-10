@@ -159,7 +159,7 @@ ForEach Nodes()
 			While Count < #Seed_BatchSize And Id < StartId + RowsPerNode
 				Id + 1
 				Count + 1
-				If Not InsertReplicatedMessage(Dbs(), TopicId, LocalIds(d), Id, Seed_Json(Nodes(), Id, Pad))
+				If Not InsertReplicatedMessage(Dbs(), TopicId, LocalIds(d), Id, Seed_Json(Nodes(), Id, Pad), BakaShrot_NowUtcMs())
 					PrintN("Insert failed: " + DatabaseError())
 					End 1
 				EndIf
