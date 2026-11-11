@@ -20,8 +20,11 @@ From the repository's root:
 ```shell
 git submodule update --init --recursive
 docker login git.nibblepoker.lu
-docker build -t bakashrot-server -f Docker/Server/Dockerfile .
+docker build --provenance=false -t bakashrot-server -f Docker/Server/Dockerfile .
 ```
+
+`--provenance=false` pushes the image as a plain manifest: with the default attestation it's an index, and GitHub
+doesn't see the Dockerfile's `org.opencontainers.image.source` label there, so the package isn't linked to the repository.
 
 
 ## Uploading

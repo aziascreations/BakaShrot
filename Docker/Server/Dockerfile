@@ -5,7 +5,7 @@
 # licensed, so not public):
 #   git submodule update --init --recursive
 #   docker login git.nibblepoker.lu
-#   docker build -t bakashrot-server -f Docker/Server/Dockerfile .
+#   docker build --provenance=false -t bakashrot-server -f Docker/Server/Dockerfile .
 # Another compiler image: --build-arg COMPILER_IMAGE=<image>, any Debian 13
 # (trixie) image with PureBasic's compilers on the PATH, gcc and libssl-dev.
 #
@@ -52,6 +52,13 @@ RUN mkdir /out && pbcompilerc --thread --optimizer Server/BakaShrot_Server.pb --
 # --- Runtime -------------------------------------------------------------------
 
 FROM debian:trixie-slim
+
+# The source label links the package to the repository on ghcr.io. GitHub
+# reads it from the image itself, not from an index: build with
+# --provenance=false, or the attestation hides it (Docker/README.md).
+LABEL org.opencontainers.image.source="https://github.com/aziascreations/BakaShrot" \
+      org.opencontainers.image.description="BakaShrot server" \
+      org.opencontainers.image.licenses="CC0-1.0"
 
 # libsodium for the cryptography, SQLite 3.38+ for the storage: the server
 # loads libsqlite3.so.0 itself (Server/Storage/Storage.pbi).
