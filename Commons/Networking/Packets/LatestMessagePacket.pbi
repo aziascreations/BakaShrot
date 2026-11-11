@@ -1,3 +1,20 @@
+;{- Code Header
+; ==- Basic Info -================================
+;     Name: LatestMessagePacket.pbi
+;  Version: 0.0.1
+;   Author: Herwin Bozet (NibblePoker)
+;
+; ==- Compatibility -=============================
+;  Tested compiler versions:
+;    * PureBasic 5.73 LTS (Windows x64, Linux x64)
+;    * PureBasic 6.40 C Backend (Windows x64)
+;    * PureBasic 6.41 (Linux x64)
+;    * PureBasic 6.41 C Backend (Linux x64)
+;
+; ==- Links -=====================================
+;  GitHub: https://github.com/aziascreations/BakaShrot
+;}
+
 ; ============================================================================
 ; ...
 ; ============================================================================

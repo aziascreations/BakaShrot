@@ -681,6 +681,11 @@ still say the old names where they tell what was done then.
   Checked: pushes, reads and queries through the port, `docker stop` clean
   (~0.3 s, exit 0), data kept over a restart, commands with `-i`. Alpine was
   tried: PureBasic needs glibc 2.38+.
+- **`Docker/Server/docker-compose.yml`** (2026-11-11): builds and runs the
+  image with `server.ini` next to it (an empty config to fill in: no key,
+  topic or client, the server refuses it as is), the `bakashrot-data`
+  volume and a console for `docker attach`. Not run yet (no Docker on the
+  dev machine).
 
 ## Threat model (2026-11-08)
 

@@ -1,0 +1,38 @@
+# BakaShrot server, example compose file.
+#
+# Fill in server.ini next to this file first (a private key, topics, a
+# client section: it's empty, the server refuses to start as it is), then,
+# from this folder, with a login to the registry holding the PureBasic
+# images (see the Dockerfile):
+#   docker compose up -d --build
+#   docker compose logs bakashrot     # its public key, for client.ini
+#   docker compose down               # stops it cleanly (SIGTERM)
+#
+# Console commands (names, vacuum, restart...): `docker attach bakashrot`,
+# detach with Ctrl+P, Ctrl+Q (not Ctrl+C: that stops it).
+#
+# The database lives in the bakashrot-data volume, kept by `down`
+# (`down -v` deletes it).
+
+services:
+  bakashrot:
+    build:
+      # The repository's root: the build needs Commons/, Includes/, Server/.
+      context: ../..
+      dockerfile: Docker/Server/Dockerfile
+    image: bakashrot-server
+    container_name: bakashrot
+    restart: unless-stopped
+    ports:
+      # server.ini's [BakaShrot.Server] Port.
+      - "12345:12345"
+    volumes:
+      - ./server.ini:/etc/bakashrot/server.ini:ro
+      - bakashrot-data:/var/lib/bakashrot
+    # Only needed to type console commands with `docker attach bakashrot`.
+    # The server runs fine without these two lines.
+    stdin_open: true
+    tty: true
+
+volumes:
+  bakashrot-data:

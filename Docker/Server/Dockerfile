@@ -19,6 +19,9 @@
 # DatabasePath = /var/lib/bakashrot/server.sqlite (relative paths are from
 # that folder too).
 #
+# Or with docker-compose.yml, next to this file, and its empty server.ini
+# to fill in.
+#
 # `docker stop` stops it cleanly (SIGTERM). Console commands (names, vacuum,
 # restart...): start it with -it, then `docker attach bakashrot`, and
 # detach with Ctrl+P, Ctrl+Q.

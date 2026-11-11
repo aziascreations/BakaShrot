@@ -107,6 +107,10 @@ suite: they take a few minutes in all.
   `_Free` when it holds data), every field validated on decode.
 - **Every write goes through the writer** (`Server/Storage/Writer.pbi`,
   under its mutex); reads use the thread's own connection.
+- **Every `.pb`/`.pbi` starts with a code header** (`;{- Code Header`,
+  like PB-MessagePack's): name, version (0.0.1 at this writing), tested
+  compilers. A release bumps the version in all of them; only list a
+  compiler/platform once every suite passed with it.
 - **Docs follow the code**: a finished piece gets a "Done: ... (date)"
   section in `Notes.md`, what's left goes to its open items, and the
   `Design/` doc of that area is updated with it.
