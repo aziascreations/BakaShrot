@@ -17,7 +17,7 @@ store them in SQLite, and replicate them to their peers by name.
 * Clients:
   * A DLL, with PureBasic prototypes
   * CLI tools to push, read, query and list
-  * A Python module over the DLL, without dependencies
+  * A Python module over the DLL, without dependencies, as a wheel with the DLLs in it
 
 
 ## Building
@@ -26,6 +26,7 @@ Requires PureBasic 5.73 or 6.40+ and the submodules.
 * **Development:** `powershell -ExecutionPolicy Bypass -File Build.ps1` (into `Build\`)
 * **Release:** `powershell -ExecutionPolicy Bypass -File Release.ps1` (into `Release\`)
 * **Docker:** See [Docker/README.md](Docker/README.md)
+* **Python:** See [Interactors/Python/README.md](Interactors/Python/README.md)
 
 See [Examples/](Examples/README.md) for ready-to-run setups,
 and [Server/Config/schema.ini](Server/Config/schema.ini) for every option of the server.
@@ -43,3 +44,5 @@ git clone --recurse-submodules https://git.nibblepoker.lu/aziascreations/BakaShr
 All the code in this repo is released in the [Public Domain](LICENSE).
 
 Please note that this doesn't apply to the required PureBasic archives.
+
+The releases and the Python wheel include [libsodium](https://libsodium.org), under the [ISC license](Libs/libsodium/LICENSE).

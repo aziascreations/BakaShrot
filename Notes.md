@@ -687,6 +687,31 @@ still say the old names where they tell what was done then.
   volume and a console for `docker attach`. Not run yet (no Docker on the
   dev machine).
 
+## Done: the Python wheel (2026-11-11)
+
+- **`Interactors/Python/make_wheel.py`** packs `bakashrot.py` (as
+  `bakashrot/__init__.py`) with `BakaShrot_Client.dll` and `libsodium.dll`
+  into `bakashrot-<version>-py3-none-win_amd64.whl`: `pip install` and
+  done, nothing to compile. Standard library only (no setuptools), same
+  inputs give the same wheel. The version is `bakashrot.py`'s
+  `__version__` (0.0.1).
+- **Licenses:** libsodium is ISC, its notice must ship with every copy:
+  `Libs/libsodium/LICENSE` (from its 1.0.22-RELEASE tag) goes in the
+  wheel's `dist-info/licenses/` with ours, the metadata (2.4) says
+  `License-Expression: CC0-1.0 AND ISC`. The release zip ships both too
+  (`LICENSE.txt`, `LICENSE-libsodium.txt`), it didn't before. No
+  `vcruntime140.dll` in the wheel: CPython on Windows has loaded its own,
+  libsodium uses that one (checked by the release's smoke test).
+- Works without touching the loader: `bakashrot.py` looks next to itself
+  first, and Python 3.8+ loads a DLL's dependencies from its own folder.
+- **`Release.ps1`** builds it into `python\` (if Python is on the PATH),
+  and its smoke test installs it with pip into a folder, then reads and
+  pushes from another folder with no DLL path: passes (6.40 C build).
+- Uploading: Gitea's PyPI registry (twine), GitHub has none, so the wheel
+  goes on the GitHub release (`gh release`). Commands in
+  `Interactors/Python/README.md`.
+- **Windows only.** Linux: open item 20, without bundling libsodium.
+
 ## Threat model (2026-11-08)
 
 BakaShrot is an **internal tool, on trusted machines and a trusted
@@ -812,6 +837,11 @@ network**, not exposed to the internet. So:
 18. ~~**Linux is untested**~~ Done (2026-11-10): every suite passes, see
     `Done: Linux, Docker images`.
 19. **Console commands can't be scripted** (see 1).
+20. **No Linux wheel.** The Windows one bundles `libsodium.dll` next to the
+    client DLL; on Linux, find a way not to bundle libsodium like that,
+    maybe through a package: the distribution's (`libsodium23`, as the
+    Docker image does, the wheel then holding only the client `.so`), or
+    a Python package that provides it. See `Done: the Python wheel`.
 
 ### Done recently (details in the sections above and `Design/`)
 

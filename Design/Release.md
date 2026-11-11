@@ -23,7 +23,9 @@ database:
   `BakaShrotGetMessages.exe`, resolves a name, queries them through the `messages`
   view with `is_json = 1`;
 - if `python` is on the PATH, reads them and pushes one with
-  `python\bakashrot.py`;
+  `python\bakashrot.py`, then installs the wheel (`python\bakashrot-*.whl`,
+  built by `Interactors/Python/make_wheel.py`) with pip into a folder and
+  reads and pushes with it, from elsewhere and with no DLL path;
 - pushes a 3 MB attachment with `BakaShrotPushMessage.exe -a` and reads it back
   identical with `BakaShrotGetAttachment.exe`;
 - then force-kills the server and deletes everything.

@@ -46,6 +46,8 @@ shared between threads, one request at a time.
 The DLL is 64-bit, so is the Python running this. It's looked for, in order:
 the dll_path given, the BAKASHROT_DLL environment variable, next to this
 file, then in the current directory. libsodium.dll must be next to it.
+The wheel (make_wheel.py, `pip install bakashrot`) has them all next to
+this file: nothing else to install or build.
 """
 
 from __future__ import annotations
@@ -60,6 +62,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional, Union
+
+# The release's, and the wheel's (make_wheel.py reads it from here).
+__version__ = "0.0.1"
 
 __all__ = [
     "Client", "Message", "MessagesPage", "NameEntry", "NamesList",

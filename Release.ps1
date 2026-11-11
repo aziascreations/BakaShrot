@@ -14,8 +14,12 @@
 #   libsodium.dll, sqlite3.dll          what they need next to them
 #   vcruntime140.dll                    what libsodium.dll needs (Libs\redist)
 #   python\bakashrot.py, example.py     the Python client, over the DLL
+#   python\bakashrot-*.whl              the same with the DLLs in it, for pip
+#                                       (if Python is on the PATH)
 #   config.example.ini                  the server's config, documented
 #   VERSION.txt                         commit, date, compiler, libraries
+#   LICENSE.txt, LICENSE-libsodium.txt  BakaShrot's (CC0), libsodium's (ISC,
+#                                       its notice must ship with it)
 # and Release\BakaShrot-<version>.zip of it, unless -NoZip.
 #
 # No keys and no configs with keys in it: generate them with BakaShrotGenerateKeyPairs.exe.
@@ -71,6 +75,9 @@ if (-not (Test-Path $SqliteDll)) { throw "Missing $SqliteDll, run Build.ps1 once
 $SqliteVersion = (Get-Item $SqliteDll).VersionInfo.ProductVersion
 if ([version]$SqliteVersion -lt [version]"3.38") { throw "SQLite $SqliteVersion is too old, the JSON functions need 3.38+" }
 $SodiumVersion = (Get-Item $Sodium).VersionInfo.ProductVersion
+# Its ISC license asks for its notice in every copy, the wheel's too.
+$SodiumLicense = Join-Path $Root "Libs\libsodium\LICENSE"
+if (-not (Test-Path $SodiumLicense)) { throw "Missing Libs\libsodium\LICENSE, libsodium's notice must ship with it" }
 # The runtime DLLs Windows may not have, see Libs\redist\README.md.
 $Redist = @(Get-ChildItem (Join-Path $Root "Libs\redist\x64") -Filter "*.dll" -ErrorAction SilentlyContinue)
 if (-not ($Redist | Where-Object { $_.Name -eq "vcruntime140.dll" })) {
@@ -142,6 +149,8 @@ finally {
 Get-ChildItem $OutDir -Include "*.lib", "*.exp" -Recurse | Remove-Item -Force
 
 Copy-Item $Sodium $OutDir
+Copy-Item $SodiumLicense (Join-Path $OutDir "LICENSE-libsodium.txt")
+Copy-Item (Join-Path $Root "LICENSE") (Join-Path $OutDir "LICENSE.txt")
 foreach ($File in $Redist) { Copy-Item $File.FullName $OutDir }
 Copy-Item $SqliteDll (Join-Path $OutDir "sqlite3.dll")
 Copy-Item (Join-Path $Root "Client\BakaShrot_Client_Prototypes.pbi") $OutDir
@@ -149,6 +158,17 @@ Copy-Item (Join-Path $Root "Client\BakaShrot_ErrorCodes.pbi") $OutDir
 New-Item -ItemType Directory -Force (Join-Path $OutDir "python") | Out-Null
 foreach ($File in @("bakashrot.py", "example.py")) {
     Copy-Item (Join-Path $Root "Interactors\Python\$File") (Join-Path $OutDir "python")
+}
+# The wheel: bakashrot.py with this release's DLLs, `pip install` and done.
+$Wheel = $null
+$PythonExe = Get-Command python -ErrorAction SilentlyContinue
+if ($PythonExe) {
+    $Wheel = & $PythonExe.Source -B (Join-Path $Root "Interactors\Python\make_wheel.py") $OutDir (Join-Path $OutDir "python")
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build the Python wheel: $Wheel" }
+    Write-Host "Wheel: $Wheel"
+}
+else {
+    Write-Warning "No python on the PATH, no wheel"
 }
 Copy-Item (Join-Path $Root "Server\Config\schema.ini") (Join-Path $OutDir "config.example.ini")
 
@@ -162,6 +182,8 @@ libsodium: $SodiumVersion
 VC++ runtime: $RedistVersion (vcruntime140.dll, for libsodium.dll)
 
 Needs Windows 10 or later, 64-bit. Keep the DLLs next to the exes.
+Licenses: BakaShrot is CC0 (LICENSE.txt), libsodium ISC (LICENSE-libsodium.txt),
+SQLite public domain, vcruntime140.dll under Visual Studio's redistribution terms.
 
 Run the server:  BakaShrot_Server.exe config.ini
   Its config: config.example.ini. Keys: BakaShrotGenerateKeyPairs.exe, the
@@ -190,6 +212,7 @@ Tools, next to BakaShrot_Client.dll, with a client.ini:
 Python (3.8+, 64-bit): python\bakashrot.py, no dependencies, uses
   BakaShrot_Client.dll (set BAKASHROT_DLL, or pass dll_path). See its
   docstring, and python\example.py <ClientIni> <Topic> <Node>.
+  Or pip install python\bakashrot-*.whl: the same, with the DLLs in it.
 Compatibility: protocol 6. Servers and clients (the DLL, the tools, the
   Python client) must come from the same release: any other version
   refuses the connection, there's no mixing. From an older release:
@@ -324,7 +347,6 @@ ServerPublicKey = $($ServerKeys.PublicKey)
 
         Write-Host "  Pushed, read back by name, resolved and queried messages: OK"
 
-        $PythonExe = Get-Command python -ErrorAction SilentlyContinue
         if ($PythonExe) {
             $Script = "import sys; sys.path.insert(0, sys.argv[1]); from bakashrot import Client; " +
                       "c = Client.from_ini(sys.argv[2], sys.argv[3]); c.connect(); " +
@@ -332,6 +354,21 @@ ServerPublicKey = $($ServerKeys.PublicKey)
             $PyOut = & $PythonExe.Source -B -c $Script (Join-Path $OutDir "python") $ClientIni (Join-Path $OutDir "BakaShrot_Client.dll") 2>&1
             if ($LASTEXITCODE -ne 0 -or "$PyOut" -ne "2 42 3") { throw "Unexpected Python client output: $PyOut" }
             Write-Host "  Read and pushed with the Python client: OK"
+
+            # The wheel, installed by pip, run from elsewhere with no DLL
+            # path: it must use the DLLs inside it.
+            $Installed = Join-Path $TestDir "wheel"
+            $PipOut = & $PythonExe.Source -m pip install --no-index --no-deps --disable-pip-version-check --quiet --target $Installed $Wheel 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "pip couldn't install the wheel: $PipOut" }
+            $Script = "import os, sys; sys.path.insert(0, sys.argv[1]); import bakashrot; " +
+                      "c = bakashrot.Client.from_ini(sys.argv[2]); c.connect(); " +
+                      "inside = os.path.dirname(c._dll.path) == os.path.dirname(bakashrot.__file__); " +
+                      "print(inside, c.latest('releasetest', 'tester').json()['py'], c.push({'wheel': 1})); c.close()"
+            Push-Location $TestDir
+            try { $PyOut = & $PythonExe.Source -B -c $Script $Installed $ClientIni 2>&1 }
+            finally { Pop-Location }
+            if ($LASTEXITCODE -ne 0 -or "$PyOut" -ne "True 1 4") { throw "Unexpected output from the wheel: $PyOut" }
+            Write-Host "  Read and pushed with the wheel, installed by pip: OK"
         }
         else {
             Write-Host "  No python on the PATH, the Python client wasn't checked"
