@@ -671,10 +671,12 @@ still say the old names where they tell what was done then.
   `OpenConsole()`, `poll()`ing 250 ms at a time. Checked with no input,
   piped commands (CRLF too), a terminal, `quit`, both signals, on 5.73 and
   6.41.
-- **`Docker/`**: `Compiler/` (PureBasic 6.41 on `debian:trixie-slim`, the
-  archive copied in by hand, never committed) and `Server/` (multi-stage:
-  built with the C backend and the optimizer, run on `debian:trixie-slim`
-  with libsodium and SQLite only, as user `bakashrot`). Config
+- **`Docker/Server/`** (multi-stage: built with the C backend and the
+  optimizer on `git.nibblepoker.lu/packages/purebasic:6.41-linux3-trixie-slim`,
+  run on `debian:trixie-slim` with libsodium and SQLite only, as user
+  `bakashrot`). The compiler image was `Docker/Compiler/` at first, built
+  from a PureBasic archive copied in by hand; removed for the registry's
+  (2026-11-11, needs a `docker login`, it's licensed). Config
   `/etc/bakashrot/server.ini`, data volume `/var/lib/bakashrot`, port 12345.
   Checked: pushes, reads and queries through the port, `docker stop` clean
   (~0.3 s, exit 0), data kept over a restart, commands with `-i`. Alpine was
@@ -831,7 +833,7 @@ network**, not exposed to the internet. So:
 - Protocol 6: error codes everywhere, at-least-once delivery accepted
   (2026-11-09).
 - Linux: every suite passes, the server runs without a console there,
-  `Docker/` images for the compiler and the server (2026-11-10).
+  a `Docker/` image for the server (2026-11-10).
 
 ## To check against Review.md
 

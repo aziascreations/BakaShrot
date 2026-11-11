@@ -1,9 +1,13 @@
 # BakaShrot server image.
 #
-# Built from the repository's root, with the compiler image (Docker/Compiler)
-# already built, and the PB-MessagePack submodule checked out:
+# Built from the repository's root, with the PB-MessagePack submodule checked
+# out and a login to the registry holding the PureBasic images (they're
+# licensed, so not public):
 #   git submodule update --init --recursive
+#   docker login git.nibblepoker.lu
 #   docker build -t bakashrot-server -f Docker/Server/Dockerfile .
+# Another compiler image: --build-arg COMPILER_IMAGE=<image>, any Debian 13
+# (trixie) image with PureBasic's compilers on the PATH, gcc and libssl-dev.
 #
 # Run it with a config and a volume for the database:
 #   docker run -d --name bakashrot -p 12345:12345 \
@@ -22,7 +26,9 @@
 
 # --- Build ---------------------------------------------------------------------
 
-ARG COMPILER_IMAGE=purebasic:6.41
+# PureBasic 6.41 for linux3 (PureBasic's newest Linux build) on
+# debian:trixie-slim, the same Debian as the runtime stage below.
+ARG COMPILER_IMAGE=git.nibblepoker.lu/packages/purebasic:6.41-linux3-trixie-slim
 FROM ${COMPILER_IMAGE} AS build
 
 RUN apt-get update \

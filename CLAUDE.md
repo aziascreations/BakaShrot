@@ -40,8 +40,9 @@ operations come before security hardening (`Notes.md`, "Threat model").
 - `Release.ps1 [-Force]` builds the release with 6.40 into `Release\` and
   smoke-tests it (`-Force` replaces an existing folder of the same name).
 - Linux: same sources and flags (`-t`, `-e`, `-so` for the DLL), with
-  `libsodium-dev`. `Docker/Compiler/` and `Docker/Server/` build the
-  compiler and server images, see their Dockerfiles.
+  `libsodium-dev`. `Docker/Server/` builds the server image, on the
+  PureBasic image `git.nibblepoker.lu/packages/purebasic` (6.41, linux3;
+  needs a `docker login`), see its Dockerfile.
 
 ## Test
 
