@@ -30,6 +30,10 @@ Where things stand and what's next, as of 2026-11-09. A new session: read
 - **On Linux** (2026-11-10, `Done: Linux, Docker images`): every suite
   passes, the server runs without a console (SIGTERM/SIGINT), `Docker/`
   builds it into an image.
+- **Found 2026-11-11, testing the Docker image:** the server segfaults on
+  bad frames while clients are busy (item 21, fixed in `Networking.pbi`,
+  uncommitted, Linux suites pass, Windows suites to run), a leading BOM is
+  dropped (22), a NUL cuts a message (23).
 - **Suggested next** (not decided by the owner): the server without a
   console on Windows (item 1), then whatever the real-world test shows. The run on a
   clean Windows is the owner's, not an item here.
@@ -685,7 +689,33 @@ still say the old names where they tell what was done then.
   image with `server.ini` next to it (an empty config to fill in: no key,
   topic or client, the server refuses it as is), the `bakashrot-data`
   volume and a console for `docker attach`. Not run yet (no Docker on the
-  dev machine).
+  dev machine; the Linux one has Docker but no `compose` plugin).
+
+## Checked: the Docker image under load, the Linux tools (2026-11-11)
+
+Image built from `master` (`5887e70`), driven from the host through
+`bakashrot.py` and the Linux client `.so`, built in the same compiler image
+with every tool (all compile with `--optimizer`). Scripts not committed.
+
+- **Passed:** 4 concurrent pushers of random data (JSON of any shape,
+  control and astral characters, non-JSON, up to 1.5 MB, 1 % at 8-16 MB,
+  15 % with 1 B-6 MB attachments): every acked message stored as sent
+  (bar item 22), ids increasing, attachments identical. `docker kill`
+  (SIGKILL) and `docker restart` (SIGTERM, ~0.2 s) 3 times each under that
+  load: 3600 acked, none lost, the pushers reconnect. Refusals and limits
+  (unknown topic/node, PushTopics, ReadTopics, AllowWrite/Query, a
+  MAX_MESSAGE_SIZE message, a 64M attachment at a 64M MaxAttachmentSize and
+  one byte over, non-SELECT and >10000-row queries, wrong keys, wrong node),
+  the connection still usable after each. 500 idle sockets open: a client
+  is still served in 0.04 s. Every tool against it (push with attachment,
+  get, `--follow`, query, resolve, list, refusals).
+- **Failed: the server segfaults on bad frames under load** (item 21,
+  fixed the same day).
+- **Seen, harmless:** `SELECT 1; DELETE FROM messages` answers the SELECT,
+  SQLite only runs the first statement (nothing deleted).
+- **No Linux wheel** (item 20): `make_wheel.py` stops at "Missing
+  BakaShrot_Client.dll" on a Linux build folder, and would tag it
+  `win_amd64` anyway.
 
 ## Done: the Python wheel (2026-11-11)
 
@@ -842,6 +872,35 @@ network**, not exposed to the internet. So:
     maybe through a package: the distribution's (`libsodium23`, as the
     Docker image does, the wheel then holding only the client `.so`), or
     a Python package that provides it. See `Done: the Python wheel`.
+21. ~~**The server crashes on bad frames while clients are busy**~~ Fixed
+    (2026-11-11, uncommitted on `master`), as proposed below: every suite
+    passes on Linux with 6.41's C and asm backends, 5.73 compiles it, the
+    reproducer (5 rounds in Docker) no longer crashes. Windows: suites not
+    run yet. Retention-Test failed once, then passed 4 times: its scan
+    caught B's "the check-in failed" while A was stopping first (a race
+    in the test, `Stop-Srv $SA` before `$SB`, unrelated). (Linux,
+    found 2026-11-11, `Checked: the Docker image under load`). Garbage on
+    raw sockets (random bytes, bad lengths, anything giving "sent an
+    invalid frame") while two clients push: SIGSEGV in
+    `PB_SimpleList_Remove()` under `NetworkServerEvent()`, or
+    `malloc(): unsorted double linked list corrupted`, 3 times out of 3.
+    Garbage alone, or clients alone, don't. Cause: the listener calls
+    `NetworkServerEvent()` without `*Server\Mutex`, while a client thread
+    aborting calls `CloseNetworkConnection()` (`BakaShrot_NetClient_Thread`,
+    `Networking.pbi`), also without it: both change PureBasic's connection
+    list. Fix, tested in a copy (5 rounds of the same load, no crash, same
+    push speed): the listener locks the mutex around `NetworkServerEvent()`
+    and the event's handling (not around `WaitEvent`), the abort around
+    `CloseNetworkConnection()`.
+22. **A leading UTF-8 BOM is dropped from pushed messages** (found
+    2026-11-11): `"﻿{}"` is stored as `{}`, a lone BOM as `""`. Only
+    the first one, a BOM elsewhere is kept. Before storage (the stored
+    hex has no `EFBBBF`). Not `PeekS(..., #PB_UTF8)`, checked: it keeps it.
+    Noted for now, not looked into further.
+23. **A message with a NUL is cut there, silently** (found 2026-11-11):
+    `bakashrot.py` passes data as a C string (`PushMessageToA`),
+    `"before\x00after"` is stored as `before`. Refuse it in `push()`, or
+    send a length.
 
 ### Done recently (details in the sections above and `Design/`)
 

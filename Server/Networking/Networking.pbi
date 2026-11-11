@@ -19,7 +19,8 @@
 ; BakaShrot Server Networking
 ;
 ; Threaded TCP server, one thread per client:
-;   - The listener thread is the only one calling NetworkServerEvent().
+;   - The listener thread is the only one calling NetworkServerEvent(),
+;     holding *Server\Mutex, which client threads hold to close a connection.
 ;     On connect it starts a thread for the client, on data it adds what it
 ;     received to that client's inbox, on disconnect it flags the client.
 ;     Either way it then sets the client's Signal to wake its thread up.
@@ -1484,7 +1485,11 @@ Procedure BakaShrot_NetClient_Thread(*Client.BakaShrot_NetClient)
 		*Client\Metadata\Status = #BakaShrot_ConnectionStatus_Disconnected
 	Else
 		*Client\Metadata\Status = #BakaShrot_ConnectionStatus_Aborted
+		; Under the mutex: NetworkServerEvent() changes the same connection
+		; list, unlocked it crashed the listener (Linux, Notes.md item 21).
+		LockMutex(*Server\Mutex)
 		CloseNetworkConnection(*Client\ClientId)
+		UnlockMutex(*Server\Mutex)
 		PrintN("[Net] Client " + Str(*Client\ClientId) + " aborted")
 	EndIf
 
@@ -1600,7 +1605,7 @@ EndProcedure
 
 
 Procedure BakaShrot_NetServer_Thread(*Server.BakaShrot_NetServer)
-	Protected *Buffer, *Set.BakaShrot_SocketSet
+	Protected *Buffer, *Set.BakaShrot_SocketSet, Event.i
 
 	*Buffer = AllocateMemory(#BakaShrot_Net_ReceiveBufferSize)
 	*Set    = AllocateStructure(BakaShrot_SocketSet)
@@ -1610,7 +1615,14 @@ Procedure BakaShrot_NetServer_Thread(*Server.BakaShrot_NetServer)
 	EndIf
 
 	While Not *Server\StopRequested
-		Select NetworkServerEvent(*Server\ServerId)
+		; NetworkServerEvent() and the event's handling under the mutex: a
+		; client thread aborting closes its connection under it too, and both
+		; change PureBasic's connection list (unlocked, it crashed on Linux,
+		; Notes.md item 21). The handlers lock it again, PureBasic's mutexes
+		; are recursive.
+		LockMutex(*Server\Mutex)
+		Event = NetworkServerEvent(*Server\ServerId)
+		Select Event
 
 			Case #PB_NetworkEvent_Connect
 				BakaShrot_NetServer_AcceptClient(*Server, EventClient())
@@ -1621,12 +1633,14 @@ Procedure BakaShrot_NetServer_Thread(*Server.BakaShrot_NetServer)
 			Case #PB_NetworkEvent_Disconnect
 				BakaShrot_NetServer_DropClient(*Server, EventClient())
 
-			Default
-				; Nothing left, sleeps until there's something, waking up at
-				; least every 20 ms to check StopRequested.
-				BakaShrot_NetServer_WaitEvent(*Server, *Set, 20)
-
 		EndSelect
+		UnlockMutex(*Server\Mutex)
+
+		If Event = #PB_NetworkEvent_None
+			; Nothing left, sleeps until there's something (not holding the
+			; mutex), waking up at least every 20 ms to check StopRequested.
+			BakaShrot_NetServer_WaitEvent(*Server, *Set, 20)
+		EndIf
 	Wend
 
 	FreeStructure(*Set)
