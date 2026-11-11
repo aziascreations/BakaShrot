@@ -9,14 +9,20 @@ Windows 10 or later, 64-bit Python 3.8+.
 
 
 ## Linux
-There is no Linux wheel yet.
+The Linux wheel (`bakashrot-<version>-py3-none-linux_x86_64.whl`) holds only the client library,
+libsodium comes from the system: `apt install libsodium23` on Debian and Ubuntu. \
+Linux x86-64 with glibc 2.34+ (Debian 12, Ubuntu 22.04 or later), 64-bit Python 3.8+.
 
-The Windows wheel bundles `libsodium.dll` next to the client DLL. \
-On Linux, libsodium shouldn't be bundled like that, but come from a package instead:
-* The distribution's, like the Docker image does (`apt install libsodium23`), the wheel only holding the client's `.so`.
-* Or a Python package that provides it, as a dependency of the wheel.
+It's tagged `linux_x86_64`, not `manylinux`: manylinux doesn't allow depending on libsodium,
+so it goes on Gitea, not PyPI.
 
-Until then, build the client yourself (see [CLAUDE.md](../../CLAUDE.md)) and point `BAKASHROT_DLL` at it.
+Building it: compile the client in the Docker compiler image (Debian 13, so glibc 2.34 is enough),
+named `BakaShrot_Client.dll` as the repository does on Linux, then `make_wheel.py --linux`:
+```shell
+docker run --rm -v "$PWD":/src:ro -v "$PWD/dist":/out -w /src git.nibblepoker.lu/packages/purebasic:6.41-linux3-trixie-slim \
+  sh -c 'apt-get update -qq && apt-get install -y -qq libsodium-dev >/dev/null && pbcompilerc -t --optimizer Client/BakaShrot_Client.pbi -so /out/BakaShrot_Client.dll'
+python3 Interactors/Python/make_wheel.py dist dist --linux
+```
 
 
 ## Installing

@@ -867,7 +867,13 @@ network**, not exposed to the internet. So:
 18. ~~**Linux is untested**~~ Done (2026-11-10): every suite passes, see
     `Done: Linux, Docker images`.
 19. **Console commands can't be scripted** (see 1).
-20. **No Linux wheel.** The Windows one bundles `libsodium.dll` next to the
+20. ~~**No Linux wheel.**~~ Done (2026-11-11, uncommitted):
+    `make_wheel.py --linux`, the client `.so` only (built in the Docker
+    compiler image, needs glibc 2.34+), libsodium from the system
+    (`libsodium23`), tagged `linux_x86_64`. Installed by pip on Python 3.13
+    (Debian 13) and 3.8 (Debian 12), talks to the `0.0.1` server image;
+    `twine check` passes; uploaded to Gitea's PyPI registry (0.0.1). The
+    Windows wheel is byte-identical to before. Was: the Windows one bundles `libsodium.dll` next to the
     client DLL; on Linux, find a way not to bundle libsodium like that,
     maybe through a package: the distribution's (`libsodium23`, as the
     Docker image does, the wheel then holding only the client `.so`), or
