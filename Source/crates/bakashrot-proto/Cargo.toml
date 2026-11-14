@@ -1,0 +1,28 @@
+[package]
+name = "bakashrot-proto"
+description = "BakaShrot's protocol: packets, frames, names, limits and error codes, shared by the server, the clients and the tools."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# As few as possible: every other crate builds on this one.
+[dependencies]
+rmp-serde = "1.3.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_bytes = "0.11.19"
+tokio-util = { version = "0.7.20", features = ["codec"], optional = true }
+
+[features]
+# `frame::codec()`, for the async server: the blocking client (the DLL)
+# leaves it off and never pulls tokio in.
+tokio = ["dep:tokio-util"]
+
+[dev-dependencies]
+bytes = "1.12.1"

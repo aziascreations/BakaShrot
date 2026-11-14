@@ -1,0 +1,6 @@
+# The toolchain every build and CI run uses: bump it on purpose, in its own
+# commit, once everything passes with the new one.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -1,0 +1,30 @@
+# The new sources (Source/): the same checks as Source/check.ps1, on Windows
+# and Linux. Gitea Actions runs this file too.
+name: Source
+
+on:
+  push:
+    paths: ["Source/**", ".github/workflows/source.yml"]
+  pull_request:
+    paths: ["Source/**", ".github/workflows/source.yml"]
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: Source
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the toolchain Source/rust-toolchain.toml pins.
+      - run: rustup toolchain install
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+      - run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings

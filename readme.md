@@ -1,5 +1,9 @@
 # BakaShrot
-A message store with replication, written in PureBasic.
+A message store with replication.
+
+> [!IMPORTANT]
+> Being rewritten in Rust, see [revamp.md](revamp.md): the new sources go in [Source/](Source/README.md).
+> The PureBasic implementation described below is in [OldSource/](OldSource/), where its commands are run from.
 
 Servers take messages (usually JSON) per topic and node from authenticated clients,
 store them in SQLite, and replicate them to their peers by name.
@@ -20,16 +24,16 @@ store them in SQLite, and replicate them to their peers by name.
   * A Python module over the DLL, without dependencies, as a wheel with the DLLs in it
 
 
-## Building
-Requires PureBasic 5.73 or 6.40+ and the submodules.
+## Building (the PureBasic implementation)
+Requires PureBasic 5.73 or 6.40+ and the submodules. From `OldSource/`:
 
 * **Development:** `powershell -ExecutionPolicy Bypass -File Build.ps1` (into `Build\`)
 * **Release:** `powershell -ExecutionPolicy Bypass -File Release.ps1` (into `Release\`)
-* **Docker:** See [Docker/README.md](Docker/README.md)
-* **Python:** See [Interactors/Python/README.md](Interactors/Python/README.md)
+* **Docker:** See [OldSource/Docker/README.md](OldSource/Docker/README.md)
+* **Python:** See [OldSource/Interactors/Python/README.md](OldSource/Interactors/Python/README.md)
 
-See [Examples/](Examples/README.md) for ready-to-run setups,
-and [Server/Config/schema.ini](Server/Config/schema.ini) for every option of the server.
+See [OldSource/Examples/](OldSource/Examples/README.md) for ready-to-run setups,
+and [OldSource/Server/Config/schema.ini](OldSource/Server/Config/schema.ini) for every option of the server.
 
 
 ## Cloning
@@ -45,4 +49,4 @@ All the code in this repo is released in the [Public Domain](LICENSE).
 
 Please note that this doesn't apply to the required PureBasic archives.
 
-The releases and the Python wheel include [libsodium](https://libsodium.org), under the [ISC license](Libs/libsodium/LICENSE).
+The releases and the Python wheel include [libsodium](https://libsodium.org), under the [ISC license](OldSource/Libs/libsodium/LICENSE).

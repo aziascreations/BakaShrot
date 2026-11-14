@@ -5,8 +5,8 @@
 # Build Artifacts
 *.exe
 *.dll
-# ... except the runtime redistributables the release packages, see Libs/redist/README.md
-!Libs/redist/**/*.dll
+# ... except the runtime redistributables the old release packages, see OldSource/Libs/redist/README.md
+!OldSource/Libs/redist/**/*.dll
 *.so
 *.a
 *.pdb
@@ -22,7 +22,10 @@ Release/
 # Python
 __pycache__/
 
+# Rust (Source/)
+target/
+
 # The examples run their server in their own folder: its database, and
 # what their client scripts write
-Examples/**/*.sqlite*
-Examples/**/out/
+OldSource/Examples/**/*.sqlite*
+OldSource/Examples/**/out/

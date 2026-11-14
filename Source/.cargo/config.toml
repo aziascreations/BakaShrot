@@ -1,0 +1,11 @@
+# The C runtime linked statically on Windows (MSVC): the DLL and the
+# programs need no Visual C++ redistributable (../revamp.md, "Decided" 2).
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# aws-lc seeds its random generator from the OS's (and RDRAND), without CPU
+# Jitter Entropy: that one takes about 25 ms in every process, at its first
+# connection (every tool command, every script through the DLL). Decided
+# 2026-11-14 (../revamp.md, "Randomness from the OS"; ../docs/certificates.md).
+[env]
+AWS_LC_SYS_NO_JITTER_ENTROPY = "1"
