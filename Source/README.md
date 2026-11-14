@@ -15,7 +15,7 @@ Source/
   check.ps1               what CI runs: fmt, clippy, tests, docs
   release.py              a release for this platform: build, package, smoke test
   docs/                   designs across crates: protocol.md, certificates.md, oid.md, config.md,
-                          storage.md, server.md, client.md
+                          storage.md, server.md, client.md, known-issues.md
   crates/
     bakashrot-proto/      packets, frames, names, limits, error codes, shared by everything
     bakashrot-pki/        certificates: issuing, identities, CRLs, the TLS setup
@@ -27,7 +27,7 @@ Source/
     bakashrot-tools/      the CLI tools: bakashrot (push, read, query, list), bakashrot-cert
   bindings/
     c/                    bakashrot.h, generated from bakashrot-capi
-    purebasic/            the prototypes and error codes, as OldSource/Client/'s
+    purebasic/            the prototypes and error codes, as the PureBasic version's
     python/               bakashrot.py over the DLL, check_bakashrot.py, make_wheel.py
   .cargo/config.toml      the C runtime linked statically on Windows
   tests/                  (13) end-to-end suites across processes
@@ -66,6 +66,15 @@ Linux one in a manylinux 2.28 container, so it runs with glibc 2.28 and
 later. The version is the workspace's (`Cargo.toml`), and
 `bindings/python/bakashrot.py`'s `__version__` must be the same.
 
+Publishing, as the old version did:
+
+- **The wheel** to Gitea's registry, with twine 6.1+ (for the license
+  metadata) and a token with `write:package`:
+  `twine upload --repository-url https://git.nibblepoker.lu/api/packages/aziascreations/pypi -u aziascreations <wheel>`.
+- **On GitHub** (no Python registry), the archives and the wheels on a
+  release: `gh release create v<version> --repo aziascreations/BakaShrot --title <version> <files>`
+  (`gh release upload` for one that exists).
+
 ## Conventions
 
 - LF line endings (`.gitattributes`), rustfmt's defaults.
@@ -76,3 +85,5 @@ later. The version is the workspace's (`Cargo.toml`), and
 - Use existing crates rather than reimplementing (MessagePack is `rmp-serde`).
 - Protocol changes update `docs/protocol.md`; error codes are never
   renumbered, packet ids never reused.
+- `OldSource/` paths in comments and docs: the PureBasic version, removed
+  2026-11-15, in git history up to commit `68966a8`.

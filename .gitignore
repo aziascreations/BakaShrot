@@ -5,27 +5,14 @@
 # Build Artifacts
 *.exe
 *.dll
-# ... except the runtime redistributables the old release packages, see OldSource/Libs/redist/README.md
-!OldSource/Libs/redist/**/*.dll
 *.so
 *.a
 *.pdb
 *.lib
 *.exp
 
-# Build output, holds generated private keys
-Build/
-
-# Release builds, see Release.ps1
-Release/
-
 # Python
 __pycache__/
 
 # Rust (Source/)
 target/
-
-# The examples run their server in their own folder: its database, and
-# what their client scripts write
-OldSource/Examples/**/*.sqlite*
-OldSource/Examples/**/out/

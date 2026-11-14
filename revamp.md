@@ -1,17 +1,18 @@
 # BakaShrot revamp
 
 Started 2026-11-13: what it should change, what's decided, what's still
-open, and the plan. Steps 0 to 11 of the plan are done (the workspace,
+open, and the plan. Steps 0 to 12 of the plan are done (the workspace,
 `bakashrot-proto`, `bakashrot-pki` and `bakashrot-cert`,
 `bakashrot-config`, `bakashrot-storage`, `bakashrot-server` and
 `bakashrot-client` answering every request, attachments included, the C
 DLL with its C, PureBasic and Python bindings, the `bakashrot` tool,
-retention, replication), see "Plan".
+retention, replication, operations and releases), see "Plan".
 
-- **Old implementation:** `OldSource/`, PureBasic, protocol 6, schema v8.
-  Frozen as the reference: it still builds and passes its suites from there
-  (`OldSource/CLAUDE.md`), and its docs describe the behaviour to carry over
-  (`OldSource/Notes.md`, `OldSource/Design/`).
+- **Old implementation:** PureBasic, protocol 6, schema v8. Removed on
+  2026-11-15 ("The PureBasic version removed"): it's in git history,
+  `OldSource/` up to commit `68966a8`, which the `OldSource/` paths here
+  and in `Source/` point to. What of its notes still holds:
+  `Source/docs/known-issues.md`.
 - **New implementation:** `Source/`, see `Source/README.md`.
 
 ## Why
@@ -229,7 +230,7 @@ Also decided (2026-11-13):
   - **`accept_from` is for servers only:** clients push wherever their
     roles allow, as now. A node pushing to one server only stays the
     config's rule, not checked, as in the old version
-    (`OldSource/Design/ReplicationIssues.md` #1).
+    (`Source/docs/known-issues.md`).
 - **Operations** (2026-11-14), `Source/docs/server.md`, "Running";
   `Source/README.md`, "Releases":
   - **signals only:** SIGTERM and SIGINT on Linux; Ctrl+C, Ctrl+Break or
@@ -244,6 +245,13 @@ Also decided (2026-11-13):
     the docs, the licenses, and a smoke test;
   - **the Python wheel has the library in it**, for a simple install;
   - **version 0.2.0.**
+- **The PureBasic version removed** (2026-11-15): `OldSource/` deleted,
+  kept in git history (up to `68966a8`). What of its notes and designs
+  still holds went to `Source/docs/known-issues.md`; the rest was already
+  in `Source/docs/` or only about PureBasic. Its PowerShell suites go
+  with it: the Rust tests (`cargo test`, `check.ps1`, CI) are the one
+  runner, with `release.py`'s smoke test across processes (old open item
+  7).
 
 ## Proposed, to confirm
 
@@ -258,9 +266,6 @@ come back as text either way; only what SQL computes would gain
 
 - **A handle-based DLL API** (several connections per process, old open item
   10): later maybe, the owner's call (one connection per process for now).
-- **Tests:** keep the PowerShell suites (ported to certificates and the new
-  config), move them to Rust integration tests, or both; a single runner and
-  CI either way (old open item 7).
 - **The identity extension's OID, a placeholder for now:** it goes under a
   Private Enterprise Number of NibblePoker's, from IANA (free, within a
   week; the owner's to request). Until then `bakashrot_pki::IDENTITY_OID`
@@ -272,8 +277,9 @@ come back as text either way; only what SQL computes would gain
 
 ## Kept: the behaviour to carry over
 
-Described in `OldSource/Notes.md` and `OldSource/Design/`, tested by
-`OldSource/Tests/`:
+Described in the old version's `OldSource/Notes.md` and
+`OldSource/Design/`, tested by `OldSource/Tests/` (git history, see the
+top):
 
 - Topics and nodes by name, each server with its own ids (now in its
   database only), wildcards, `PushTopics` / `ReadTopics`, `SendTopics` /
@@ -321,7 +327,8 @@ From `OldSource/Notes.md`, "Open items":
 Decided 2026-11-13. The crates without networking first, each tested on
 its own; then one thin path through all of them; then one feature at a
 time, through every layer at once, with its tests and docs. The old suites,
-ported, say when a step is done; `OldSource/` stays runnable to compare.
+ported, say when a step is done; `OldSource/` stayed runnable to compare
+until step 13 (removed 2026-11-15).
 
 Dependencies only point downward:
 
@@ -352,7 +359,7 @@ hand in each).
 | 10 | Retention | Background deletion, `node_heads` kept, attachments cleaned up | `Retention-Test`'s local checks | | Done 2026-11-14 |
 | 11 | Replication | Peer links, sync state, batches by name, wildcards, attachments, skipping on arrival | `Names-Test` (replication), `Restart-Test`; the corrupted-attachment fix | Decided 2026-11-14 | Done 2026-11-14 |
 | 12 | Operations | Signals and a clean stop, logs, release, wheel | Runs unattended, stops cleanly, the release's smoke test | Decided 2026-11-14 | Done 2026-11-14 |
-| 13 | Finish | One test runner, end-to-end tests in CI, the bench, Docker | Push speed against the old ~17,000 msg/s (4 servers) | | |
+| 13 | Finish | One test runner (the Rust tests, decided 2026-11-15), end-to-end tests in CI, the bench, Docker | Push speed against the old ~17,000 msg/s (4 servers, measured 2026-11-14: `Source/docs/server.md`) | | |
 
 Each step ends with its tests passing and its docs updated (the crate's
 docs, `Source/docs/`, this file's status), then a commit when the owner
@@ -725,5 +732,22 @@ asks. Open questions get settled at the step that needs them.
 - **Tests:** `end_to_end.rs`'s `stops_cleanly` (eight nodes pushing flat
   out, stopped under them: every answered push there after a restart);
   `restart_after()` stops as the program does.
-- **Not done:** the Linux release and the CI job haven't run yet (no
-  Linux machine here; the push is waiting). Docker: step 13.
+- **Not done:** the Linux release hadn't run here (no Linux machine);
+  CI ran on GitHub after the push (2026-11-15). Docker: step 13.
+
+### For step 13: what the old Docker image did
+
+From `OldSource/Docker/` (git history), to keep in the new one:
+
+- A multi-stage build, the final image only the server and what it
+  needs; `docker compose up -d --build` with the config in a mounted
+  folder.
+- The label `org.opencontainers.image.source` set to the GitHub
+  repository, which links the package to it on ghcr.io; built with
+  `--provenance=false`, or the image is an index and GitHub doesn't see
+  the label.
+- Pushed to both registries, with the version and as `latest`:
+  `git.nibblepoker.lu/aziascreations/bakashrot-server` and
+  `ghcr.io/aziascreations/bakashrot-server` (a token with
+  `write:packages`); the package then linked and made public in its
+  settings on GitHub.

@@ -121,17 +121,34 @@ async fn serve(shared: &Arc<Shared>, tcp: TcpStream, address: IpAddr) -> Result<
     }
 }
 
+/// After a refused handshake (its alert sent): a close the client reads,
+/// not a reset that can beat the alert to it. In TLS 1.3 the client has
+/// already sent its version when the server refuses its certificate, and
+/// a socket closed with data unread is reset (Windows drops what the
+/// client hadn't read yet then). So: shut down, and read until the client
+/// closes, 1 s at most.
+async fn close_gently(mut tcp: TcpStream) {
+    let _ = tcp.shutdown().await;
+    let mut unread = [0; 1024];
+    let _ = timeout(Duration::from_secs(1), async {
+        while tcp.read(&mut unread).await.is_ok_and(|read| read > 0) {}
+    })
+    .await;
+}
+
 /// TLS, the versions, the identity, the welcome (or the refusal).
 async fn open(
     shared: &Arc<Shared>,
     tcp: TcpStream,
     address: IpAddr,
 ) -> Result<(Frames, Peer), String> {
-    let mut stream = shared
-        .acceptor
-        .accept(tcp)
-        .await
-        .map_err(|error| format!("TLS: {error}"))?;
+    let mut stream = match shared.acceptor.accept(tcp).into_fallible().await {
+        Ok(stream) => stream,
+        Err((error, tcp)) => {
+            close_gently(tcp).await;
+            return Err(format!("TLS: {error}"));
+        }
+    };
 
     stream
         .write_all(&frame::version_bytes())

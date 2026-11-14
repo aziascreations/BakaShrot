@@ -118,14 +118,18 @@ otherwise started over (`DataMismatch`). A stop between its last part
 and the check: started over at the next start.
 
 **One server per node** stays the config's rule, as in the old version
-(`OldSource/Design/ReplicationIssues.md` #1): a node pushing to two
-servers that replicate makes the same ids with different messages,
-undetected.
+(`known-issues.md`): a node pushing to two servers that replicate makes
+the same ids with different messages, undetected.
 
 ## A connection
 
 1. **TLS:** the client's certificate must be the CA's, valid, not revoked,
-   with an identity (`certificates.md`).
+   with an identity (`certificates.md`). A refused one gets TLS's alert,
+   then a gentle close: the server shuts down and reads until the client
+   closes (1 s at most). Closing at once reset the connection (the
+   client's version bytes unread), which could beat the alert to the
+   client: `ConnectionLost` instead of `AuthRejected`, about 1 in 10 under
+   load on Windows.
 2. **The versions:** each end sends its own; different ones, the
    connection is dropped (the client says `VersionMismatch`).
 3. **The roles:** none of the certificate's roles in the config, the
