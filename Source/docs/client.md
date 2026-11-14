@@ -110,8 +110,9 @@ attachment=None)` (the topic required; the attachment bytes or a path),
 `list_topics()` / `list_nodes()` (names), `query()` / `query_raw()`.
 Errors: `RefusedError`, `ConnectionLostError`, `AuthError` (a certificate
 refused, either way, or no role allowed), `BakaShrotError`. The DLL is
-looked for next to the module, or `BAKASHROT_DLL`. The wheel comes with the
-release (step 12).
+looked for next to the module, or `BAKASHROT_DLL`. The release has a
+wheel with the library in it (`pip install bakashrot-*.whl`, nothing else:
+`bindings/python/make_wheel.py`, `../README.md`, "Releases").
 
 ## PureBasic
 

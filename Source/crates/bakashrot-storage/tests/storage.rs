@@ -316,6 +316,7 @@ fn replication() {
                     replicated(12, 300, Some((50, sha))),
                 ],
                 1000,
+                0,
             )
         })
         .unwrap();
@@ -331,6 +332,7 @@ fn replication() {
                     ..replicated(5, 1, None)
                 }],
                 1000,
+                0,
             )
         })
         .unwrap();
@@ -407,6 +409,7 @@ fn replication() {
                 "garage",
                 &[replicated(1, 1, Some((2 * PART as u64, sha)))],
                 u64::MAX,
+                0,
             )
         })
         .unwrap();
@@ -420,9 +423,78 @@ fn replication() {
         ("garage", 1)
     );
 
+    // What's sent on: after an id, with its attachments' SHA-256s.
+    let sent = reader.to_replicate("logs", "kitchen", 5, 10).unwrap();
+    let sent_ids: Vec<u64> = sent.iter().map(|m| m.id).collect();
+    assert_eq!(sent_ids, [9, 12, 13]);
+    assert_eq!(
+        sent[0].attachment,
+        Some(Sent {
+            size: PART as u64 + 1,
+            sha256: sha
+        })
+    );
+    assert_eq!(sent[2].attachment, None);
+    assert_eq!(
+        reader.to_replicate("logs", "kitchen", 9, 1).unwrap()[0].id,
+        12
+    );
+    assert!(
+        reader
+            .to_replicate("logs", "kitchen", 13, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        reader
+            .to_replicate("logs", "nobody", 0, 10)
+            .unwrap()
+            .is_empty()
+    );
+
+    // A damaged ready copy: its parts go, asked for again.
+    writer.batch(|b| b.damaged(small.id)).unwrap();
+    let again = reader.attachment("logs", "kitchen", 12).unwrap().unwrap();
+    assert_eq!(
+        (again.state, again.received),
+        (AttachmentState::Replicating, 0)
+    );
+    assert!(reader.read_part(small.id, 0).is_err());
+    assert!(matches!(
+        writer.batch(|b| b.damaged(small.id)),
+        Err(Error::Invalid(_))
+    ));
+
+    // Past their age here: not stored, but counted.
+    let last = writer
+        .batch(|b| {
+            b.replicate(
+                "logs",
+                "attic",
+                &[
+                    replicated(1, 100, Some((50, sha))),
+                    replicated(2, 200, None),
+                    replicated(3, 300, None),
+                ],
+                1000,
+                201,
+            )
+        })
+        .unwrap();
+    assert_eq!(last, 3);
+    assert_eq!(
+        ids(&reader.messages("logs", "attic", Some(0), 10).unwrap()),
+        [3]
+    );
+    assert_eq!(reader.last_id("logs", "attic").unwrap(), 3);
+    let skipped = writer
+        .batch(|b| b.replicate("logs", "cellar", &[replicated(7, 100, None)], 1000, 201))
+        .unwrap();
+    assert_eq!((skipped, reader.last_id("logs", "cellar").unwrap()), (7, 7));
+
     // Ids out of range.
     assert!(matches!(
-        writer.batch(|b| b.replicate("logs", "kitchen", &[replicated(0, 1, None)], 0)),
+        writer.batch(|b| b.replicate("logs", "kitchen", &[replicated(0, 1, None)], 0, 0)),
         Err(Error::Invalid(_))
     ));
 }

@@ -135,7 +135,7 @@ Replicating     P: SyncStateRequest                 S: SyncState
   client asks again `from_part` the next one it needs.
 - **Replication:** `SyncState` is all a check-in needs. The peer compares
   it with what it has, by name, sends the messages the server lacks in
-  batches of up to `PeerBatchSize` (about 64 KiB, a bigger
+  batches of up to `batch_size` messages and about 1 MiB (a bigger
   message alone), then the attachments it listed.
 
 ## Rules

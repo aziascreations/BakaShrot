@@ -29,3 +29,5 @@ workspace = true
 
 [dev-dependencies]
 bakashrot-client = { path = "../bakashrot-client" }
+# To damage a stored attachment from a test (the storage's own version).
+rusqlite = { version = "0.42.0", features = ["bundled"] }

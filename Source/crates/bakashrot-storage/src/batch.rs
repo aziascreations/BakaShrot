@@ -156,14 +156,16 @@ impl Batch<'_> {
     /// Stores messages a peer sent for `topic` and `node`, with their own
     /// ids, in order; ones already here are kept as they are. Their
     /// attachments are noted, to be asked for (`replicating`), or never if
-    /// bigger than `max_attachment_size` (`too_big`). Returns the topic and
-    /// node's last id.
+    /// bigger than `max_attachment_size` (`too_big`). Ones pushed before
+    /// `skip_before` (ms, past their age here) aren't stored, but count as
+    /// received. Returns the topic and node's last id.
     pub fn replicate(
         &mut self,
         topic: &str,
         node: &str,
         messages: &[ReplicatedMessage],
         max_attachment_size: u64,
+        skip_before: u64,
     ) -> Result<u64> {
         self.atomic(|db| {
             let (stream, mut last_id) = stream(db, topic, node)?;
@@ -177,6 +179,11 @@ impl Batch<'_> {
                 if !(1..=MAX_MESSAGE_ID).contains(&message.id) {
                     return Err(Error::Invalid(format!("message id {}", message.id)));
                 }
+                // What the trigger keeps: one ignored was here, below it.
+                last_id = last_id.max(message.id);
+                if message.pushed_at < skip_before {
+                    continue;
+                }
                 let key = message_key(stream, message.id);
                 let stored = insert.execute((key, message.pushed_at, &message.data))? == 1;
                 if let (true, Some(attachment)) = (stored, &message.attachment) {
@@ -187,9 +194,10 @@ impl Batch<'_> {
                     };
                     attach.execute((key, attachment.size, &attachment.sha256, state))?;
                 }
-                // What the trigger keeps: one ignored was here, below it.
-                last_id = last_id.max(message.id);
             }
+            // The skipped ones move it too.
+            db.prepare_cached("UPDATE streams SET last_id = ?2 WHERE stream_id = ?1")?
+                .execute((stream, last_id))?;
             Ok(last_id)
         })
     }
@@ -211,6 +219,26 @@ impl Batch<'_> {
                 delete_parts(db, attachment_id, None)?;
                 set_attachment(db, attachment_id, "received = ?2", 0)
             }
+        })
+    }
+
+    /// A ready attachment found not to match its SHA-256 (a damaged
+    /// disk, a bug): its parts go, it's asked for again from its peers
+    /// (`replicating`), and not served meanwhile.
+    pub fn damaged(&mut self, attachment_id: i64) -> Result<()> {
+        self.atomic(|db| {
+            if attachment(db, attachment_id)?.0 != AttachmentState::Ready {
+                return Err(Error::Invalid(format!(
+                    "attachment {attachment_id} isn't a ready one"
+                )));
+            }
+            delete_parts(db, attachment_id, None)?;
+            db.prepare_cached(
+                "UPDATE attachments SET state = 'replicating', received = 0 \
+                 WHERE attachment_id = ?1",
+            )?
+            .execute([attachment_id])?;
+            Ok(())
         })
     }
 
@@ -381,8 +409,21 @@ fn delete_attachment(db: &Connection, attachment_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Deletes every upload: at start, none of them can be pushed any more.
-pub(crate) fn delete_uploads(db: &Connection) -> Result<()> {
+/// At start: deletes every upload (none of them can be pushed any more),
+/// and starts over the replicated attachments all of whose parts came but
+/// weren't checked (stopped in between).
+pub(crate) fn clean_up(db: &Connection) -> Result<()> {
+    let unchecked: Vec<i64> = db
+        .prepare(
+            "SELECT attachment_id FROM attachments \
+             WHERE state = 'replicating' AND received = size",
+        )?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for attachment_id in unchecked {
+        delete_parts(db, attachment_id, None)?;
+        set_attachment(db, attachment_id, "received = ?2", 0)?;
+    }
     let uploads: Vec<i64> = db
         .prepare("SELECT attachment_id FROM attachments WHERE state = 'uploading'")?
         .query_map([], |row| row.get(0))?

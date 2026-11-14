@@ -1,13 +1,16 @@
 //! A server on a free port, clients over TLS: pushes and reads, runs of
-//! messages, big ones, names, queries, attachments, retention, refusals,
-//! certificates refused, revoked ones dropped, pushes at once.
+//! messages, big ones, names, queries, attachments, retention, replication
+//! between servers, refusals, certificates refused, revoked ones dropped,
+//! pushes at once.
 
 use bakashrot_client::{Client, Settings};
 use bakashrot_config::Config;
 use bakashrot_pki::{Ca, Identity, Issued, Revocations, Usage, summarize, tls};
 use bakashrot_proto::limits::{ATTACHMENT_PART_SIZE, MAX_MESSAGE_SIZE, MAX_PACKET_SIZE};
 use bakashrot_proto::packets::{
-    Attachment, AttachmentPart, GetAttachment, Messages, NameKind, PushMessage, StoredAttachment,
+    Attachment, AttachmentPart, GetAttachment, MessagePushed, Messages, NameKind, PushMessage,
+    ReplicateAttachment, ReplicateMessages, ReplicatedMessage, StoredAttachment, SyncState,
+    SyncStateRequest,
 };
 use bakashrot_proto::{ErrorCode, Packet, frame};
 use bakashrot_server::Server;
@@ -38,17 +41,22 @@ read_topics = ["logs"]
 
 [roles.analyst]
 query = true
+
+[roles.peer]
+send_topics = ["*"]
+accept_topics = ["*"]
 "#;
 
 /// A server running on a free port, its CA and folder.
 struct Running {
     folder: PathBuf,
     ca: Ca,
+    ca_issued: Issued,
     ca_certificate: String,
     server: Server,
     address: String,
     // Kept for the server's tasks to run.
-    _runtime: tokio::runtime::Runtime,
+    runtime: tokio::runtime::Runtime,
 }
 
 fn folder(name: &str) -> PathBuf {
@@ -68,19 +76,30 @@ impl Running {
         Running::start_with(name, "")
     }
 
-    /// With more `[server]` settings.
+    /// With more `[server]` settings (and sections after them).
     fn start_with(name: &str, settings: &str) -> Running {
-        let folder = folder(name);
-        let issued = Ca::create("Test CA", 10).unwrap();
-        let ca = Ca::load(&issued.certificate, &issued.key).unwrap();
+        let ca = Ca::create("Test CA", 10).unwrap();
+        Running::start_in(folder(name), ca, "server-1", settings, "127.0.0.1:0")
+    }
+
+    /// Another server with the same CA, named `server`.
+    fn peer(&self, name: &str, server: &str, settings: &str) -> Running {
+        let ca = self.ca_issued.clone();
+        Running::start_in(folder(name), ca, server, settings, "127.0.0.1:0")
+    }
+
+    fn start_in(
+        folder: PathBuf,
+        ca_issued: Issued,
+        name: &str,
+        settings: &str,
+        bind: &str,
+    ) -> Running {
+        let ca = Ca::load(&ca_issued.certificate, &ca_issued.key).unwrap();
         let server = ca
-            .issue(
-                &Identity::new("server-1", &["peer"]).unwrap(),
-                Usage::Server,
-                10,
-            )
+            .issue(&Identity::new(name, &["peer"]).unwrap(), Usage::Server, 10)
             .unwrap();
-        std::fs::write(folder.join("ca.crt"), &issued.certificate).unwrap();
+        std::fs::write(folder.join("ca.crt"), &ca_issued.certificate).unwrap();
         std::fs::write(folder.join("server.crt"), &server.certificate).unwrap();
         std::fs::write(folder.join("server.key"), &server.key).unwrap();
         let config = CONFIG.replace(
@@ -91,25 +110,50 @@ impl Running {
             ),
         );
         std::fs::write(folder.join("server.toml"), config).unwrap();
+        Running::run(folder, ca, ca_issued, bind)
+    }
+
+    /// Stopped as `bakashrot-server` stops, `meanwhile` run, then started
+    /// again on the same database and address.
+    fn restart_after(self, meanwhile: impl FnOnce()) -> Running {
+        let Running {
+            folder,
+            ca,
+            ca_issued,
+            server,
+            address,
+            runtime,
+            ..
+        } = self;
+        runtime.block_on(server.stop());
+        runtime.shutdown_background();
+        meanwhile();
+        Running::run(folder, ca, ca_issued, &address)
+    }
+
+    /// Its `server.toml` served on `bind`, retention and replication going.
+    fn run(folder: PathBuf, ca: Ca, ca_issued: Issued, bind: &str) -> Running {
         let config = Config::load(&folder.join("server.toml")).unwrap();
         let server = Server::start(config).unwrap();
-
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let listener = runtime
-            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .block_on(tokio::net::TcpListener::bind(bind))
             .unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let serving = server.clone();
         runtime.spawn(async move { serving.serve(listener).await });
         let retaining = server.clone();
         runtime.spawn(async move { retaining.apply_retention().await });
+        let replicating = server.clone();
+        runtime.spawn(async move { replicating.replicate().await });
         Running {
             folder,
             ca,
-            ca_certificate: issued.certificate,
+            ca_certificate: ca_issued.certificate.clone(),
+            ca_issued,
             server,
             address,
-            _runtime: runtime,
+            runtime,
         }
     }
 
@@ -998,6 +1042,44 @@ fn attachment_edges() {
 }
 
 #[test]
+fn stops_cleanly() {
+    // 8 nodes pushing flat out, the server stopped under them: every push
+    // answered is stored, the ones after refused as the server stopping.
+    let running = Running::start("stop");
+    let threads: Vec<_> = (0..8)
+        .map(|n| {
+            let mut client = running
+                .connect(&running.issue(&format!("n{n}"), &["sensor"]))
+                .unwrap();
+            std::thread::spawn(move || {
+                let mut answered = 0;
+                loop {
+                    match client.push("logs", "{}") {
+                        Ok(id) => answered = id,
+                        Err(error) => return (answered, error.code()),
+                    }
+                }
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(300));
+    running.runtime.block_on(running.server.stop());
+    let stopped: Vec<(u64, u32)> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+
+    let running = running.restart_after(|| {});
+    let mut reader = running
+        .connect(&running.issue("reader", &["reader"]))
+        .unwrap();
+    for (n, (answered, code)) in stopped.into_iter().enumerate() {
+        assert_eq!(code, ErrorCode::ServerError.code(), "n{n}");
+        assert!(answered > 0, "n{n} pushed nothing");
+        let latest = reader.get_messages("logs", &format!("n{n}"), None, 1);
+        // The last push may have been committed after its answer was lost.
+        assert!(latest.unwrap().messages[0].id >= answered, "n{n}");
+    }
+}
+
+#[test]
 fn retention() {
     // logs kept 2 s, sensors forever; looked at every second.
     let running = Running::start_with(
@@ -1049,4 +1131,394 @@ fn retention() {
     assert_eq!(count(logs), 1);
     let latest = kitchen.get_messages("logs", "kitchen", None, 1).unwrap();
     assert_eq!(latest.messages[0].id, 4);
+}
+
+/// Replication flat out, as the old `Tests/Bench/Bench-Replication.ps1`
+/// (`-Parts Ramp -Ramp 10x0`): 4 servers in a Y (a hub pushing to 3
+/// leaves, each pushing to the hub), `NODES` nodes (10) pushing to each
+/// as fast as they're answered for `SECONDS` (30), then how far behind
+/// each server is and how long until every one has every message. Run
+/// with `cargo test --release -p bakashrot-server --test end_to_end
+/// replication_rate -- --ignored --nocapture` (`SYNC`: `full`, the
+/// default, or `normal`).
+#[test]
+#[ignore]
+fn replication_rate() {
+    let env =
+        |name: &str, default: u64| std::env::var(name).map_or(default, |v| v.parse().unwrap());
+    let (nodes, seconds) = (env("NODES", 10), env("SECONDS", 30));
+    let sync = std::env::var("SYNC").unwrap_or_else(|_| "full".into());
+    let batch = env("BATCH", 1000);
+    // Free ports first: every server's push_to names the others.
+    let addresses: Vec<String> = (0..4)
+        .map(|_| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().to_string()
+        })
+        .collect();
+    let ca = Ca::create("Bench CA", 10).unwrap();
+    let servers: Vec<Running> = (0..4)
+        .map(|n| {
+            let push_to = match n {
+                0 => addresses[1..].join("\", \""),
+                _ => addresses[0].clone(),
+            };
+            let settings = format!(
+                "synchronous = \"{sync}\"\n\n[replication]\npush_to = [\"{push_to}\"]\n\
+                 accept_from = [\"127.0.0.1\"]\nbatch_size = {batch}\n"
+            );
+            let name = format!("server-{n}");
+            Running::start_in(folder(&name), ca.clone(), &name, &settings, &addresses[n])
+        })
+        .collect();
+    let json = format!(
+        r#"{{"kind":"temp","value":21.37,"pad":"{}"}}"#,
+        "x".repeat(160)
+    );
+    let clients: Vec<Client> = servers
+        .iter()
+        .enumerate()
+        .flat_map(|(s, server)| {
+            (0..nodes).map(move |n| {
+                server
+                    .connect(&server.issue(&format!("s{s}n{n}"), &["sensor"]))
+                    .unwrap()
+            })
+        })
+        .collect();
+    let mut analysts: Vec<Client> = servers
+        .iter()
+        .map(|server| {
+            server
+                .connect(&server.issue("analyst", &["analyst"]))
+                .unwrap()
+        })
+        .collect();
+    let mut counts = || -> Vec<u64> {
+        analysts
+            .iter_mut()
+            .map(|analyst| {
+                let result = analyst.query("SELECT COUNT(*) AS n FROM data").unwrap();
+                result[r#"{"columns":["n"],"rows":[[""#.len()..result.len() - 4]
+                    .parse()
+                    .unwrap()
+            })
+            .collect()
+    };
+
+    let start = Instant::now();
+    let until = start + Duration::from_secs(seconds);
+    let threads: Vec<_> = clients
+        .into_iter()
+        .map(|mut client| {
+            let json = json.clone();
+            std::thread::spawn(move || {
+                let (mut pushed, mut slowest) = (0u64, Duration::ZERO);
+                while Instant::now() < until {
+                    let push = Instant::now();
+                    client.push("logs", &json).unwrap();
+                    slowest = slowest.max(push.elapsed());
+                    pushed += 1;
+                }
+                (pushed, slowest)
+            })
+        })
+        .collect();
+    let results: Vec<(u64, Duration)> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    let pushing = start.elapsed().as_secs_f64();
+    let total: u64 = results.iter().map(|(pushed, _)| pushed).sum();
+    let slowest = results.iter().map(|(_, slowest)| *slowest).max().unwrap();
+    let at_end = counts();
+    let drain = Instant::now();
+    while counts().iter().any(|&count| count < total) {
+        assert!(drain.elapsed() < Duration::from_secs(300), "not drained");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let drained = drain.elapsed().as_secs_f64();
+    let behind: Vec<String> = at_end
+        .iter()
+        .map(|&count| format!("{:.1} s", (total - count) as f64 / (total as f64 / pushing)))
+        .collect();
+    println!(
+        "{sync}, 4 servers x {nodes} nodes, {seconds} s: {total} pushes, {:.0}/s, slowest {} ms; \
+         behind at the end (s of pushes; hub, leaves): {}; all everywhere {drained:.1} s later",
+        total as f64 / pushing,
+        slowest.as_millis(),
+        behind.join(", ")
+    );
+}
+
+/// Waits up to 15 s for `done`, every 100 ms.
+fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what}: not in time");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn replication() {
+    // a pushes to b (and c); b takes from 127.0.0.1, c from elsewhere only.
+    let b = Running::start_with(
+        "replication-b",
+        "\n[replication]\naccept_from = [\"127.0.0.1\"]\n",
+    );
+    let c = b.peer(
+        "replication-c",
+        "server-c",
+        "\n[replication]\naccept_from = [\"10.9.9.9\"]\n",
+    );
+    let a = b.peer(
+        "replication-a",
+        "server-a",
+        &format!(
+            "\n[replication]\npush_to = [\"{}\", \"{}\"]\nsync_interval = \"1s\"\n\
+             retry_delay = \"1s\"\n",
+            b.address, c.address
+        ),
+    );
+    let kitchen = a.issue("kitchen", &["sensor", "reader"]);
+    let mut on_a = a.connect(&kitchen).unwrap();
+    let file = bytes(2 * MIB + 5, 9);
+    on_a.push_with_attachment("logs", "{\"n\":1}", &mut Cursor::new(&file))
+        .unwrap();
+    on_a.push("logs", "{\"n\":2}").unwrap();
+    on_a.push("logs", "not json").unwrap();
+    on_a.push("sensors", "{}").unwrap();
+
+    // b gets them all, by name, with their ids, times and attachment.
+    let mut on_b = b.connect(&b.issue("watcher", &["reader"])).unwrap();
+    let read = |client: &mut Client, topic: &str| {
+        client
+            .get_messages(topic, "kitchen", Some(0), 100)
+            .map(|answer| answer.messages)
+            .unwrap_or_default()
+    };
+    wait_for("the messages on b", || {
+        read(&mut on_b, "logs").len() == 3 && read(&mut on_b, "sensors").len() == 1
+    });
+    let (sent, got) = (read(&mut on_a, "logs"), read(&mut on_b, "logs"));
+    let fields = |m: &bakashrot_proto::packets::MessageEntry| (m.id, m.pushed_at, m.data.clone());
+    assert_eq!(
+        sent.iter().map(fields).collect::<Vec<_>>(),
+        got.iter().map(fields).collect::<Vec<_>>()
+    );
+    wait_for("the attachment on b", || {
+        let mut out = Vec::new();
+        on_b.get_attachment("logs", "kitchen", 1, &mut out).is_ok() && out == file
+    });
+
+    // c doesn't take from a: not in its accept_from.
+    let mut analyst = c.connect(&c.issue("analyst", &["analyst"])).unwrap();
+    assert_eq!(
+        analyst.query("SELECT COUNT(*) AS n FROM messages").unwrap(),
+        r#"{"columns":["n"],"rows":[["0"]]}"#
+    );
+
+    // One way: b's own pushes don't go to a (b has no push_to).
+    let mut garage = b.connect(&b.issue("garage", &["sensor"])).unwrap();
+    garage.push("logs", "{}").unwrap();
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(
+        code(
+            on_a.get_messages("logs", "garage", Some(0), 10)
+                .unwrap_err()
+        ),
+        ErrorCode::UnknownName.code()
+    );
+
+    // b stopped: a links again once it's back, sends what came meanwhile,
+    // ids go on. Meanwhile a's copy of #6's attachment got damaged.
+    drop((on_b, garage));
+    let b = b.restart_after(|| {
+        assert_eq!(on_a.push("logs", "{\"n\":4}").unwrap(), 4);
+        assert_eq!(on_a.push("logs", "{\"n\":5}").unwrap(), 5);
+        let other = bytes(MIB + 1, 3);
+        let id = on_a
+            .push_with_attachment("logs", "{\"n\":6}", &mut Cursor::new(&other))
+            .unwrap();
+        assert_eq!(id, 6);
+        let raw = rusqlite::Connection::open(a.folder.join("bakashrot.sqlite")).unwrap();
+        raw.execute(
+            "UPDATE attachment_parts SET part_data = zeroblob(length(part_data)) \
+             WHERE key = (SELECT max(key) FROM attachment_parts)",
+            [],
+        )
+        .unwrap();
+    });
+    let mut on_b = b.connect(&b.issue("watcher", &["reader"])).unwrap();
+    wait_for("the messages on b, restarted", || {
+        read(&mut on_b, "logs")
+            .iter()
+            .map(|m| m.id)
+            .collect::<Vec<_>>()
+            == [1, 2, 3, 4, 5, 6]
+    });
+
+    // b refuses the damaged copy; a finds its own damaged and asks for it
+    // again, instead of sending it again and again.
+    wait_for("a's damaged copy noticed", || {
+        on_a.get_attachment("logs", "kitchen", 6, &mut Vec::new())
+            .is_err_and(|error| error.code() == ErrorCode::NotReady.code())
+    });
+    assert_eq!(
+        code(
+            on_b.get_attachment("logs", "kitchen", 6, &mut Vec::new())
+                .unwrap_err()
+        ),
+        ErrorCode::NotReady.code()
+    );
+}
+
+/// A server's `SyncState`, asked over `raw`.
+fn sync_state(raw: &mut Raw) -> SyncState {
+    raw.send(SyncStateRequest {});
+    match raw.receive() {
+        Some(Packet::SyncState(state)) => state,
+        other => panic!("expected a SyncState, got {other:?}"),
+    }
+}
+
+#[test]
+fn replication_edges() {
+    // The test plays the peer, over a raw connection.
+    let running = Running::start_with(
+        "replication-edges",
+        "\n[replication]\naccept_from = [\"127.0.0.1\"]\n\n[retention]\nold = \"1h\"\n",
+    );
+    let peer = running.issue("server-x", &["peer"]);
+    let mut raw = Raw::connect(&running, &peer);
+    let state = sync_state(&mut raw);
+    assert_eq!(
+        (state.topics, state.nodes),
+        (vec!["*".into()], vec!["*".into()])
+    );
+    assert!(state.heads.is_empty() && state.missing.is_empty());
+
+    let file = bytes(2 * MIB + 1, 5);
+    let message = |id, pushed_at, attachment| ReplicatedMessage {
+        id,
+        pushed_at,
+        data: format!("m{id}"),
+        attachment,
+    };
+    let now = 1_800_000_000_000;
+    raw.send(ReplicateMessages {
+        topic: "logs".into(),
+        node: "far".into(),
+        messages: vec![
+            message(
+                3,
+                now,
+                Some(Attachment {
+                    size: file.len() as u64,
+                    sha256: sha256(&file),
+                }),
+            ),
+            message(7, now, None),
+        ],
+    });
+    assert_eq!(raw.receive(), Some(MessagePushed { message_id: 7 }.into()));
+    // Past its age here: not stored, but counted as received.
+    raw.send(ReplicateMessages {
+        topic: "old".into(),
+        node: "far".into(),
+        messages: vec![message(1, 1000, None)],
+    });
+    assert_eq!(raw.receive(), Some(MessagePushed { message_id: 1 }.into()));
+    let mut analyst = running
+        .connect(&running.issue("analyst", &["analyst"]))
+        .unwrap();
+    assert_eq!(
+        analyst
+            .query("SELECT group_concat(topic || '#' || message_id) AS n FROM messages")
+            .unwrap(),
+        r#"{"columns":["n"],"rows":[["logs#3,logs#7"]]}"#
+    );
+    let state = sync_state(&mut raw);
+    let heads: Vec<_> = state
+        .heads
+        .iter()
+        .map(|head| (head.topic.as_str(), head.last_id))
+        .collect();
+    assert_eq!(heads, [("logs", 7), ("old", 1)]);
+    let missing: Vec<_> = state
+        .missing
+        .iter()
+        .map(|missing| (missing.message_id, missing.next_part))
+        .collect();
+    assert_eq!(missing, [(3, 0)]);
+
+    // From the part it needs only.
+    let ask = |raw: &mut Raw, message_id, from_part| {
+        raw.send(ReplicateAttachment {
+            topic: "logs".into(),
+            node: "far".into(),
+            message_id,
+            from_part,
+        })
+    };
+    ask(&mut raw, 3, 1);
+    raw.refused(ErrorCode::InvalidRequest);
+    ask(&mut raw, 7, 0);
+    raw.refused(ErrorCode::NotFound);
+
+    // Cut after its first part: it goes on from the second.
+    ask(&mut raw, 3, 0);
+    assert!(matches!(raw.receive(), Some(Packet::Continue(_))));
+    raw.send(AttachmentPart {
+        data: file[..MIB].to_vec(),
+    });
+    drop(raw);
+    let mut raw = Raw::connect(&running, &peer);
+    wait_for("the first part kept", || {
+        sync_state(&mut raw).missing[0].next_part == 1
+    });
+    ask(&mut raw, 3, 1);
+    assert!(matches!(raw.receive(), Some(Packet::Continue(_))));
+    for part in file[MIB..].chunks(MIB) {
+        raw.send(AttachmentPart {
+            data: part.to_vec(),
+        });
+    }
+    assert_eq!(raw.receive(), Some(MessagePushed { message_id: 3 }.into()));
+    let mut reader = running
+        .connect(&running.issue("watcher", &["reader"]))
+        .unwrap();
+    let mut out = Vec::new();
+    reader.get_attachment("logs", "far", 3, &mut out).unwrap();
+    assert!(out == file);
+    assert!(sync_state(&mut raw).missing.is_empty());
+
+    // Not matching its SHA-256: refused, asked for again from the start.
+    raw.send(ReplicateMessages {
+        topic: "logs".into(),
+        node: "far".into(),
+        messages: vec![message(
+            8,
+            now,
+            Some(Attachment {
+                size: 10,
+                sha256: [0; 32],
+            }),
+        )],
+    });
+    assert_eq!(raw.receive(), Some(MessagePushed { message_id: 8 }.into()));
+    ask(&mut raw, 8, 0);
+    assert!(matches!(raw.receive(), Some(Packet::Continue(_))));
+    raw.send(AttachmentPart { data: vec![1; 10] });
+    raw.refused(ErrorCode::DataMismatch);
+    assert_eq!(sync_state(&mut raw).missing[0].next_part, 0);
+
+    // A certificate whose roles take nothing: refused.
+    let mut other = Raw::connect(&running, &running.issue("nosy", &["reader"]));
+    let state = sync_state(&mut other);
+    assert!(state.topics.is_empty() && state.heads.is_empty());
+    other.send(ReplicateMessages {
+        topic: "logs".into(),
+        node: "far".into(),
+        messages: vec![message(9, now, None)],
+    });
+    other.refused(ErrorCode::NotAllowed);
 }

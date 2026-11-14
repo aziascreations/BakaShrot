@@ -58,7 +58,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional, Union
 
-__version__ = "0.0.1"
+__version__ = "0.2.0"
 
 __all__ = [
     "Client", "Message", "MessagesPage", "NamesList",

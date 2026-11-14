@@ -128,6 +128,30 @@ impl Permissions {
                 .any(|role| role.accept_topics.matches(topic) && role.accept_nodes.matches(node))
     }
 
+    /// The topics and the nodes taken from it, as `SyncState` lists them:
+    /// its roles' `accept_*` (of those that accept topics), none twice.
+    /// What's taken is still [`Permissions::accepts`]'.
+    pub fn accepted(&self) -> (Vec<String>, Vec<String>) {
+        let (mut topics, mut nodes) = (Vec::<String>::new(), Vec::<String>::new());
+        for role in self
+            .roles
+            .iter()
+            .filter(|role| !role.accept_topics.is_empty())
+        {
+            for (list, entries) in [
+                (&mut topics, role.accept_topics.entries()),
+                (&mut nodes, role.accept_nodes.entries()),
+            ] {
+                for entry in entries {
+                    if !list.iter().any(|known| names_equal(known, entry)) {
+                        list.push(entry.clone());
+                    }
+                }
+            }
+        }
+        (topics, nodes)
+    }
+
     /// Whether it replicates at all: a peer.
     pub fn replicates(&self) -> bool {
         self.roles

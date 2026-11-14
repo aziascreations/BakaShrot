@@ -80,8 +80,9 @@ together, one disk flush for all.
 |---|---|
 | `push(topic, node, pushed_at, data)` | the next id of its stream, which it returns; the stream is made if new |
 | `start_upload(size, sha256)`, `write_part(id, part, data)`, `push_with_attachment(id, ...)`, `cancel_upload(id)` | a push with an attachment: its parts first, then the message with it |
-| `replicate(topic, node, messages, max_attachment_size)` | a peer's messages, with their ids; ones already here are kept |
+| `replicate(topic, node, messages, max_attachment_size, skip_before)` | a peer's messages, with their ids; ones already here are kept; ones pushed before `skip_before` (past their age here) only counted in `last_id` |
 | `write_part`, `finish_replicated(id, matches)` | a replicated attachment's parts, then ready (or started over) |
+| `damaged(id)` | a ready attachment found not matching its SHA-256: its parts dropped, asked for again (`replicating`) |
 | `delete_before(topic, cutoff, limit)` | retention |
 | `purge_attachments(max_parts)` | deleted messages' attachments |
 | `Writer::vacuum()` (outside a batch) | the file shrunk to what it holds: the old server's `vacuum` command |
@@ -102,6 +103,7 @@ read while the writer writes. Answers are the protocol's own types:
 | `messages(topic, node, after, limit)` | `Messages`: after an id in order, or the last ones; about 1 MiB at most (a bigger message alone), `more` if others follow | a range of keys |
 | `topics()`, `nodes()` | the names with messages | `streams` |
 | `heads()`, `last_id(topic, node)` | each stream's last id: `SyncState` | `streams` |
+| `to_replicate(topic, node, after, limit)` | messages after an id as replication sends them (attachments' SHA-256s), about 1 MiB at most | a range of keys |
 | `missing_attachments(limit)` | replicated attachments not all here, from which part | `attachments` (index on states) |
 | `attachment(topic, node, id)`, `read_part(id, part)` | an attachment, its parts | the message's key; a part's key |
 
@@ -116,7 +118,7 @@ One table, a state each:
 | State | Meaning | Next |
 |---|---|---|
 | `uploading` | a push's attachment, parts coming, no message yet (`message_key` NULL) | all parts and the SHA-256 match: the message is stored and the attachment `ready`, one transaction. Cut short: deleted with its parts (and every one left at start) |
-| `replicating` | its message came from a peer with its size and SHA-256; parts come after | asked from part `received / 1 MiB` on; all came and match: `ready`, else started over |
+| `replicating` | its message came from a peer with its size and SHA-256; parts come after | asked from part `received / 1 MiB` on; all came and match: `ready`, else started over (also at start, all came but not checked) |
 | `ready` | all here, checked | readable |
 | `too_big` | bigger than this server's `max_attachment_size` | never asked for; its message is kept |
 | `deleting` | its message was deleted (a trigger) | parts deleted in batches, then the row |

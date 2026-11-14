@@ -6,7 +6,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.100"
 license = "CC0-1.0"
@@ -24,6 +24,12 @@ missing_docs = "warn"
 all = { level = "warn", priority = -1 }
 
 [profile.release]
+# Optimized for size: 25-31% smaller programs and DLL (the server 6.6 MB
+# to 4.7 MB), about 5% fewer pushes with `normal` (none with `full`, the
+# disk's), the same handshakes and attachments. Measured 2026-11-14;
+# "z" is barely smaller, the C (aws-lc, SQLite) kept at 3 adds 1.2 MB for
+# nothing measurable.
+opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true

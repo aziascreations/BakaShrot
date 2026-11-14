@@ -2,7 +2,7 @@
 //! a time (`Source/docs/protocol.md`).
 
 use crate::writer::Write;
-use crate::{Shared, now};
+use crate::{Shared, accept_from, now};
 use aws_lc_rs::digest;
 use bakashrot_config::Permissions;
 use bakashrot_pki::Identity;
@@ -12,11 +12,11 @@ use bakashrot_proto::packets::{
     Attachment, AttachmentPart, Continue, GetAttachment, GetMessages, ListNames, MessagePushed,
     Messages, NameKind, NamesList, PushMessage, Query, QueryResult, RequestRefused, Welcome,
 };
-use bakashrot_proto::{ErrorCode, Packet, PacketType, frame};
+use bakashrot_proto::{ErrorCode, Packet, frame};
 use bakashrot_storage::AttachmentState;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::VecDeque;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -39,27 +39,30 @@ const PART_TIMEOUT: Duration = Duration::from_secs(30);
 /// next ones wait (the client with them, through TCP).
 const PARTS_IN_FLIGHT: usize = 4;
 
-type Frames = Framed<TlsStream<TcpStream>, LengthDelimitedCodec>;
+pub(crate) type Frames = Framed<TlsStream<TcpStream>, LengthDelimitedCodec>;
 
 /// Serves one connection until it ends, logging why.
 pub(crate) async fn handle(shared: Arc<Shared>, tcp: TcpStream, peer: SocketAddr) {
-    match serve(&shared, tcp).await {
+    match serve(&shared, tcp, peer.ip()).await {
         Ok(node) => debug!("{peer} ({node}): closed"),
         Err(why) => info!("{peer}: {why}"),
     }
 }
 
 /// Who it is once checked: its node, its certificate's serial (for later
-/// revocations), what it may do.
-struct Peer {
-    node: String,
+/// revocations), what it may do, where it connects from.
+pub(crate) struct Peer {
+    pub(crate) node: String,
     serial: Vec<u8>,
-    permissions: Permissions,
+    pub(crate) permissions: Permissions,
+    pub(crate) address: IpAddr,
+    /// Whether `accept_from` has it, once a replication request asked.
+    pub(crate) accepted: Option<bool>,
 }
 
-async fn serve(shared: &Arc<Shared>, tcp: TcpStream) -> Result<String, String> {
+async fn serve(shared: &Arc<Shared>, tcp: TcpStream, address: IpAddr) -> Result<String, String> {
     tcp.set_nodelay(true).map_err(|error| error.to_string())?;
-    let (mut frames, peer) = timeout(HANDSHAKE_TIMEOUT, open(shared, tcp))
+    let (mut frames, mut peer) = timeout(HANDSHAKE_TIMEOUT, open(shared, tcp, address))
         .await
         .map_err(|_| "too slow to connect".to_owned())??;
     debug!("{} connected", peer.node);
@@ -95,11 +98,15 @@ async fn serve(shared: &Arc<Shared>, tcp: TcpStream) -> Result<String, String> {
             Packet::GetMessages(get) => get_messages(shared, &peer, get).await,
             Packet::ListNames(list) => list_names(shared, &peer, list).await,
             Packet::Query(query) => self::query(shared, &peer, query).await,
-            other if is_request(other.packet_type()) => RequestRefused::new(
-                ErrorCode::InvalidRequest,
-                format!("{} isn't answered yet", other.packet_type().name()),
-            )
-            .into(),
+            Packet::SyncStateRequest(_) => accept_from::sync_state(shared, &mut peer).await,
+            Packet::ReplicateMessages(batch) => {
+                accept_from::replicate_messages(shared, &mut peer, batch).await
+            }
+            Packet::ReplicateAttachment(request) => {
+                accept_from::replicate_attachment(shared, &mut peer, &mut frames, request)
+                    .await
+                    .map_err(|why| format!("{}: {why}", peer.node))?
+            }
             other => {
                 return Err(format!(
                     "{}: sent {}, not a request",
@@ -115,7 +122,11 @@ async fn serve(shared: &Arc<Shared>, tcp: TcpStream) -> Result<String, String> {
 }
 
 /// TLS, the versions, the identity, the welcome (or the refusal).
-async fn open(shared: &Arc<Shared>, tcp: TcpStream) -> Result<(Frames, Peer), String> {
+async fn open(
+    shared: &Arc<Shared>,
+    tcp: TcpStream,
+    address: IpAddr,
+) -> Result<(Frames, Peer), String> {
     let mut stream = shared
         .acceptor
         .accept(tcp)
@@ -172,6 +183,8 @@ async fn open(shared: &Arc<Shared>, tcp: TcpStream) -> Result<(Frames, Peer), St
             node: identity.name,
             serial,
             permissions,
+            address,
+            accepted: None,
         },
     ))
 }
@@ -238,8 +251,9 @@ async fn push(
         Ok(upload) => upload,
         Err(refusal) => return Ok(refusal.into()),
     };
+    let sha256 = digest::Context::new(&digest::SHA256);
     let received = match send(frames, Continue {}.into()).await {
-        Ok(()) => receive_parts(shared, frames, upload, &attachment).await,
+        Ok(()) => receive_parts(shared, frames, upload, &attachment, 0, sha256).await,
         Err(error) => Err(error.to_string()),
     };
     let refusal = match received {
@@ -264,19 +278,22 @@ async fn push(
     refusal.map(Packet::from)
 }
 
-/// Reads every part of an upload, has the writer store them while the next
-/// ones come, checks the SHA-256: the refusal if one is due (the parts all
-/// read even then), an error if the connection must close.
-async fn receive_parts(
+/// Reads an attachment's parts from `from_part` on (an upload's, or a
+/// replicated one's), has the writer store them while the next ones come,
+/// checks the SHA-256 (`sha256` has the parts before): the refusal if one
+/// is due (the parts all read even then; `DataMismatch` for the SHA-256),
+/// an error if the connection must close.
+pub(crate) async fn receive_parts(
     shared: &Arc<Shared>,
     frames: &mut Frames,
     upload: u64,
     attachment: &Attachment,
+    from_part: u64,
+    mut sha256: digest::Context,
 ) -> Result<Option<RequestRefused>, String> {
-    let mut sha256 = digest::Context::new(&digest::SHA256);
     let mut writing = VecDeque::new();
     let mut refusal = None;
-    for part in 0..attachment.part_count() {
+    for part in from_part..attachment.part_count() {
         let bytes = match timeout(PART_TIMEOUT, frames.next()).await {
             Err(_) => return Err(format!("part {part} of an attachment: too slow")),
             Ok(None) => return Err(format!("closed at part {part} of an attachment")),
@@ -495,25 +512,10 @@ async fn query(shared: &Arc<Shared>, peer: &Peer, query: Query) -> Packet {
     }
 }
 
-fn refused(code: ErrorCode, reason: String) -> Packet {
+pub(crate) fn refused(code: ErrorCode, reason: String) -> Packet {
     RequestRefused::new(code, reason).into()
 }
 
-/// The packets a client or a peer sends: the others are answers.
-fn is_request(kind: PacketType) -> bool {
-    matches!(
-        kind,
-        PacketType::PushMessage
-            | PacketType::GetMessages
-            | PacketType::GetAttachment
-            | PacketType::ListNames
-            | PacketType::Query
-            | PacketType::SyncStateRequest
-            | PacketType::ReplicateMessages
-            | PacketType::ReplicateAttachment
-    )
-}
-
-async fn send(frames: &mut Frames, packet: Packet) -> std::io::Result<()> {
+pub(crate) async fn send(frames: &mut Frames, packet: Packet) -> std::io::Result<()> {
     frames.send(bytes::Bytes::from(packet.encode())).await
 }

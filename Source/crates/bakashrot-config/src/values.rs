@@ -91,14 +91,17 @@ pub(crate) fn is_peer_address(text: &str) -> bool {
     let port = port.parse::<u16>().is_ok_and(|port| port != 0);
     let host = match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
         Some(v6) => v6.parse::<Ipv6Addr>().is_ok(),
-        None => {
-            !host.is_empty()
-                && host
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
-        }
+        None => is_hostname(host),
     };
     port && host
+}
+
+/// A hostname or an IPv4 address: letters, digits, dots and dashes.
+fn is_hostname(host: &str) -> bool {
+    !host.is_empty()
+        && host
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
 }
 
 // As serde reads them (`deserialize_with`): a value that's wrong fails
@@ -147,6 +150,27 @@ pub(crate) fn peers<'de, D: Deserializer<'de>>(reader: D) -> Result<Vec<String>,
         }
     }
     Ok(peers)
+}
+
+/// Hosts without a port: IP addresses or hostnames, or `*` for all; none
+/// twice.
+pub(crate) fn hosts<'de, D: Deserializer<'de>>(reader: D) -> Result<Vec<String>, D::Error> {
+    let hosts = Vec::<String>::deserialize(reader)?;
+    for (at, host) in hosts.iter().enumerate() {
+        if host != "*" && !is_hostname(host) && host.parse::<Ipv6Addr>().is_err() {
+            return Err(D::Error::custom(format!(
+                "'{host}' isn't an IP address or a hostname (without a port), like \
+                 \"10.0.0.2\" or \"server-2.lan\", or \"*\" for all"
+            )));
+        }
+        if hosts[..at]
+            .iter()
+            .any(|before| before.eq_ignore_ascii_case(host))
+        {
+            return Err(D::Error::custom(format!("'{host}' is given twice")));
+        }
+    }
+    Ok(hosts)
 }
 
 /// A batch size, 1 to `MAX_MESSAGES_PER_PACKET`.

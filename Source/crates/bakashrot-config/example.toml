@@ -39,14 +39,17 @@ logs = "30d"
 "sensors.*" = "12h"
 "*" = "forever"
 
+# Who this server replicates with, by address. A link carries messages
+# one way: the server that dials sends, the one dialed takes them.
 [replication]
-peers = []                           # dialed: ["10.0.0.2:7000", "server-2.lan:7000"]
+push_to = []                         # dialed and sent to: ["10.0.0.2:7000", "server-2.lan:7000"]
+accept_from = []                     # taken from: ["10.0.0.2", "server-2.lan"], or ["*"]
 # The only topics replicated at all, whatever the roles say: a filter for
 # edge nodes. Without it, no filter; [] replicates nothing.
 # replicated_topics = ["logs", "alerts.*"]
 retry_delay = "10s"
 sync_interval = "5s"
-batch_size = 100                     # messages per packet, 1-10000
+batch_size = 1000                    # messages per packet, 1-10000
 
 # What certificates with a role may do. A certificate gets everything its
 # roles allow; one without any role listed here is refused. Every key is

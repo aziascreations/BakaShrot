@@ -11,12 +11,15 @@
 //!   a revoked certificate's connection is dropped at its next request.
 //! - [`Server::apply_retention`]: deletes messages past their topic's age
 //!   (`retention.rs`).
-//!
-//! What it answers so far: pushes and their attachments, messages,
-//! attachments, names and queries. Replication comes with step 11
-//! (`../../revamp.md`, "Plan").
+//! - [`Server::replicate`]: sends what the servers of `push_to` lack
+//!   (`push_to.rs`); those dialing in, if in `accept_from`, are answered
+//!   by `accept_from.rs`.
+//! - [`Server::stop`]: commits what was queued for the writer, refuses
+//!   the rest.
 
+mod accept_from;
 mod connection;
+mod push_to;
 mod retention;
 mod writer;
 
@@ -30,7 +33,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{info, warn};
 use writer::Pushes;
 
@@ -52,6 +55,8 @@ struct Shared {
     /// The server's own name: its certificate's.
     name: String,
     acceptor: TlsAcceptor,
+    /// To dial the servers of `push_to`.
+    connector: TlsConnector,
     revocations: SharedRevocations,
     /// The CA's certificate, to check CRLs with.
     ca: String,
@@ -84,6 +89,8 @@ impl Server {
         let revocations = load_revocations(server.crl.as_deref(), &ca)?.shared();
         let tls = tls::server_config(&ca, &certificate, &key, revocations.clone())
             .map_err(|error| format!("the server's TLS: {error}"))?;
+        let dialing = tls::client_config(&ca, &certificate, &key, revocations.clone())
+            .map_err(|error| format!("the TLS to peers: {error}"))?;
         let database = Database::open(&server.database, server.synchronous)
             .map_err(|error| error.to_string())?;
         let pushes = Pushes::start(database.writer().map_err(|error| error.to_string())?)
@@ -93,6 +100,7 @@ impl Server {
             shared: Arc::new(Shared {
                 name,
                 acceptor: TlsAcceptor::from(tls),
+                connector: TlsConnector::from(dialing),
                 revocations,
                 ca,
                 database,
@@ -151,6 +159,20 @@ impl Server {
         retention::run(&self.shared).await
     }
 
+    /// Keeps a link to each server of `[replication] push_to`, sending
+    /// each what it lacks (again at once after sending, after `sync_interval`
+    /// when there was nothing). Never returns.
+    pub async fn replicate(&self) {
+        push_to::run(self.shared.clone()).await
+    }
+
+    /// Stops writing: every write queued before is committed (and so
+    /// answered), the ones after are refused (`ServerError`, the server
+    /// stopping). Then the server can be dropped, its runtime stopped.
+    pub async fn stop(&self) {
+        self.shared.pushes.stop().await;
+    }
+
     /// Reloads the CRL file now: how many certificates it revokes.
     pub fn reload_revocations(&self) -> Result<usize, String> {
         let shared = &self.shared;
@@ -173,6 +195,23 @@ impl Shared {
     ) -> Result<T, RequestRefused> {
         self.pooled(|shared| &shared.readers, Database::reader, read)
             .await
+    }
+
+    /// The SHA-256 of an attachment's stored `parts`, read back one at a
+    /// time (to go on with more, or to compare).
+    async fn hash_parts(
+        self: &Arc<Self>,
+        attachment_id: i64,
+        parts: std::ops::Range<u64>,
+    ) -> Result<aws_lc_rs::digest::Context, RequestRefused> {
+        let mut sha256 = aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA256);
+        for part in parts {
+            let data = self
+                .read(move |reader| reader.read_part(attachment_id, part))
+                .await?;
+            sha256.update(&data);
+        }
+        Ok(sha256)
     }
 
     /// Runs a client's SQL on a query connection, off the async threads.

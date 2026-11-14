@@ -2,7 +2,8 @@
 //!
 //! - [`Server`]: where it listens, its files, its topics, its database.
 //! - [`Retention`]: how long each topic's messages are kept.
-//! - [`Replication`]: the peers it dials, what it replicates, how often.
+//! - [`Replication`]: the servers it sends to and takes from, what it
+//!   replicates, how often.
 //! - [`Role`]: what certificates with a role may do; [`Permissions`]: what
 //!   a certificate's roles allow together.
 //!
@@ -200,20 +201,26 @@ impl Retention {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Replication {
-    /// The peers it dials (`host:port`); peers dialing in come by
-    /// themselves. What's replicated with each is its roles'.
+    /// The servers it dials and sends to (`host:port`). What's sent to
+    /// each is its roles' `send_*`.
     #[serde(deserialize_with = "values::peers")]
-    pub peers: Vec<String>,
+    pub push_to: Vec<String>,
+    /// The servers it takes replicated messages from: IP addresses or
+    /// hostnames, `*` for all; none by default. What's taken is their
+    /// roles' `accept_*`.
+    #[serde(deserialize_with = "values::hosts")]
+    pub accept_from: Vec<String>,
     /// The only topics replicated at all, whatever the roles say (an edge
     /// node's filter); none: no filter.
     pub replicated_topics: Option<NameList>,
     /// How long to wait before dialing a peer again; 10s by default.
     #[serde(deserialize_with = "values::duration")]
     pub retry_delay: Duration,
-    /// How often a linked peer is sent what it misses; 5s by default.
+    /// How long a link waits, once nothing was left to send, before it
+    /// looks again; 5s by default.
     #[serde(deserialize_with = "values::duration")]
     pub sync_interval: Duration,
-    /// The most messages sent to a peer per packet; 100 by default.
+    /// The most messages sent to a peer per packet; 1000 by default.
     #[serde(deserialize_with = "values::batch_size")]
     pub batch_size: u32,
 }
@@ -221,11 +228,12 @@ pub struct Replication {
 impl Default for Replication {
     fn default() -> Self {
         Replication {
-            peers: Vec::new(),
+            push_to: Vec::new(),
+            accept_from: Vec::new(),
             replicated_topics: None,
             retry_delay: Duration::from_secs(10),
             sync_interval: Duration::from_secs(5),
-            batch_size: 100,
+            batch_size: 1000,
         }
     }
 }

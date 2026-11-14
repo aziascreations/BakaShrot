@@ -1,12 +1,12 @@
 # BakaShrot revamp
 
 Started 2026-11-13: what it should change, what's decided, what's still
-open, and the plan. Steps 0 to 10 of the plan are done (the workspace,
+open, and the plan. Steps 0 to 11 of the plan are done (the workspace,
 `bakashrot-proto`, `bakashrot-pki` and `bakashrot-cert`,
 `bakashrot-config`, `bakashrot-storage`, `bakashrot-server` and
-`bakashrot-client` answering every request but replication's,
-attachments included, the C DLL with its C, PureBasic and Python
-bindings, the `bakashrot` tool, retention), see "Plan".
+`bakashrot-client` answering every request, attachments included, the C
+DLL with its C, PureBasic and Python bindings, the `bakashrot` tool,
+retention, replication), see "Plan".
 
 - **Old implementation:** `OldSource/`, PureBasic, protocol 6, schema v8.
   Frozen as the reference: it still builds and passes its suites from there
@@ -150,7 +150,8 @@ Also decided (2026-11-13):
   - **no peer sections:** peers are roles too (replicating with a server
     whose certificate has a role with `send_topics` / `accept_topics`,
     whichever end dials); the config only lists the addresses it dials
-    (`[replication] peers`);
+    (`[replication] peers`; `push_to` and `accept_from` since 2026-11-14,
+    "Replication by address" below);
   - **no default topic** (dropped from the protocol too, 2026-11-13): a
     push always names its topic;
   - `[replication] replicated_topics`, optional: the only topics
@@ -215,6 +216,34 @@ Also decided (2026-11-13):
   `getrandom`) and RDRAND, as BoringSSL and `ring` do. The jitter seeding
   took 25 ms in every process at its first connection: a tool command went
   from 36 ms to 11 ms (the old tools: 8).
+- **Replication by address** (2026-11-14), `Source/docs/config.md`:
+  - **each server's config says who it replicates with**, by IP or
+    hostname: `[replication] push_to`, the servers it dials and sends to
+    (`host:port`, was `peers`), and `accept_from`, the servers whose
+    replicated messages it takes (`"*"` for all). Not in the certificates:
+    changing who replicates with whom would mean reissuing them;
+  - **a link carries data one way**, from the server that dials to the one
+    dialed (as the old links did); the other way is the other server's
+    own `push_to`. The roles' `send_*` / `accept_*` still say which
+    topics and nodes;
+  - **`accept_from` is for servers only:** clients push wherever their
+    roles allow, as now. A node pushing to one server only stays the
+    config's rule, not checked, as in the old version
+    (`OldSource/Design/ReplicationIssues.md` #1).
+- **Operations** (2026-11-14), `Source/docs/server.md`, "Running";
+  `Source/README.md`, "Releases":
+  - **signals only:** SIGTERM and SIGINT on Linux; Ctrl+C, Ctrl+Break or
+    the console closed on Windows; each stops it cleanly. No Windows
+    service mode (a tool like NSSM if needed); more only if needed later;
+  - **no console commands:** the old `quit`, `restart`, `vacuum`,
+    `names`, `help` dropped; maybe an admin channel later;
+  - **logs to the console only**, the easiest to redirect;
+  - **Docker at the end** (step 13);
+  - **a release per platform** (Windows x64, Linux x86-64): the
+    programs, the client library and its bindings, the example configs,
+    the docs, the licenses, and a smoke test;
+  - **the Python wheel has the library in it**, for a simple install;
+  - **version 0.2.0.**
 
 ## Proposed, to confirm
 
@@ -227,14 +256,8 @@ come back as text either way; only what SQL computes would gain
 
 ## Open questions
 
-- **"One server per node"** (a node pushes to one server only,
-  `OldSource/Design/ReplicationIssues.md` #1): a CA certificate is valid on
-  every server, so which server takes a node's pushes must come from the
-  server's config (a list of nodes, or a role per server).
 - **A handle-based DLL API** (several connections per process, old open item
   10): later maybe, the owner's call (one connection per process for now).
-- **Running as a service** (old open item 1): designed in from the start,
-  e.g. a Windows service mode, a stop signal, no console needed.
 - **Tests:** keep the PowerShell suites (ported to certificates and the new
   config), move them to Rust integration tests, or both; a single runner and
   CI either way (old open item 7).
@@ -272,9 +295,9 @@ Described in `OldSource/Notes.md` and `OldSource/Design/`, tested by
 - Storage: one writer, WAL, `Synchronous = FULL` by default, `node_heads`
   so ids never go back, the `messages` and `browse` views
   (`Design/StorageConcurrency.md`).
-- The console commands (`quit`, `restart`, `vacuum`, `names`, `help`).
 - Docker image, release zip, Python wheel (`Design/Release.md`,
-  `OldSource/Docker/`).
+  `OldSource/Docker/`). Not the console commands (dropped 2026-11-14,
+  "Operations").
 
 ## The old open items
 
@@ -282,7 +305,7 @@ From `OldSource/Notes.md`, "Open items":
 
 - **Gone by design:** the custom crypto and its small issues (items 15-16),
   keys in plain-text inis as the identity (13, partly: private keys still
-  sit in files), the console requirement (1, if designed in), the list and
+  sit in files), the console requirement (1: signals, no console commands), the list and
   threading traps, the 5.73 quirks.
 - **To carry over and fix:** a corrupted stored attachment re-sent forever
   (3, the proposed fix is written there); gaps in a pair's ids not detected
@@ -327,9 +350,9 @@ hand in each).
 | 8 | Tools | push, get, get-messages `--follow`, query, list (resolve is gone: names only), reading `client.toml` | The tools' parts of the old suites | Decided 2026-11-14 | Done 2026-11-14 |
 | 9 | Attachments | Every layer: packets, storage, upload and download, client, DLL, tools | `Attachments-Test`, `AttachmentEdges-Test` | Decided 2026-11-14 | Done 2026-11-14 |
 | 10 | Retention | Background deletion, `node_heads` kept, attachments cleaned up | `Retention-Test`'s local checks | | Done 2026-11-14 |
-| 11 | Replication | Peer links, sync state, batches by name, wildcards, attachments, skipping on arrival | `Names-Test` (replication), `Restart-Test`; the corrupted-attachment fix | One server per node | |
-| 12 | Operations | Console commands, service and signals, logs, Docker, release, wheel | Runs unattended, stops cleanly, the release's smoke test | The service | |
-| 13 | Finish | One test runner, end-to-end tests in CI, the bench | Push speed against the old ~17,000 msg/s (4 servers) | | |
+| 11 | Replication | Peer links, sync state, batches by name, wildcards, attachments, skipping on arrival | `Names-Test` (replication), `Restart-Test`; the corrupted-attachment fix | Decided 2026-11-14 | Done 2026-11-14 |
+| 12 | Operations | Signals and a clean stop, logs, release, wheel | Runs unattended, stops cleanly, the release's smoke test | Decided 2026-11-14 | Done 2026-11-14 |
+| 13 | Finish | One test runner, end-to-end tests in CI, the bench, Docker | Push speed against the old ~17,000 msg/s (4 servers) | | |
 
 Each step ends with its tests passing and its docs updated (the crate's
 docs, `Source/docs/`, this file's status), then a commit when the owner
@@ -617,3 +640,90 @@ asks. Open questions get settled at the step that needs them.
 - **Left for replication (step 11):** the peer keeping its own copies,
   and what arrives already past its age (counted as received, not
   stored).
+
+### Done: step 11 (2026-11-14)
+
+`Source/docs/server.md` ("Replication"), `config.md` ("Peers").
+
+- **The config:** `[replication] push_to` (was `peers`) and
+  `accept_from` (IPs or hostnames, `"*"`), as decided.
+- **Sending** (`push_to.rs`): a link per server of `push_to`, dialed
+  again after `retry_delay`, failures logged once until they change;
+  a check-in (again at once after sending, after `sync_interval` when
+  idle): `SyncState`, then the messages it
+  lacks by name (`batch_size`, about 1 MiB a batch), then the attachments
+  it lacks from their part. The corrupted-attachment fix (old open item
+  3): a copy the other server says doesn't match is read back, and if
+  damaged dropped and asked for again from this server's peers, instead
+  of sent at every check-in.
+- **Receiving** (`accept_from.rs`): only from `accept_from` (hostnames
+  looked up at a connection's first replication request), only what the
+  roles' `accept_*` allow; ids and times kept, ones past their age only
+  counted; attachments resumed from their part (the parts here read back
+  for the SHA-256), started over when they don't match.
+- **Storage:** `replicate(..., skip_before)`, `to_replicate()`,
+  `damaged()`; a replicated attachment all of whose parts came but that
+  wasn't checked (a stop in between) starts over at the next start.
+- **Tests:** `end_to_end.rs`'s `replication` (three servers: by name,
+  ids, times and attachments; not from outside `accept_from`; one way;
+  a server stopped and started again on its database, ids going on; a
+  damaged copy caught) and `replication_edges` (the test as the peer);
+  storage's `replication` (skipped on arrival, `to_replicate`,
+  `damaged`); the config's (`push_to`, `accept_from`, `peers` refused,
+  `accepted()`).
+- **Measured** (`Source/docs/server.md`, "Replication, against the old
+  server"): 4 servers in a Y, 10 nodes each flat out: 16,000-16,300
+  pushes/s with `full` (old: 16,638), 35,300-37,500 with `normal` (old:
+  33,895), and the servers keeping up while pushing (under 1 s behind,
+  the old ones 9-11 s), a link checking in again at once after sending;
+  `batch_size` 1000 by default (was 100).
+- **Not done:** `SyncState`'s 256 missing attachments are the oldest
+  ones, whichever peer can send them: with several peers, ones none of
+  them has can hold back newer ones. Gaps in a pair's ids (old item 6)
+  still not detected.
+
+### Done: step 12 (2026-11-14)
+
+`Source/docs/server.md` ("Running"), `Source/README.md` ("Releases").
+
+- **Stopping:** `bakashrot-server` waits for SIGTERM or SIGINT (Linux),
+  Ctrl+C, Ctrl+Break or its console closed (Windows), stops taking
+  connections, then `Server::stop()`: the writer's thread commits what
+  was queued before (so every push answered is stored), refuses what
+  comes after (`ServerError`, "the server is stopping"), and it exits
+  with 0.
+- **Logs:** the console, no colour codes when redirected,
+  `BAKASHROT_LOG` for the level. No console commands.
+- **The release:** `Source/release.py`, for the platform it runs on:
+  builds, packages into `target/dist/bakashrot-0.2.0-<platform>/` (the
+  three programs, the library, `bakashrot.h`, the PureBasic files,
+  `bakashrot.py` and its wheel, the example configs, the docs, a
+  `README.txt`, `LICENSE.txt`, `THIRD-PARTY.txt` from `cargo metadata`),
+  smoke-tests it, archives it (`.zip`, `.tar.gz`). The smoke test: a CA
+  and certificates by `bakashrot-cert`, the server on a free port, the
+  tool's push (and a 3 MB attachment), `latest`, `attachment`,
+  `messages`, `list`, `query`; Python through the library; the wheel
+  installed by pip, used with no path; the server stopped by Ctrl+Break
+  (SIGTERM on Linux), exiting cleanly. Passes on Windows (9.6 MB zip).
+- **The wheel:** `bindings/python/make_wheel.py`, as the old one (only
+  the standard library, the same inputs giving the same wheel):
+  `win_amd64`, or `manylinux_<glibc>_x86_64` from the glibc it's built
+  against; the licenses in it.
+- **CI** (`.github/workflows/source.yml`): a `release` job on a `v*` tag
+  or by hand, Windows and Linux (in `manylinux_2_28`), keeping the
+  archives.
+- **The version:** 0.2.0, the workspace's; `release.py` checks
+  `bakashrot.py`'s is the same.
+- **Size:** the release profile optimizes for size (`opt-level = "s"`,
+  with LTO, one codegen unit, stripped): the server 6.6 MB to 4.7 MB,
+  `bakashrot` 3.9 to 2.8, `bakashrot-cert` 2.5 to 1.7, the DLL 3.4 to
+  2.6 (Windows). About 5% fewer pushes with `normal`, the same with
+  `full`, attachments and tool commands. Tried too: `"z"` (2-4% smaller
+  still), the C code apart at 3 (1.2 MB more, no faster), `/Gy /Gw` for
+  the C (100 KB). Not tried: `panic = "abort"` (the DLL catches panics,
+  and a panic in one connection's task would end the server).
+- **Tests:** `end_to_end.rs`'s `stops_cleanly` (eight nodes pushing flat
+  out, stopped under them: every answered push there after a restart);
+  `restart_after()` stops as the program does.
+- **Not done:** the Linux release and the CI job haven't run yet (no
+  Linux machine here; the push is waiting). Docker: step 13.

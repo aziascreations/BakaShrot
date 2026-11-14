@@ -12,7 +12,7 @@ Decided in `../../revamp.md`, "Decided".
 |---|---|
 | `[server]` | where it listens, the certificate files, the database, its topics, how pushes are flushed, attachments, retention's pace |
 | `[retention]` | how long each topic's messages are kept |
-| `[replication]` | the peers it dials, the topics replicated at all, retry and sync pace, batch size |
+| `[replication]` | the servers it sends to and takes from, the topics replicated at all, retry and sync pace, batch size |
 | `[roles.<name>]` | what certificates with that role may do |
 
 Unknown keys are refused, so a typo or a key of the old ini is caught.
@@ -47,11 +47,20 @@ default topic: a push always names its topic (protocol 7 has none).
 
 ## Peers
 
-Peers are roles too: a server whose certificate has a role with
-`send_topics` or `accept_topics` replicates, whichever end dialed. The
-config only lists where to dial (`[replication] peers`, `host:port`): a
-certificate can't say where a server is. Each side applies its own roles
-to the other, as before each side had its own peer section.
+Who replicates with whom is each server's config, by address (not the
+certificates: that would mean reissuing them):
+
+- **`[replication] push_to`:** the servers it dials and sends to,
+  `host:port`.
+- **`[replication] accept_from`:** the servers it takes replicated
+  messages from, IP addresses or hostnames without a port, `"*"` for
+  all; none by default. Clients aren't concerned: they push wherever
+  their roles allow.
+
+A link carries messages one way: the server that dials sends, the one
+dialed takes them. What's sent and taken is still the roles': the other
+server's certificate's roles here, their `send_*` for what's sent to it,
+their `accept_*` for what's taken from it.
 
 `[replication] replicated_topics`, optional, filters every peer's
 replication whatever its roles say: an edge node that keeps some topics to
@@ -85,7 +94,7 @@ server; each server has its own.
 |---|---|
 | `PrivateKey`, `[BakaShrot] Node` | `ca`, `certificate`, `key`: the node is the certificate's name |
 | `[BakaShrot.Client.*]`: keys, `Node`, `Allow*` | `[roles.*]`, the node and roles from the certificate |
-| `[BakaShrot.Peer.*]`: `Host`, `Port`, `Node`, `PublicKey`, topic and node lists | `[replication] peers` (addresses), the lists in the peer's roles |
+| `[BakaShrot.Peer.*]`: `Host`, `Port`, `Node`, `PublicKey`, topic and node lists | `[replication] push_to` and `accept_from` (addresses), the lists in the peer's roles |
 | `ReplicatingTopics` | each peer role's `send_topics` / `accept_topics`; `replicated_topics` filters them all |
 | topic and node ids, pins, ranges, `[BakaShrot.Nodes]` | names only: ids are the database's |
 | `DefaultTopic` | dropped: a push always names its topic |

@@ -13,6 +13,7 @@ Source/
   Cargo.toml              the workspace: shared lints, release profile
   rust-toolchain.toml     the pinned toolchain (1.100.0)
   check.ps1               what CI runs: fmt, clippy, tests, docs
+  release.py              a release for this platform: build, package, smoke test
   docs/                   designs across crates: protocol.md, certificates.md, oid.md, config.md,
                           storage.md, server.md, client.md
   crates/
@@ -27,7 +28,7 @@ Source/
   bindings/
     c/                    bakashrot.h, generated from bakashrot-capi
     purebasic/            the prototypes and error codes, as OldSource/Client/'s
-    python/               bakashrot.py over the DLL, check_bakashrot.py (its wheel: 12)
+    python/               bakashrot.py over the DLL, check_bakashrot.py, make_wheel.py
   .cargo/config.toml      the C runtime linked statically on Windows
   tests/                  (13) end-to-end suites across processes
 ```
@@ -44,6 +45,26 @@ them; the DLL and the tools only use `client`.
   CI checks (`../.github/workflows/source.yml`), warnings are errors.
 - Output in `target/` (git-ignored). Generated keys and certificates never
   go in git.
+
+## Releases
+
+`python release.py` (Python 3.11+) on Windows x64 or Linux x86-64 builds
+that platform's release into `target/dist/bakashrot-<version>-<platform>/`
+and its archive (`.zip`, `.tar.gz`): the server, `bakashrot`,
+`bakashrot-cert`, the client library with its C header and PureBasic
+prototypes, `bakashrot.py` and a wheel with the library in it
+(`bindings/python/make_wheel.py`), the example configs, `docs/`, a
+`README.txt`, the licenses (`THIRD-PARTY.txt`: every crate built in, from
+`cargo metadata`). Then it checks it, in the folder's `_test/`: a CA and
+certificates, the server on a free port, the tool pushing (an attachment
+too), reading back, listing and querying, Python through the library and
+the wheel installed by pip, the server stopped by SIGTERM (Ctrl+Break on
+Windows), which must end cleanly (`_test/` kept if not); `--skip-test`.
+
+CI runs it on a version tag (`v*`) or by hand, keeping the archives: the
+Linux one in a manylinux 2.28 container, so it runs with glibc 2.28 and
+later. The version is the workspace's (`Cargo.toml`), and
+`bindings/python/bakashrot.py`'s `__version__` must be the same.
 
 ## Conventions
 

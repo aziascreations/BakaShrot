@@ -98,7 +98,7 @@ impl Database {
                 path.display()
             )));
         }
-        crate::batch::delete_uploads(&transaction)?;
+        crate::batch::clean_up(&transaction)?;
         transaction.commit()?;
         Ok(database)
     }

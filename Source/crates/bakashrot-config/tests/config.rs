@@ -42,7 +42,8 @@ fn the_example() {
     assert!(!server.has_topic("sensors"));
     assert_eq!(server.synchronous, Synchronous::Full);
     assert_eq!(server.max_attachment_size, 1 << 30);
-    assert_eq!(config.replication.peers, Vec::<String>::new());
+    assert_eq!(config.replication.push_to, Vec::<String>::new());
+    assert_eq!(config.replication.accept_from, Vec::<String>::new());
     assert_eq!(config.retention.age("logs"), days(30));
     assert_eq!(
         config.retention.age("sensors.kitchen"),
@@ -65,7 +66,7 @@ fn defaults() {
     assert_eq!(config.retention.age("logs"), None);
     assert_eq!(config.replication.retry_delay, Duration::from_secs(10));
     assert_eq!(config.replication.sync_interval, Duration::from_secs(5));
-    assert_eq!(config.replication.batch_size, 100);
+    assert_eq!(config.replication.batch_size, 1000);
     assert_eq!(config.replication.replicated_topics, None);
     assert!(config.roles.is_empty());
     assert!(config.permissions(&["anything"]).is_none());
@@ -81,7 +82,8 @@ max_attachment_size = 0
 retention_interval = "1h30m"
 
 [replication]
-peers = ["10.0.0.2:7000", "server-3.lan:7001", "[fd00::4]:7000"]
+push_to = ["10.0.0.2:7000", "server-3.lan:7001", "[fd00::4]:7000"]
+accept_from = ["10.0.0.2", "server-3.lan", "fd00::4"]
 retry_delay = "1m"
 sync_interval = "2s"
 batch_size = 10000
@@ -93,7 +95,8 @@ replicated_topics = ["logs"]
     assert_eq!(config.server.synchronous, Synchronous::Normal);
     assert_eq!(config.server.max_attachment_size, 0);
     assert_eq!(config.server.retention_interval, Duration::from_secs(5400));
-    assert_eq!(config.replication.peers.len(), 3);
+    assert_eq!(config.replication.push_to.len(), 3);
+    assert_eq!(config.replication.accept_from[2], "fd00::4");
     assert_eq!(config.replication.retry_delay, Duration::from_secs(60));
     assert_eq!(config.replication.batch_size, 10_000);
 }
@@ -181,6 +184,10 @@ accept_nodes = ["garage"]
     // A role without the topics replicates nothing, whatever its nodes.
     let only_peer = config.permissions(&["peer"]).unwrap();
     assert!(!only_peer.accepts("logs", "kitchen-1"));
+    // What SyncState lists: the accepting roles' lists only.
+    let strings = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(peer.accepted(), (strings(&["*"]), strings(&["garage"])));
+    assert_eq!(only_peer.accepted(), (vec![], vec![]));
 }
 
 #[test]
@@ -324,12 +331,24 @@ fn refusals() {
         ),
         // [replication]
         (
-            &with("[replication]\npeers = [\"10.0.0.2\"]\n"),
+            &with("[replication]\npush_to = [\"10.0.0.2\"]\n"),
             "isn't a host and a port",
         ),
         (
-            &with("[replication]\npeers = [\"a:1\", \"a:1\"]\n"),
+            &with("[replication]\npush_to = [\"a:1\", \"a:1\"]\n"),
             "'a:1' is given twice",
+        ),
+        (
+            &with("[replication]\naccept_from = [\"10.0.0.2:7000\"]\n"),
+            "without a port",
+        ),
+        (
+            &with("[replication]\naccept_from = [\"a.lan\", \"A.lan\"]\n"),
+            "'A.lan' is given twice",
+        ),
+        (
+            &with("[replication]\npeers = []\n"),
+            "unknown field `peers`",
         ),
         (
             &with("[replication]\nbatch_size = 0\n"),

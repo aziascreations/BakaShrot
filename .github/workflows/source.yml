@@ -1,12 +1,17 @@
 # The new sources (Source/): the same checks as Source/check.ps1, on Windows
-# and Linux. Gitea Actions runs this file too.
+# and Linux; a release of each (Source/release.py) on a version tag or when
+# run by hand. Gitea Actions runs this file too.
 name: Source
 
 on:
   push:
+    branches: ["**"]
+    # Tags aren't filtered by paths.
+    tags: ["v*"]
     paths: ["Source/**", ".github/workflows/source.yml"]
   pull_request:
     paths: ["Source/**", ".github/workflows/source.yml"]
+  workflow_dispatch:
 
 jobs:
   check:
@@ -28,3 +33,39 @@ jobs:
       - run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
+
+  release:
+    # Build, package, smoke test: target/dist/'s archive, kept as an
+    # artifact. Linux builds in manylinux 2.28 (glibc 2.28): the programs,
+    # the .so and the wheel run on systems that old.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python: python
+          - os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            python: /opt/python/cp312-cp312/bin/python
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    defaults:
+      run:
+        working-directory: Source
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.container
+        run: |
+          curl --proto '=https' -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: rustup toolchain install
+      - run: ${{ matrix.python }} release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bakashrot-${{ matrix.os }}
+          path: |
+            Source/target/dist/*.zip
+            Source/target/dist/*.tar.gz

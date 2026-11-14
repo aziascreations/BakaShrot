@@ -5,7 +5,10 @@ use crate::{
     AttachmentState, Error, Result, find_stream, message_id, message_key, part_key, stream_keys,
 };
 use bakashrot_proto::limits::{ATTACHMENT_PART_SIZE, MAX_MESSAGE_ID};
-use bakashrot_proto::packets::{Head, MessageEntry, Messages, MissingAttachment, StoredAttachment};
+use bakashrot_proto::packets::{
+    Attachment as Sent, Head, MessageEntry, Messages, MissingAttachment, ReplicatedMessage,
+    StoredAttachment,
+};
 use rusqlite::{Connection, OptionalExtension, Row};
 
 /// About how many bytes of messages one answer carries: past it, the rest
@@ -22,6 +25,11 @@ const AFTER: &str = "SELECT d.key, d.pushed_at, d.message_data, a.size, a.state 
 const LATEST: &str = "SELECT d.key, d.pushed_at, d.message_data, a.size, a.state \
                       FROM data d LEFT JOIN attachments a ON a.message_key = d.key \
                       WHERE d.key >= ?1 AND d.key <= ?2 ORDER BY d.key DESC LIMIT ?3";
+
+/// A stream's messages after a key, as replication sends them.
+const TO_REPLICATE: &str = "SELECT d.key, d.pushed_at, d.message_data, a.size, a.sha256 \
+                            FROM data d LEFT JOIN attachments a ON a.message_key = d.key \
+                            WHERE d.key > ?1 AND d.key <= ?2 ORDER BY d.key LIMIT ?3";
 
 /// A connection that reads.
 #[derive(Debug)]
@@ -95,6 +103,48 @@ impl Reader {
             answer.messages.reverse();
         }
         Ok(answer)
+    }
+
+    /// A topic and node's messages after an id, as replication sends them:
+    /// `limit` at most, about [`MESSAGES_BYTES`] at most (a bigger one
+    /// alone). None once there are no more.
+    pub fn to_replicate(
+        &self,
+        topic: &str,
+        node: &str,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<ReplicatedMessage>> {
+        let mut messages = Vec::new();
+        let Some((stream, _)) = find_stream(&self.connection, topic, node)? else {
+            return Ok(messages);
+        };
+        let (_, last) = stream_keys(stream);
+        let mut statement = self.connection.prepare_cached(TO_REPLICATE)?;
+        let from = message_key(stream, after.min(MAX_MESSAGE_ID));
+        let mut rows = statement.query((from, last, i64::from(limit)))?;
+        let mut bytes = 0;
+        while let Some(row) = rows.next()? {
+            let data: String = row.get(2)?;
+            if !messages.is_empty() && bytes + data.len() > MESSAGES_BYTES {
+                break;
+            }
+            bytes += data.len();
+            let attachment = match row.get::<_, Option<u64>>(3)? {
+                Some(size) => Some(Sent {
+                    size,
+                    sha256: row.get(4)?,
+                }),
+                None => None,
+            };
+            messages.push(ReplicatedMessage {
+                id: message_id(row.get(0)?),
+                pushed_at: row.get(1)?,
+                data,
+                attachment,
+            });
+        }
+        Ok(messages)
     }
 
     /// Every topic with messages (or that had some), in order.
