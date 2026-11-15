@@ -3,12 +3,22 @@
 # kept as the run's artifact, and the server's Docker image for amd64 and
 # arm64, checked (docker/test.sh), pushed to ghcr.io on a tag only. Gitea
 # Actions runs this file too.
+#
+# Safety: only people with write access can push a tag or run it by hand
+# (no pull_request trigger, so nothing from a fork runs here); the token
+# is read-only except where an image is pushed, after it was built and
+# checked; checkouts don't keep the token on disk, so a build script (a
+# crate's build.rs) can't read it; actions are pinned to their commits;
+# cargo builds only what Cargo.lock says (--locked).
 name: CI
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   IMAGE: ghcr.io/aziascreations/bakashrot-server
@@ -20,14 +30,17 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Installs the toolchain rust-toolchain.toml pins.
       - run: rustup toolchain install
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-features
-      - run: cargo doc --workspace --no-deps --all-features
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --workspace --all-features
+      - run: cargo doc --locked --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -56,36 +69,42 @@ jobs:
             container: quay.io/pypa/manylinux_2_28_aarch64
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Windows: a Python of the machine's architecture (the smoke test
       # loads the DLL into it). Linux: the container's.
       - if: ${{ !matrix.container }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           architecture: ${{ matrix.arch }}
       - if: ${{ matrix.container }}
         run: echo "/opt/python/cp312-cp312/bin" >> "$GITHUB_PATH"
-      # rustup, where the image has none.
+      # rustup, where the image has none (windows-11-arm, the containers).
       - run: |
           if ! command -v rustup; then
             if [ "$RUNNER_OS" = Windows ]; then
-              curl --proto '=https' -sSfo rustup-init.exe https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe
+              case "$RUNNER_ARCH" in ARM64) host=aarch64-pc-windows-msvc ;; *) host=x86_64-pc-windows-msvc ;; esac
+              curl --proto '=https' --tlsv1.2 -sSfo rustup-init.exe "https://static.rust-lang.org/rustup/dist/$host/rustup-init.exe"
               ./rustup-init.exe -y --default-toolchain none
               rm rustup-init.exe
               echo "$USERPROFILE/.cargo/bin" >> "$GITHUB_PATH"
             else
-              curl --proto '=https' -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
               echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
             fi
           fi
       - run: rustup toolchain install
+      # Builds with --locked; the archive holds no keys (the smoke test's
+      # are in _test/, deleted before archiving).
       - run: python release.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bakashrot-${{ matrix.platform }}
           path: |
@@ -96,7 +115,9 @@ jobs:
   docker:
     # The server's image, each architecture built on its own kind of
     # machine (no emulation), checked, then pushed as <version>-<arch> on a
-    # tag. Run by hand, it's built and checked only.
+    # tag. Run by hand, it's built and checked only. The token can push
+    # packages here, but it's only given to `docker login`, after the build
+    # and the check (the build runs inside Docker, without it).
     needs: check
     strategy:
       fail-fast: false
@@ -107,36 +128,67 @@ jobs:
           - arch: arm64
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - run: |
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Image tag
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version=${GITHUB_REF_NAME#v}; else version=manual; fi
-          echo "TAG=$IMAGE:$version-${{ matrix.arch }}" >> "$GITHUB_ENV"
+          # What a Docker tag may hold; anything else stops here.
+          case "$version" in
+            "" | *[!0-9A-Za-z._-]* | [.-]*) echo "Not a usable image tag: $version"; exit 1 ;;
+          esac
+          echo "TAG=$IMAGE:$version-$ARCH" >> "$GITHUB_ENV"
       - run: docker build -f docker/Dockerfile -t "$TAG" .
       - run: sh docker/test.sh "$TAG"
-      - if: github.ref_type == 'tag'
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "$TAG"
+      - name: Log in to ghcr.io
+        if: github.ref_type == 'tag'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      # A package first pushed by hand (with a personal token) only takes
+      # this workflow's pushes once the repository has write access in the
+      # package's settings ("Manage Actions access").
+      - name: Push
+        if: github.ref_type == 'tag'
+        run: docker push "$TAG"
+      - name: Log out
+        if: always() && github.ref_type == 'tag'
+        run: docker logout ghcr.io
 
   docker-index:
-    # One image for both architectures, <version> and latest: an index of
-    # the two, once the releases passed too. GitHub reads the source label
-    # on an index from its annotations.
+    # One image for both architectures: an index of the two as <version>,
+    # once the releases passed too, and as latest unless it's a
+    # pre-release (a version with a "-": v0.2.0-test2). GitHub reads the
+    # source label on an index from its annotations.
     if: github.ref_type == 'tag'
     needs: [docker, release]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       packages: write
     steps:
-      - run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           version=${GITHUB_REF_NAME#v}
-          docker buildx imagetools create -t "$IMAGE:$version" -t "$IMAGE:latest" \
+          case "$version" in
+            "" | *[!0-9A-Za-z._-]* | [.-]*) echo "Not a usable image tag: $version"; exit 1 ;;
+          esac
+          tags="-t $IMAGE:$version"
+          case "$version" in *-*) ;; *) tags="$tags -t $IMAGE:latest" ;; esac
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # $tags unquoted on purpose: two words each, checked above.
+          docker buildx imagetools create $tags \
             --annotation "index:org.opencontainers.image.source=https://github.com/aziascreations/BakaShrot" \
             --annotation "index:org.opencontainers.image.description=BakaShrot server" \
             --annotation "index:org.opencontainers.image.licenses=CC0-1.0" \
             "$IMAGE:$version-amd64" "$IMAGE:$version-arm64"
+          docker logout ghcr.io

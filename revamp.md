@@ -271,7 +271,11 @@ Also decided (2026-11-13):
   `docker/test.sh`, and on a tag pushes them to
   `ghcr.io/aziascreations/bakashrot-server` with the workflow's token,
   then an index of both as `<version>` and `latest` (once the releases
-  passed). The Gitea registry stays a push by hand.
+  passed; `latest` only for versions without a `-`). The Gitea registry
+  stays a push by hand. The workflow's safety is in its header: tags and
+  manual runs only, a read-only token but where images are pushed (after
+  they're built and checked), no token left on disk by checkout, actions
+  pinned to commits, `--locked` builds.
 
 ## Proposed, to confirm
 

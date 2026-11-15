@@ -90,8 +90,10 @@ in a manylinux 2.28 container, so they run with glibc 2.28 and later.
 The version is the workspace's (`Cargo.toml`), and `bindings/python/bakashrot.py`'s `__version__` must be the same.
 
 The server's Docker image: `docker build -f docker/Dockerfile -t bakashrot-server .`, or CI's for amd64
-and arm64, checked by `docker/test.sh`, then pushed to `ghcr.io/aziascreations/bakashrot-server` (`<version>` and
-`latest`) on a tag. Running it: `docs/server.md`, "In Docker".
+and arm64, checked by `docker/test.sh`, then pushed to `ghcr.io/aziascreations/bakashrot-server` on a tag
+(`<version>`, and `latest` unless it's a pre-release: `v0.2.0-test2` doesn't move it). Running it: `docs/server.md`, "In Docker". The package was first pushed by hand, so the
+workflow may push to it only with the repository given write access in its settings on GitHub
+("Manage Actions access"), once; the package made public there too.
 
 Publishing:
 * **The wheel** to Gitea's registry, with twine 6.1+ (for the license metadata) and a token with `write:package`:

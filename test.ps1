@@ -18,10 +18,10 @@ function Step([string]$What, [scriptblock]$Run) {
 Push-Location $PSScriptRoot
 try {
     Step "cargo fmt" { cargo fmt --all -- --check }
-    Step "cargo clippy" { cargo clippy --workspace --all-targets --all-features -- -D warnings }
-    Step "cargo test" { cargo test --workspace --all-features }
+    Step "cargo clippy" { cargo clippy --locked --workspace --all-targets --all-features -- -D warnings }
+    Step "cargo test" { cargo test --locked --workspace --all-features }
     $env:RUSTDOCFLAGS = "-D warnings"
-    Step "cargo doc" { cargo doc --workspace --no-deps --all-features }
+    Step "cargo doc" { cargo doc --locked --workspace --no-deps --all-features }
 } finally {
     Pop-Location
 }
