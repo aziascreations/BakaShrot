@@ -160,6 +160,8 @@ the same ids with different messages, undetected.
    closes; otherwise `Welcome` (the server's name, the client's node).
 4. **Requests**, one at a time. Before each, the certificate is checked
    against the current CRL: revoked since, the connection is dropped.
+   A client closing without TLS's close_notify (the tools, the DLL, a
+   killed process) is a normal close, not logged.
 
 | Timeout | |
 |---|---|

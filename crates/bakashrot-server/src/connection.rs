@@ -71,6 +71,11 @@ async fn serve(shared: &Arc<Shared>, tcp: TcpStream, address: IpAddr) -> Result<
         let bytes = match timeout(IDLE_TIMEOUT, frames.next()).await {
             Err(_) => return Err(format!("{}: idle too long", peer.node)),
             Ok(None) => return Ok(peer.node),
+            // Closed without TLS's close_notify: how the tools, the DLL and
+            // a killed process leave (a request cut short isn't run).
+            Ok(Some(Err(error))) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(peer.node);
+            }
             Ok(Some(bytes)) => bytes.map_err(|error| format!("{}: {error}", peer.node))?,
         };
         let revoked = shared

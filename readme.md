@@ -49,7 +49,7 @@ rust-toolchain.toml     the pinned toolchain (1.100.0)
 build.ps1, test.ps1, release.ps1, clean.ps1
 release.py              a release for this platform: build, package, smoke test
 docs/                   designs across crates: protocol.md, certificates.md, oid.md, config.md,
-                        storage.md, server.md, client.md, known-issues.md
+                        storage.md, server.md, client.md, known-issues.md, lab.md (a test lab, step by step)
 crates/
   bakashrot-proto/      packets, frames, names, limits, error codes, shared by everything
   bakashrot-pki/        certificates: issuing, identities, CRLs, the TLS setup
