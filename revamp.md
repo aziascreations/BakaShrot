@@ -11,9 +11,11 @@ retention, replication, operations and releases), see "Plan".
 - **Old implementation:** PureBasic, protocol 6, schema v8. Removed on
   2026-11-15 ("The PureBasic version removed"): it's in git history,
   `OldSource/` up to commit `68966a8`, which the `OldSource/` paths here
-  and in `Source/` point to. What of its notes still holds:
-  `Source/docs/known-issues.md`.
-- **New implementation:** `Source/`, see `Source/README.md`.
+  and in the code point to. What of its notes still holds:
+  `docs/known-issues.md`.
+- **New implementation:** the Cargo workspace at the root (in `Source/`
+  until 2026-11-15, so the paths below are relative to the root now),
+  see `readme.md`.
 
 ## Why
 
@@ -34,7 +36,8 @@ PureBasic, which has no libraries for it:
 ## Decided
 
 1. **Rust**, for the server, the client library and DLL, and the tools: one
-   Cargo workspace in `Source/`. Built in the order of "Plan" below.
+   Cargo workspace (in `Source/`, at the root since 2026-11-15). Built in
+   the order of "Plan" below.
 2. **A C-compatible client DLL**, usable from any language as today: the
    same kind of exports (`BakaShrot_*A/W`, cdecl), the same conventions
    (strings copied into the caller's buffers, the size needed returned,
@@ -65,7 +68,7 @@ Also decided (2026-11-13):
 
 - the build order ("Plan"); the protocol crate is `bakashrot-proto`;
   existing crates rather than our own (MessagePack: `rmp-serde`);
-- the protocol simplified (`Source/docs/protocol.md`, "What changed"):
+- the protocol simplified (`docs/protocol.md`, "What changed"):
   - **names only on the wire**: topics and nodes by name everywhere, each
     server's ids stay in its database (no refs, no `ResolveName`, no ids
     in answers or in the sync state);
@@ -76,7 +79,7 @@ Also decided (2026-11-13):
     in the `SyncState`, no echoes in answers;
   - **attachments streamed inside their request**: no upload ids or
     expiry, no request or answer per part.
-- **protocol 7's start** (`Source/docs/protocol.md`): ALPN `bakashrot`, not
+- **protocol 7's start** (`docs/protocol.md`): ALPN `bakashrot`, not
   versioned; right after TLS each end sends its version (4 bytes) and
   checks the other's, abandoning the connection if they differ (the
   client's error: `VersionMismatch`, 111); then the server's `Welcome`.
@@ -138,7 +141,7 @@ Also decided (2026-11-13):
     revoked one at a time (`bakashrot-cert issue --file`);
   - optionally, a node blocked by name in the config, whatever certificate
     it has (emergencies, a node taken down).
-- **The server's config is TOML** (2026-11-13), `Source/docs/config.md`:
+- **The server's config is TOML** (2026-11-13), `docs/config.md`:
   - `[server]`, `[retention]`, `[replication]`, `[roles.<name>]`; unknown
     keys refused; names only (no ids, pins or ranges);
   - **roles in the certificate, permissions in the config**: a certificate
@@ -159,7 +162,7 @@ Also decided (2026-11-13):
     replicated at all, whatever the roles say, to filter on edge nodes.
 - **Schema v9, not compatible with v8** (2026-11-13): old databases aren't
   opened, their data isn't carried over (the real-life tests start empty).
-  `Source/docs/storage.md`:
+  `docs/storage.md`:
   - **streams** (a topic and node pair: its id, names, last id) instead of
     `topics`, `nodes` and `node_heads`;
   - **packed keys**: a message's key is `stream_id << 43 | message_id`, one
@@ -171,7 +174,7 @@ Also decided (2026-11-13):
     queries read their streams, an index is a migration away if needed;
   - `attachments` (five states) and `attachment_parts`, uploads inside
     their push; a `metadata` table with `schema_version` for migrations.
-- **The server and the client** (2026-11-13), `Source/docs/server.md`:
+- **The server and the client** (2026-11-13), `docs/server.md`:
   - **crates:** `tokio` and `tokio-rustls` on the server, `tracing` for
     its logs; the client blocking (std and `rustls`, no runtime). Named
     `bakashrot-server` (also the program: `bakashrot-server
@@ -183,7 +186,7 @@ Also decided (2026-11-13):
     silence before the server closes, 30 s for an answer (the client);
   - **the writer:** one thread, a queue, group commits; WAL checkpoints on
     a thread of their own.
-- **The DLL** (2026-11-13), `Source/docs/client.md`:
+- **The DLL** (2026-11-13), `docs/client.md`:
   - **connecting:** `BakaShrot_SetCaCertificate()`, `_SetCertificate()`,
     `_SetPrivateKey()`, `_SetCrl()`, each taking PEM text or a file's path;
   - **the old exports that don't fit any more are dropped**, not kept
@@ -192,13 +195,13 @@ Also decided (2026-11-13):
   - **one connection per process**, as before (handles maybe later);
   - **`client.toml`** (server, ca, certificate, key, crl) replaces
     `client.ini`: Python's `Client.from_file()`, the tools at step 8.
-- **The tools** (2026-11-14), `Source/docs/client.md`, "The tools": one
+- **The tools** (2026-11-14), `docs/client.md`, "The tools": one
   `bakashrot` program with subcommands (`push`, `latest`, `messages`,
   `query`, `list`) over `bakashrot-client`, `bakashrot-cert` kept apart
   (the CA's key); `-c/--config`, `client.toml` by default; the old tools'
   output; messages and SQL inline, `@file` or `-` (standard input); exit
   codes 0, 1, and 2 for bad arguments.
-- **Attachments** (2026-11-14), `Source/docs/server.md` and `client.md`:
+- **Attachments** (2026-11-14), `docs/server.md` and `client.md`:
   - **the DLL keeps the old six exports**, by names: `PushMessageWithFile`,
     `PushMessageWithData`, `SaveAttachment`, `LoadAttachment` then
     `GetAttachmentData` and `FreeAttachmentData`;
@@ -210,14 +213,14 @@ Also decided (2026-11-13):
     `get_attachment()`, `save_attachment()`;
   - **the SHA-256 through `aws-lc-rs`**, already built for TLS, instead of
     the `sha2` proposed: no other crate, and faster.
-- **Randomness from the OS** (2026-11-14), `Source/docs/certificates.md`,
+- **Randomness from the OS** (2026-11-14), `docs/certificates.md`,
   "TLS": aws-lc built without CPU Jitter Entropy
-  (`AWS_LC_SYS_NO_JITTER_ENTROPY`, `Source/.cargo/config.toml`), its random
+  (`AWS_LC_SYS_NO_JITTER_ENTROPY`, `.cargo/config.toml`), its random
   generator seeded from the OS's (Windows' `ProcessPrng`, Linux's
   `getrandom`) and RDRAND, as BoringSSL and `ring` do. The jitter seeding
   took 25 ms in every process at its first connection: a tool command went
   from 36 ms to 11 ms (the old tools: 8).
-- **Replication by address** (2026-11-14), `Source/docs/config.md`:
+- **Replication by address** (2026-11-14), `docs/config.md`:
   - **each server's config says who it replicates with**, by IP or
     hostname: `[replication] push_to`, the servers it dials and sends to
     (`host:port`, was `peers`), and `accept_from`, the servers whose
@@ -230,9 +233,9 @@ Also decided (2026-11-13):
   - **`accept_from` is for servers only:** clients push wherever their
     roles allow, as now. A node pushing to one server only stays the
     config's rule, not checked, as in the old version
-    (`Source/docs/known-issues.md`).
-- **Operations** (2026-11-14), `Source/docs/server.md`, "Running";
-  `Source/README.md`, "Releases":
+    (`docs/known-issues.md`).
+- **Operations** (2026-11-14), `docs/server.md`, "Running";
+  `readme.md`, "Releases":
   - **signals only:** SIGTERM and SIGINT on Linux; Ctrl+C, Ctrl+Break or
     the console closed on Windows; each stops it cleanly. No Windows
     service mode (a tool like NSSM if needed); more only if needed later;
@@ -247,11 +250,28 @@ Also decided (2026-11-13):
   - **version 0.2.0.**
 - **The PureBasic version removed** (2026-11-15): `OldSource/` deleted,
   kept in git history (up to `68966a8`). What of its notes and designs
-  still holds went to `Source/docs/known-issues.md`; the rest was already
-  in `Source/docs/` or only about PureBasic. Its PowerShell suites go
-  with it: the Rust tests (`cargo test`, `check.ps1`, CI) are the one
+  still holds went to `docs/known-issues.md`; the rest was already
+  in `docs/` or only about PureBasic. Its PowerShell suites go
+  with it: the Rust tests (`cargo test`, `test.ps1`, CI) are the one
   runner, with `release.py`'s smoke test across processes (old open item
   7).
+- **The workspace at the root** (2026-11-15): `Source/`'s content moved
+  up, `Source/README.md` merged into `readme.md`; scripts at the root:
+  `build.ps1`, `test.ps1` (was `check.ps1`), `release.ps1` (over
+  `release.py`, which CI's Linux job runs as is), `clean.ps1`. CI is
+  `.github/workflows/ci.yml`.
+- **CI on tags only** (2026-11-15): a `v*` tag (or a run by hand) runs
+  the checks, then a release for Windows x64 and ARM64, Linux x64 and
+  ARM64, each on its own kind of runner (the smoke test runs there), the
+  archives kept as the run's artifacts. Nothing runs on pushes:
+  `test.ps1` is run here before.
+- **Docker** (2026-11-15): `docker/` (Dockerfile, compose.yml, test.sh):
+  the server and the tools, built from source, on `debian:trixie-slim`,
+  as uid 10001. CI builds amd64 and arm64 natively, checks each with
+  `docker/test.sh`, and on a tag pushes them to
+  `ghcr.io/aziascreations/bakashrot-server` with the workflow's token,
+  then an index of both as `<version>` and `latest` (once the releases
+  passed). The Gitea registry stays a push by hand.
 
 ## Proposed, to confirm
 
@@ -273,7 +293,7 @@ come back as text either way; only what SQL computes would gain
   `IDENTITY_OID_IS_PLACEHOLDER` is `true` and `bakashrot-cert` warns when
   it makes a certificate. Certificates issued with it stop being read once
   it changes: get the number before any is in use. How to request it and
-  what to change then: `Source/docs/oid.md`.
+  what to change then: `docs/oid.md`.
 
 ## Kept: the behaviour to carry over
 
@@ -346,7 +366,7 @@ hand in each).
 
 | # | Step | What | Done when | Decide first | Status |
 |---|---|---|---|---|---|
-| 0 | Workspace | Cargo workspace, pinned toolchain, `check.ps1`, CI (fmt, clippy, test, doc) | The crates build, the checks pass | Crate names | Done 2026-11-13 |
+| 0 | Workspace | Cargo workspace, pinned toolchain, `test.ps1`, CI (fmt, clippy, test, doc) | The crates build, the checks pass | Crate names | Done 2026-11-13 |
 | 1 | `bakashrot-proto` | Names, error codes, limits, every packet, frames | Round trips, refusals, random input never panics | The packet format | Done 2026-11-13, simplified the same day |
 | 2 | `bakashrot-pki` + certificate tool | CA, server, client, peer certificates (P-384, the identity extension); name and roles read; the TLS setup (AES-256-GCM, X25519MLKEM768, the fixed server name); CRLs and their reload | `openssl verify` takes the tool's certificates; a TLS test accepts and refuses the right ones, a revoked one dropped | Decided 2026-11-13 | Done 2026-11-13 |
 | 3 | `bakashrot-config` | Server config: topics, roles to permissions, peers, retention, clear errors | `schema.ini`'s cases, the configs `Names-Test` refuses | TOML, roles (decided 2026-11-13) | Done 2026-11-13 |
@@ -359,10 +379,10 @@ hand in each).
 | 10 | Retention | Background deletion, `node_heads` kept, attachments cleaned up | `Retention-Test`'s local checks | | Done 2026-11-14 |
 | 11 | Replication | Peer links, sync state, batches by name, wildcards, attachments, skipping on arrival | `Names-Test` (replication), `Restart-Test`; the corrupted-attachment fix | Decided 2026-11-14 | Done 2026-11-14 |
 | 12 | Operations | Signals and a clean stop, logs, release, wheel | Runs unattended, stops cleanly, the release's smoke test | Decided 2026-11-14 | Done 2026-11-14 |
-| 13 | Finish | One test runner (the Rust tests, decided 2026-11-15), end-to-end tests in CI, the bench, Docker | Push speed against the old ~17,000 msg/s (4 servers, measured 2026-11-14: `Source/docs/server.md`) | | |
+| 13 | Finish | One test runner (the Rust tests, decided 2026-11-15), end-to-end tests in CI, the bench, Docker | Push speed against the old ~17,000 msg/s (4 servers, measured 2026-11-14: `docs/server.md`) | | |
 
 Each step ends with its tests passing and its docs updated (the crate's
-docs, `Source/docs/`, this file's status), then a commit when the owner
+docs, `docs/`, this file's status), then a commit when the owner
 asks. Open questions get settled at the step that needs them.
 
 ### Done: steps 0 and 1 (2026-11-13)
@@ -371,8 +391,8 @@ asks. Open questions get settled at the step that needs them.
   `unsafe_code` denied, docs required, clippy's defaults; release profile
   with LTO, `panic = "unwind"` for the DLL's `catch_unwind`),
   `rust-toolchain.toml` (1.100.0, rustfmt, clippy), `.gitattributes` (LF),
-  `check.ps1` (fmt, clippy with warnings as errors, tests, docs),
-  `../.github/workflows/source.yml` (the same on Windows and Linux, Gitea
+  `test.ps1` (fmt, clippy with warnings as errors, tests, docs),
+  `../.github/workflows/ci.yml` (the same on Windows and Linux, Gitea
   Actions reads it too; not run yet, nothing pushed).
 - **`bakashrot-proto`**, on `serde`, `rmp-serde` and `serde_bytes`
   (first written over `rmp` with hand-written packets, then simplified the
@@ -398,7 +418,7 @@ asks. Open questions get settled at the step that needs them.
     ALPN tied to the version by a test; the batch sizes (~1 MiB per
     `Messages`, ~64 KiB per `ReplicateMessages`) left the protocol crate,
     they're the server's to set (steps 6 and 11).
-- **`Source/docs/protocol.md`**: protocol 7, every packet, the flows, what
+- **`docs/protocol.md`**: protocol 7, every packet, the flows, what
   changed from 6.
 - **Left for later steps:** the TLS side of the protocol (ALPN, `Welcome`
   sent first: steps 2 and 5); generating the C, PureBasic and Python
@@ -407,7 +427,7 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 2 (2026-11-13)
 
-`Source/docs/certificates.md` has all of it.
+`docs/certificates.md` has all of it.
 
 - **`bakashrot-pki`**, on `rcgen`, `rustls` (aws-lc), `x509-parser`
   (`verify-aws`, the same aws-lc) and `yasna`:
@@ -450,8 +470,8 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 3 (2026-11-13)
 
-`Source/docs/config.md` has all of it; every key with its default:
-`Source/crates/bakashrot-config/example.toml`.
+`docs/config.md` has all of it; every key with its default:
+`crates/bakashrot-config/example.toml`.
 
 - **`bakashrot-config`**, on `toml` and `serde` (`indexmap` for the
   file's order): `Config::load()` (paths from the config's folder) and
@@ -479,7 +499,7 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 4 (2026-11-13)
 
-`Source/docs/storage.md` has all of it (the layout, why, the numbers).
+`docs/storage.md` has all of it (the layout, why, the numbers).
 
 - **`bakashrot-storage`**, on `rusqlite` (SQLite bundled):
   - `Database::open`: makes a v9 database, opens one, refuses the old
@@ -516,7 +536,7 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 5 (2026-11-13)
 
-`Source/docs/server.md` has all of it.
+`docs/server.md` has all of it.
 
 - **`bakashrot-server`**: TLS with `bakashrot-pki`'s settings, the versions,
   the identity and its roles (refused with `NotAllowed` when none is
@@ -541,7 +561,7 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 6 (2026-11-13)
 
-`Source/docs/server.md`, "Requests so far".
+`docs/server.md`, "Requests so far".
 
 - **`GetMessages`** refuses an unknown topic (not the config's) or node
   (no messages in any topic) with `UnknownName`, as the old server did; a
@@ -558,7 +578,7 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 7 (2026-11-13)
 
-`Source/docs/client.md` has all of it.
+`docs/client.md` has all of it.
 
 - **`bakashrot-capi`** builds `bakashrot.dll` / `libbakashrot.so`: the old
   exports over `bakashrot-client` (A and W, buffers, `GetLastError`, the
@@ -579,7 +599,7 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 8 (2026-11-14)
 
-`Source/docs/client.md`, "The tools".
+`docs/client.md`, "The tools".
 
 - **`bakashrot`** (`bakashrot-tools`): `push <topic> <message>`, `latest
   <topic> <node>`, `messages <topic> <node>` (`--after <id|latest>`,
@@ -598,7 +618,7 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 9 (2026-11-14)
 
-`Source/docs/server.md` ("Requests"), `client.md`.
+`docs/server.md` ("Requests"), `client.md`.
 
 - **The server:** a push with an attachment is checked (topic, roles,
   sizes, the server's `max_attachment_size`), answered `Continue`, then
@@ -632,7 +652,7 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 10 (2026-11-14)
 
-`Source/docs/server.md` ("Retention").
+`docs/server.md` ("Retention").
 
 - **The server:** a task (`retention.rs`, `Server::apply_retention()`):
   at start, then every `retention_interval`, every topic in the database
@@ -650,7 +670,7 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 11 (2026-11-14)
 
-`Source/docs/server.md` ("Replication"), `config.md` ("Peers").
+`docs/server.md` ("Replication"), `config.md` ("Peers").
 
 - **The config:** `[replication] push_to` (was `peers`) and
   `accept_from` (IPs or hostnames, `"*"`), as decided.
@@ -678,7 +698,7 @@ asks. Open questions get settled at the step that needs them.
   storage's `replication` (skipped on arrival, `to_replicate`,
   `damaged`); the config's (`push_to`, `accept_from`, `peers` refused,
   `accepted()`).
-- **Measured** (`Source/docs/server.md`, "Replication, against the old
+- **Measured** (`docs/server.md`, "Replication, against the old
   server"): 4 servers in a Y, 10 nodes each flat out: 16,000-16,300
   pushes/s with `full` (old: 16,638), 35,300-37,500 with `normal` (old:
   33,895), and the servers keeping up while pushing (under 1 s behind,
@@ -691,7 +711,7 @@ asks. Open questions get settled at the step that needs them.
 
 ### Done: step 12 (2026-11-14)
 
-`Source/docs/server.md` ("Running"), `Source/README.md` ("Releases").
+`docs/server.md` ("Running"), `readme.md` ("Releases").
 
 - **Stopping:** `bakashrot-server` waits for SIGTERM or SIGINT (Linux),
   Ctrl+C, Ctrl+Break or its console closed (Windows), stops taking
@@ -701,7 +721,7 @@ asks. Open questions get settled at the step that needs them.
   with 0.
 - **Logs:** the console, no colour codes when redirected,
   `BAKASHROT_LOG` for the level. No console commands.
-- **The release:** `Source/release.py`, for the platform it runs on:
+- **The release:** `release.py`, for the platform it runs on:
   builds, packages into `target/dist/bakashrot-0.2.0-<platform>/` (the
   three programs, the library, `bakashrot.h`, the PureBasic files,
   `bakashrot.py` and its wheel, the example configs, the docs, a
@@ -716,7 +736,7 @@ asks. Open questions get settled at the step that needs them.
   the standard library, the same inputs giving the same wheel):
   `win_amd64`, or `manylinux_<glibc>_x86_64` from the glibc it's built
   against; the licenses in it.
-- **CI** (`.github/workflows/source.yml`): a `release` job on a `v*` tag
+- **CI** (`.github/workflows/ci.yml`): a `release` job on a `v*` tag
   or by hand, Windows and Linux (in `manylinux_2_28`), keeping the
   archives.
 - **The version:** 0.2.0, the workspace's; `release.py` checks
@@ -737,7 +757,9 @@ asks. Open questions get settled at the step that needs them.
 
 ### For step 13: what the old Docker image did
 
-From `OldSource/Docker/` (git history), to keep in the new one:
+From `OldSource/Docker/` (git history), kept in `docker/` (the config
+in `/etc/bakashrot`, the database in a volume, the source label, a user
+of its own; the image is an index now, its annotations hold the label):
 
 - A multi-stage build, the final image only the server and what it
   needs; `docker compose up -d --build` with the config in a mounted

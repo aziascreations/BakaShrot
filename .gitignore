@@ -14,5 +14,8 @@
 # Python
 __pycache__/
 
-# Rust (Source/)
+# Rust
 target/
+
+# The compose example's config (keys)
+docker/config/

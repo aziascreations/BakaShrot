@@ -1,0 +1,70 @@
+# A BakaShrot server's config, every key with its default where it has
+# one. Read by bakashrot-config, explained in docs/config.md.
+#
+# Names (topics, nodes, roles): 1-64 of A-Z a-z 0-9 _ . -, not only digits,
+# case doesn't matter. Lists of topics or nodes also take patterns: * any
+# characters, ? one ("sensors.*"), or "*" for all.
+# Names with dots are quoted when they're keys: "sensors.kitchen" = "12h",
+# [roles."site.reader"]. Durations: numbers with a unit (s m h d w), like
+# "30s" or "1d12h". Relative paths are from this file's folder.
+
+[server]
+listen = "0.0.0.0:7000"              # required: address and port
+
+# The certificates (bakashrot-cert), required. The node this server is,
+# for its peers, is its certificate's name.
+ca = "ca.crt"
+certificate = "server-1.crt"
+key = "server-1.key"
+# crl = "ca.crl"                     # the CA's CRL, watched: optional
+
+database = "bakashrot.sqlite"
+
+# The topics clients push to. Peers may bring others (accept_topics).
+topics = ["logs", "sensors.kitchen", "sensors.garage"]
+
+# "full": every push flushed to disk before it's answered, it survives a
+# power loss. "normal": about twice the pushes, a power loss loses the last
+# second or so. ("off" isn't allowed.)
+synchronous = "full"
+
+max_attachment_size = "1G"           # bytes, or K M G T (1024-based); 0: none
+retention_interval = "1m"            # how often old messages are deleted
+
+# How long each topic's messages are kept, from when they were first
+# pushed. A topic takes its name's line, else the first pattern matching
+# it, else "*"'s; without any, it's kept forever.
+[retention]
+logs = "30d"
+"sensors.*" = "12h"
+"*" = "forever"
+
+# Who this server replicates with, by address. A link carries messages
+# one way: the server that dials sends, the one dialed takes them.
+[replication]
+push_to = []                         # dialed and sent to: ["10.0.0.2:7000", "server-2.lan:7000"]
+accept_from = []                     # taken from: ["10.0.0.2", "server-2.lan"], or ["*"]
+# The only topics replicated at all, whatever the roles say: a filter for
+# edge nodes. Without it, no filter; [] replicates nothing.
+# replicated_topics = ["logs", "alerts.*"]
+retry_delay = "10s"
+sync_interval = "5s"
+batch_size = 1000                    # messages per packet, 1-10000
+
+# What certificates with a role may do. A certificate gets everything its
+# roles allow; one without any role listed here is refused. Every key is
+# optional: an empty list allows nothing.
+[roles.sensor]
+push_topics = ["sensors.*"]          # always as its own node (its name)
+
+[roles.dashboard]
+read_topics = ["*"]
+query = true                         # read-only SQL, reads every topic
+
+# Peers are roles too: what's replicated with a server whose certificate
+# has this role, whichever end dials.
+[roles.peer]
+send_topics = ["logs", "sensors.*"]
+accept_topics = ["logs"]
+send_nodes = ["*"]                   # the default
+accept_nodes = ["*"]                 # the default
