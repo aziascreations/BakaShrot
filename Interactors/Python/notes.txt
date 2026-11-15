@@ -1,2 +1,0 @@
-This interactor should be able toquery a server via a client app.
-The client should never parse the JSON, only the final app should.

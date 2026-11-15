@@ -1,0 +1,8 @@
+# Only what the programs are built from: target/ alone can hold gigabytes
+# of builds and test databases, and keys.
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!.cargo
+!crates

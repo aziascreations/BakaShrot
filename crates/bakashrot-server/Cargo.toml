@@ -1,0 +1,33 @@
+[package]
+name = "bakashrot-server"
+description = "BakaShrot's server: TLS, identities from certificates, the requests of protocol 7 on the storage."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+bakashrot-proto = { path = "../bakashrot-proto", features = ["tokio"] }
+bakashrot-pki = { path = "../bakashrot-pki" }
+bakashrot-config = { path = "../bakashrot-config" }
+bakashrot-storage = { path = "../bakashrot-storage" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "macros", "signal", "io-util", "sync"] }
+tokio-rustls = { version = "0.26.6", default-features = false }
+tokio-util = { version = "0.7.20", features = ["codec"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
+bytes = "1.12.1"
+# The attachments' SHA-256: the TLS one's (aws-lc), no other crate.
+aws-lc-rs = "1.19.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "ansi"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+bakashrot-client = { path = "../bakashrot-client" }
+# To damage a stored attachment from a test (the storage's own version).
+rusqlite = { version = "0.42.0", features = ["bundled"] }

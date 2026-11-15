@@ -1,0 +1,27 @@
+# BakaShrot's server with docker compose, from this folder:
+#   docker compose up -d        pulls the image (--build: builds it here)
+#   docker compose logs -f
+#   docker compose down         stops it cleanly (SIGTERM)
+#
+# config/, next to this file: server.toml, ca.crt, the server's certificate
+# and key, the CRL if any (the Dockerfile says what server.toml needs; its
+# key readable by uid 10001). The database lives in the bakashrot-data
+# volume, kept by `down` (`down -v` deletes it).
+
+services:
+  bakashrot:
+    image: ghcr.io/aziascreations/bakashrot-server:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: bakashrot
+    restart: unless-stopped
+    ports:
+      # server.toml's listen port.
+      - "7000:7000"
+    volumes:
+      - ./config:/etc/bakashrot:ro
+      - bakashrot-data:/var/lib/bakashrot
+
+volumes:
+  bakashrot-data:

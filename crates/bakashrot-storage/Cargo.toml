@@ -1,0 +1,28 @@
+[package]
+name = "bakashrot-storage"
+description = "BakaShrot's database: SQLite, schema v9, messages by stream, attachments, read-only queries."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The limits (message ids, attachment parts).
+bakashrot-proto = { path = "../bakashrot-proto" }
+# Synchronous, as the config says it.
+bakashrot-config = { path = "../bakashrot-config" }
+# SQLite itself compiled in (`bundled`): the same version everywhere, with
+# its JSON functions, no system library to install. `fallible_uint`: u64
+# in and out, an error past i64::MAX instead of a wrap.
+rusqlite = { version = "0.42.0", features = ["bundled", "fallible_uint"] }
+# Query results as JSON.
+serde_json = "1.0.154"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = "1.0.154"
