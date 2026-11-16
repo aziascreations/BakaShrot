@@ -118,8 +118,8 @@ otherwise:
    one (topics and nodes, patterns included), its last id in each topic
    and node, and the attachments it lacks (256 at most).
 2. **The messages:** for each topic and node here that it takes and that
-   its roles here may be sent (`send_topics`, `send_nodes`,
-   `replicated_topics`), and where it's behind, the messages after its
+   its roles here may be sent (`send_topics`, `send_nodes`), and where
+   it's behind, the messages after its
    last id, `batch_size` (1000) at a time and about 1 MiB at most (a
    bigger one alone), each batch answered before the next. A refusal
    leaves that topic and node for the next check-in.
@@ -132,7 +132,8 @@ otherwise:
 **Receiving** (`accept_from.rs`): replication requests are answered only
 if the connection comes from `accept_from` (a hostname looked up at its
 first request, `NotAllowed` otherwise), and only for what its roles'
-`accept_topics` / `accept_nodes` allow (`NotAllowed`). Messages keep
+`accept_topics` / `accept_nodes` allow (`NotAllowed`); a topic nobody
+pushed here is there from then on, like any other. Messages keep
 their ids and `pushed_at`; ones already here are kept as they are; one
 past this server's age is only counted. An attachment comes after its
 message (`replicating`, `NotReady` to readers), from the part this server
@@ -172,8 +173,9 @@ the same ids with different messages, undetected.
 
 ## Requests so far
 
-- **`PushMessage`:** the topic must be one of the config's (`UnknownName`),
-  the roles must allow pushing to it (`NotAllowed`), the message at most
+- **`PushMessage`:** the roles must allow pushing to the topic
+  (`NotAllowed`; there's no other list of topics, `config.md`), the
+  message at most
   `MAX_MESSAGE_SIZE` (`TooBig`); stored under the client's node, stamped
   with the server's time; answered `MessagePushed` once committed.
 - **With an attachment:** also at most the config's `max_attachment_size`
@@ -187,19 +189,20 @@ the same ids with different messages, undetected.
   connection that closes, or sends anything else than the next part, is
   dropped. Not pushed, the upload goes (`storage.md`, "Attachments").
 - **`GetAttachment`:** the roles must allow reading the topic
-  (`NotAllowed`), the topic must be one of the config's (`UnknownName`).
-  A message without one, or none of that id: `NotFound`; one still on its
+  (`NotAllowed`). A message without one, or none of that id (or of that
+  topic): `NotFound`; one still on its
   way from a peer: `NotReady`; one this server doesn't keep: `TooBig`.
   Then `Attachment` (its size, its SHA-256) and the parts from
   `from_part`. A part that can't be read closes the connection.
 - **`GetMessages`:** the roles must allow reading the topic
-  (`NotAllowed`), the topic must be one of the config's and the node one
-  with messages in any topic, or the client's own (`UnknownName`); a known
-  topic and node without messages answer none. At most `limit` messages and about 1 MB
+  (`NotAllowed`), the node must be one with messages in any topic, or
+  the client's own (`UnknownName`); a topic and node without messages
+  answer none. At most `limit` messages and about 1 MB
   (`MESSAGES_BYTES`, a bigger message alone), `more` if others follow.
-- **`ListNames`:** topics are the config's, those the roles may push to or
-  read (every one with `query`, which reads them all anyway); nodes are
-  every one with messages. `truncated` past 65,536.
+- **`ListNames`:** topics are those with messages (pushed here or
+  replicated), those the roles may push to or read (every one with
+  `query`, which reads them all anyway); nodes are every one with
+  messages. `truncated` past 65,536.
 - **`Query`:** the roles must allow it (`NotAllowed`); read-only SQL,
   refused with SQLite's message (`QueryFailed`, with a hint to add
   `is_json = 1` on "malformed JSON"), over 10,000 rows or 16 MB

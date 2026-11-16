@@ -37,7 +37,6 @@ ca = "ca.crt"
 certificate = "server-1.crt"
 key = "server-1.key"
 database = "/var/lib/bakashrot/test.sqlite"
-topics = ["imagetest"]
 
 [roles.tester]
 push_topics = ["imagetest"]

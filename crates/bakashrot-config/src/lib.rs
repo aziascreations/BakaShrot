@@ -1,15 +1,15 @@
 //! The server's config: a TOML file, read and checked in one go.
 //!
-//! - [`Server`]: where it listens, its files, its topics, its database.
+//! - [`Server`]: where it listens, its files, its database.
 //! - [`Retention`]: how long each topic's messages are kept.
-//! - [`Replication`]: the servers it sends to and takes from, what it
-//!   replicates, how often.
+//! - [`Replication`]: the servers it sends to and takes from, how often.
 //! - [`Role`]: what certificates with a role may do; [`Permissions`]: what
 //!   a certificate's roles allow together.
 //!
 //! Who connects is the certificate's (`bakashrot-pki`): its name is its
 //! node, its roles are looked up here. Peers too: what's replicated with a
-//! peer is its roles'. The file, every key and its default:
+//! peer is its roles'. Topics aren't listed anywhere else: one exists
+//! once a role let a message in. The file, every key and its default:
 //! `docs/config.md`.
 //!
 //! Every value is checked as serde reads it, so a wrong one is refused with
@@ -80,9 +80,6 @@ pub struct Server {
     /// The SQLite database; `bakashrot.sqlite` by default.
     #[serde(default = "defaults::database")]
     pub database: PathBuf,
-    /// The topics clients push to, by name.
-    #[serde(default, deserialize_with = "values::topic_names")]
-    pub topics: Vec<String>,
     /// How hard a push is made sure to be on disk.
     #[serde(default)]
     pub synchronous: Synchronous,
@@ -98,13 +95,6 @@ pub struct Server {
         deserialize_with = "values::duration"
     )]
     pub retention_interval: Duration,
-}
-
-impl Server {
-    /// Whether `topic` is one of its topics.
-    pub fn has_topic(&self, topic: &str) -> bool {
-        self.topics.iter().any(|own| names_equal(own, topic))
-    }
 }
 
 /// How hard the database makes sure a push is on disk before answering it
@@ -210,9 +200,6 @@ pub struct Replication {
     /// roles' `accept_*`.
     #[serde(deserialize_with = "values::hosts")]
     pub accept_from: Vec<String>,
-    /// The only topics replicated at all, whatever the roles say (an edge
-    /// node's filter); none: no filter.
-    pub replicated_topics: Option<NameList>,
     /// How long to wait before dialing a peer again; 10s by default.
     #[serde(deserialize_with = "values::duration")]
     pub retry_delay: Duration,
@@ -230,7 +217,6 @@ impl Default for Replication {
         Replication {
             push_to: Vec::new(),
             accept_from: Vec::new(),
-            replicated_topics: None,
             retry_delay: Duration::from_secs(10),
             sync_interval: Duration::from_secs(5),
             batch_size: 1000,
@@ -317,9 +303,6 @@ impl Config {
             })
             .cloned()
             .collect();
-        (!roles.is_empty()).then(|| Permissions {
-            roles,
-            replicated_topics: self.replication.replicated_topics.clone(),
-        })
+        (!roles.is_empty()).then_some(Permissions { roles })
     }
 }

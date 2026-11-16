@@ -668,8 +668,9 @@ fn list(kind: NameKind) -> i32 {
     })
 }
 
-/// Lists the topics this client may push to or read (every one if it may
-/// query): how many, -1 on failure. Then `BakaShrot_GetNamesList()`.
+/// Lists the topics with messages that this client may push to or read
+/// (every one if it may query): how many, -1 on failure. Then
+/// `BakaShrot_GetNamesList()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn BakaShrot_ListTopics() -> i32 {
     list(NameKind::Topic)

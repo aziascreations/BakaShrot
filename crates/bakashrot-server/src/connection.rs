@@ -219,12 +219,6 @@ async fn push(
     frames: &mut Frames,
     push: PushMessage,
 ) -> Result<Packet, String> {
-    if !shared.config.server.has_topic(&push.topic) {
-        return Ok(refused(
-            ErrorCode::UnknownName,
-            format!("unknown topic '{}'", push.topic),
-        ));
-    }
     if !peer.permissions.can_push(&push.topic) {
         return Ok(refused(
             ErrorCode::NotAllowed,
@@ -378,12 +372,6 @@ async fn get_attachment(
             format!("{} may not read '{}'", peer.node, get.topic),
         )));
     }
-    if !shared.config.server.has_topic(&get.topic) {
-        return Ok(Some(refused(
-            ErrorCode::UnknownName,
-            format!("unknown topic '{}'", get.topic),
-        )));
-    }
     let message = format!("{}:{}#{}", get.topic, get.node, get.message_id);
     let GetAttachment {
         topic,
@@ -462,12 +450,6 @@ async fn get_messages(shared: &Arc<Shared>, peer: &Peer, get: GetMessages) -> Pa
             format!("{} may not read '{}'", peer.node, get.topic),
         );
     }
-    if !shared.config.server.has_topic(&get.topic) {
-        return refused(
-            ErrorCode::UnknownName,
-            format!("unknown topic '{}'", get.topic),
-        );
-    }
     let GetMessages {
         topic,
         node,
@@ -490,27 +472,21 @@ async fn get_messages(shared: &Arc<Shared>, peer: &Peer, get: GetMessages) -> Pa
     }
 }
 
-/// Topics: the server's, those it may push to or read unless it may query
-/// (queries read everything). Nodes: every one with messages.
+/// Topics: those with messages (pushed here or replicated) that it may
+/// push to or read, every one if it may query (queries read everything).
+/// Nodes: every one with messages.
 async fn list_names(shared: &Arc<Shared>, peer: &Peer, list: ListNames) -> Packet {
-    let mut names = match list.kind {
-        NameKind::Topic => shared
-            .config
-            .server
-            .topics
-            .iter()
-            .filter(|topic| {
-                peer.permissions.can_query()
-                    || peer.permissions.can_push(topic)
-                    || peer.permissions.can_read(topic)
-            })
-            .cloned()
-            .collect(),
-        NameKind::Node => match shared.read(|reader| reader.nodes()).await {
-            Ok(nodes) => nodes,
-            Err(refused) => return refused.into(),
-        },
+    let found = match list.kind {
+        NameKind::Topic => shared.read(|reader| reader.topics()).await,
+        NameKind::Node => shared.read(|reader| reader.nodes()).await,
     };
+    let mut names = match found {
+        Ok(names) => names,
+        Err(refused) => return refused.into(),
+    };
+    if list.kind == NameKind::Topic && !peer.permissions.can_query() {
+        names.retain(|topic| peer.permissions.can_push(topic) || peer.permissions.can_read(topic));
+    }
     let truncated = names.len() > MAX_NAMES_LIST_ENTRIES;
     names.truncate(MAX_NAMES_LIST_ENTRIES);
     NamesList {

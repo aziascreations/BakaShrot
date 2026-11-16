@@ -702,6 +702,25 @@ fn queries() {
     ] {
         assert!(matches!(runner.run(sql), Err(Error::Query(_))), "{sql}");
     }
+    // PRAGMAs are refused as they're prepared, reading ones too: one that
+    // changes the connection would have by the time it's looked at.
+    for sql in [
+        "PRAGMA query_only = 0",
+        "PRAGMA query_only",
+        "PRAGMA locking_mode = EXCLUSIVE",
+        "PRAGMA database_list",
+        "SELECT * FROM pragma_database_list",
+    ] {
+        match runner.run(sql) {
+            Err(Error::Query(why)) => assert!(why.contains("not authorized"), "{sql}: {why}"),
+            other => panic!("{sql}: {other:?}"),
+        }
+    }
+    // Still read-only, still answering.
+    assert_eq!(
+        json("SELECT count(*) FROM messages")["rows"],
+        serde_json::json!([["3"]])
+    );
     // A failing row fails it all, with SQLite's message.
     match runner.run("SELECT message_data ->> '$.t' FROM messages") {
         Err(Error::Query(why)) => assert!(why.contains("malformed JSON"), "{why}"),

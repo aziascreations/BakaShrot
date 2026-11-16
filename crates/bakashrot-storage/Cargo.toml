@@ -16,8 +16,9 @@ bakashrot-proto = { path = "../bakashrot-proto" }
 bakashrot-config = { path = "../bakashrot-config" }
 # SQLite itself compiled in (`bundled`): the same version everywhere, with
 # its JSON functions, no system library to install. `fallible_uint`: u64
-# in and out, an error past i64::MAX instead of a wrap.
-rusqlite = { version = "0.42.0", features = ["bundled", "fallible_uint"] }
+# in and out, an error past i64::MAX instead of a wrap. `hooks`: the
+# authorizer that refuses PRAGMAs in clients' queries.
+rusqlite = { version = "0.42.0", features = ["bundled", "fallible_uint", "hooks"] }
 # Query results as JSON.
 serde_json = "1.0.154"
 

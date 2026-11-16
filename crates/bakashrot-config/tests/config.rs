@@ -37,9 +37,6 @@ fn the_example() {
     let server = &config.server;
     assert_eq!(server.listen, "0.0.0.0:7000".parse().unwrap());
     assert_eq!(server.crl, None);
-    assert_eq!(server.topics.len(), 3);
-    assert!(server.has_topic("Sensors.Kitchen"));
-    assert!(!server.has_topic("sensors"));
     assert_eq!(server.synchronous, Synchronous::Full);
     assert_eq!(server.max_attachment_size, 1 << 30);
     assert_eq!(config.replication.push_to, Vec::<String>::new());
@@ -59,7 +56,6 @@ fn defaults() {
     let config = Config::parse(MINIMAL).unwrap();
     let server = &config.server;
     assert_eq!(server.database, Path::new("bakashrot.sqlite"));
-    assert!(server.topics.is_empty());
     assert_eq!(server.synchronous, Synchronous::Full);
     assert_eq!(server.max_attachment_size, 1 << 30);
     assert_eq!(server.retention_interval, Duration::from_secs(60));
@@ -67,7 +63,6 @@ fn defaults() {
     assert_eq!(config.replication.retry_delay, Duration::from_secs(10));
     assert_eq!(config.replication.sync_interval, Duration::from_secs(5));
     assert_eq!(config.replication.batch_size, 1000);
-    assert_eq!(config.replication.replicated_topics, None);
     assert!(config.roles.is_empty());
     assert!(config.permissions(&["anything"]).is_none());
 }
@@ -87,7 +82,6 @@ accept_from = ["10.0.0.2", "server-3.lan", "fd00::4"]
 retry_delay = "1m"
 sync_interval = "2s"
 batch_size = 10000
-replicated_topics = ["logs"]
 "#,
     ))
     .unwrap();
@@ -191,41 +185,13 @@ accept_nodes = ["garage"]
 }
 
 #[test]
-fn replicated_topics_filter_the_roles() {
-    let config = Config::parse(&with(
-        r#"
-[replication]
-replicated_topics = ["logs", "alerts.*"]
-
-[roles.peer]
-send_topics = ["*"]
-accept_topics = ["*"]
-
-[roles.sensor]
-push_topics = ["*"]
-"#,
-    ))
-    .unwrap();
-    let peer = config.permissions(&["peer", "sensor"]).unwrap();
-    assert!(peer.sends("logs", "kitchen") && peer.accepts("Logs", "kitchen"));
-    assert!(peer.sends("alerts.fire", "kitchen"));
-    assert!(!peer.sends("sensors.a", "kitchen") && !peer.accepts("sensors.a", "kitchen"));
-    assert!(peer.replicates());
-    // Only replication: pushing isn't filtered.
-    assert!(peer.can_push("sensors.a"));
-
-    // Empty: nothing replicated.
-    let none = Config::parse(&with(
-        "[replication]\nreplicated_topics = []\n[roles.peer]\nsend_topics = [\"*\"]\n",
-    ))
-    .unwrap();
+fn topics_are_only_in_the_roles() {
+    // No list of topics beside the roles': the old keys are refused.
+    assert!(refused(&with("topics = [\"logs\"]\n")).contains("unknown field `topics`"));
     assert!(
-        !none
-            .permissions(&["peer"])
-            .unwrap()
-            .sends("logs", "kitchen")
+        refused(&with("[replication]\nreplicated_topics = [\"logs\"]\n"))
+            .contains("unknown field `replicated_topics`")
     );
-    assert!(refused(&with("[replication]\nreplicated_topics = [\"a b\"]\n")).contains("'a b'"));
 }
 
 #[test]
@@ -271,16 +237,6 @@ fn refusals() {
         (
             &MINIMAL.replace("127.0.0.1:7000", "127.0.0.1"),
             "'127.0.0.1' isn't an address and a port",
-        ),
-        (&with("topics = [\"a b\"]\n"), "'a b' isn't a name ("),
-        (
-            &with("topics = [\"sensors.*\"]\n"),
-            "'sensors.*' isn't a name (",
-        ),
-        (&with("topics = [\"12\"]\n"), "'12' isn't a name"),
-        (
-            &with("topics = [\"logs\", \"Logs\"]\n"),
-            "'Logs' is given twice",
         ),
         (
             &with("synchronous = \"OFF\"\n"),

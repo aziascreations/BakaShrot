@@ -10,9 +10,9 @@ Decided in `../revamp.md`, "Decided".
 
 | Section | What |
 |---|---|
-| `[server]` | where it listens, the certificate files, the database, its topics, how pushes are flushed, attachments, retention's pace |
+| `[server]` | where it listens, the certificate files, the database, how pushes are flushed, attachments, retention's pace |
 | `[retention]` | how long each topic's messages are kept |
-| `[replication]` | the servers it sends to and takes from, the topics replicated at all, retry and sync pace, batch size |
+| `[replication]` | the servers it sends to and takes from, retry and sync pace, batch size |
 | `[roles.<name>]` | what certificates with that role may do |
 
 Unknown keys are refused, so a typo or a key of the old ini is caught.
@@ -45,6 +45,14 @@ What a role gives:
 No `AllowRead` / `AllowWrite`: a list that's empty allows nothing. No
 default topic: a push always names its topic (protocol 7 has none).
 
+**The roles are the only lists of topics** (decided 2026-11-16): no
+`[server] topics`, no `[replication] replicated_topics`, both refused as
+unknown keys. A topic exists from its first message, pushed by a client
+whose `push_topics` name it or taken from a peer whose `accept_topics`
+do; it's then read, listed, sent on and aged like any other, each by the
+roles that name it. A pattern (`push_topics = ["sensors.*"]`) lets its
+clients make topics: names for a closed set.
+
 ## Peers
 
 Who replicates with whom is each server's config, by address (not the
@@ -62,10 +70,8 @@ dialed takes them. What's sent and taken is still the roles': the other
 server's certificate's roles here, their `send_*` for what's sent to it,
 their `accept_*` for what's taken from it.
 
-`[replication] replicated_topics`, optional, filters every peer's
-replication whatever its roles say: an edge node that keeps some topics to
-itself. Without it, no filter; `[]` replicates nothing. Pushing and reading
-aren't filtered.
+An edge node that keeps some topics to itself leaves them out of its
+peers' `send_topics`.
 
 ## Names and values
 
@@ -95,7 +101,7 @@ server; each server has its own.
 | `PrivateKey`, `[BakaShrot] Node` | `ca`, `certificate`, `key`: the node is the certificate's name |
 | `[BakaShrot.Client.*]`: keys, `Node`, `Allow*` | `[roles.*]`, the node and roles from the certificate |
 | `[BakaShrot.Peer.*]`: `Host`, `Port`, `Node`, `PublicKey`, topic and node lists | `[replication] push_to` and `accept_from` (addresses), the lists in the peer's roles |
-| `ReplicatingTopics` | each peer role's `send_topics` / `accept_topics`; `replicated_topics` filters them all |
+| `ReplicatingTopics` | each peer role's `send_topics` / `accept_topics` |
 | topic and node ids, pins, ranges, `[BakaShrot.Nodes]` | names only: ids are the database's |
 | `DefaultTopic` | dropped: a push always names its topic |
 | `Host` + `Port` | `listen` |
@@ -108,7 +114,7 @@ server; each server has its own.
 
 `crates/bakashrot-config/tests/config.rs`: the example, the defaults,
 every setting, retention's order, permissions (several roles, none known,
-replication per role), `replicated_topics`, paths from the config's
+replication per role), the topic lists that are gone, paths from the config's
 folder, and the refusals, each with its line: TOML errors, unknown keys
 (the old ini's too), every value that's wrong, names twice (without case),
 unquoted dotted names.

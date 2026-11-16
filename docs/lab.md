@@ -50,7 +50,6 @@ certificate = "server-1.crt"
 key = "server-1.key"
 crl = "ca.crl"                 # optional; a missing file is fine, it's watched
 database = "bakashrot.sqlite"
-topics = ["lab.temps", "lab.events"]
 
 [retention]
 "*" = "7d"
@@ -71,8 +70,8 @@ send_topics = ["lab.*"]
 accept_topics = ["lab.*"]
 ```
 
-- `topics` are names, not patterns (`"lab.*"` there is refused, with its
-  line); the roles take patterns.
+- The roles are the only lists of topics, names or patterns: a topic
+  exists from its first message.
 - Every setting, with its default: `server.example.toml` (`config.md`).
 - Open the port: `New-NetFirewallRule -DisplayName BakaShrot -Direction
   Inbound -Protocol TCP -LocalPort 7000 -Action Allow` on Windows, the
@@ -139,11 +138,11 @@ Saved 6 bytes as got.txt
 {"columns":["topic","node","message_id","c"],"rows":[["lab.events","kitchen","1",null],["lab.temps","kitchen","1","21.5"]]}
 ```
 
-**Refusals.** A topic not in the config:
+**Refusals.** A topic none of its roles names:
 
 ```
 > bakashrot push other "{}"
-Refused by the server (UnknownName): unknown topic 'other'
+Refused by the server (NotAllowed): kitchen may not push to 'other'
 ```
 
 A certificate whose roles aren't in the config

@@ -413,8 +413,9 @@ impl Client {
         }
     }
 
-    /// The topics this client may push to or read (every one if it may
-    /// query), or every node with messages. `truncated` if some didn't fit.
+    /// The topics with messages that this client may push to or read
+    /// (every one if it may query), or every node with messages.
+    /// `truncated` if some didn't fit.
     pub fn list_names(&mut self, kind: NameKind) -> Result<NamesList> {
         match self.request(ListNames { kind }.into())? {
             Packet::NamesList(names) => Ok(names),

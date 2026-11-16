@@ -101,8 +101,8 @@ enum Command {
         /// standard input's.
         sql: String,
     },
-    /// Lists the topics this client may use (every one if it may query) and
-    /// the nodes with messages.
+    /// Lists the topics with messages that this client may use (every one
+    /// if it may query) and the nodes with messages.
     List {
         /// What to list.
         #[arg(value_enum, default_value_t = What::All)]

@@ -13,7 +13,7 @@ impl TryFrom<Vec<String>> for NameList {
     type Error = String;
 
     fn try_from(list: Vec<String>) -> Result<Self, String> {
-        check_names(&list, true)?;
+        check_names(&list)?;
         Ok(NameList(list))
     }
 }
@@ -77,12 +77,11 @@ pub struct Role {
 }
 
 /// What a certificate may do: everything one of its roles allows, each role
-/// on its own (a role's topics go with that role's nodes), replication
-/// within the server's `replicated_topics`.
+/// on its own (a role's topics go with that role's nodes). The roles are
+/// all there is: no other list of topics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Permissions {
     pub(crate) roles: Vec<Role>,
-    pub(crate) replicated_topics: Option<NameList>,
 }
 
 impl Permissions {
@@ -112,20 +111,16 @@ impl Permissions {
 
     /// Whether `node`'s messages in `topic` are sent to it.
     pub fn sends(&self, topic: &str, node: &str) -> bool {
-        self.replicated(topic)
-            && self
-                .roles
-                .iter()
-                .any(|role| role.send_topics.matches(topic) && role.send_nodes.matches(node))
+        self.roles
+            .iter()
+            .any(|role| role.send_topics.matches(topic) && role.send_nodes.matches(node))
     }
 
     /// Whether `node`'s messages in `topic` are taken from it.
     pub fn accepts(&self, topic: &str, node: &str) -> bool {
-        self.replicated(topic)
-            && self
-                .roles
-                .iter()
-                .any(|role| role.accept_topics.matches(topic) && role.accept_nodes.matches(node))
+        self.roles
+            .iter()
+            .any(|role| role.accept_topics.matches(topic) && role.accept_nodes.matches(node))
     }
 
     /// The topics and the nodes taken from it, as `SyncState` lists them:
@@ -157,11 +152,5 @@ impl Permissions {
         self.roles
             .iter()
             .any(|role| !role.send_topics.is_empty() || !role.accept_topics.is_empty())
-    }
-
-    fn replicated(&self, topic: &str) -> bool {
-        self.replicated_topics
-            .as_ref()
-            .is_none_or(|topics| topics.matches(topic))
     }
 }

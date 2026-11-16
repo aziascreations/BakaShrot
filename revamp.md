@@ -158,8 +158,17 @@ Also decided (2026-11-13):
     "Replication by address" below);
   - **no default topic** (dropped from the protocol too, 2026-11-13): a
     push always names its topic;
-  - `[replication] replicated_topics`, optional: the only topics
-    replicated at all, whatever the roles say, to filter on edge nodes.
+  - **the roles are the only lists of topics** (2026-11-16): `[server]
+    topics` and `[replication] replicated_topics` are gone (refused as
+    unknown keys), they repeated the roles. A push is taken if its
+    roles' `push_topics` name the topic, a replicated message if the
+    peer's `accept_topics` do; a topic exists from its first message,
+    and is read, listed (`ListNames`: the topics with messages) and
+    sent on by the roles that name it. So a topic that only came from a
+    peer is read like any other, and a push to a topic nobody names is
+    `NotAllowed` (`UnknownName` is only for nodes now). Before: `topics`
+    since 2026-11-13, `replicated_topics` to filter on edge nodes (now
+    their peers' `send_topics`).
 - **Schema v9, not compatible with v8** (2026-11-13): old databases aren't
   opened, their data isn't carried over (the real-life tests start empty).
   `docs/storage.md`:

@@ -79,7 +79,7 @@ class ErrorCode(enum.IntEnum):
     NONE = 0
     # Refused by the server, the connection still open.
     NOT_ALLOWED = 1          # its roles don't allow it (or none is the server's, when connecting)
-    UNKNOWN_NAME = 2         # a topic or node this server doesn't know
+    UNKNOWN_NAME = 2         # a node this server has no message of
     NOT_FOUND = 3            # no such message or attachment
     NOT_READY = 4            # the attachment isn't on this server yet: retry later
     TOO_BIG = 5              # over a limit, or more than this server keeps
@@ -542,7 +542,7 @@ class Client:
                 time.sleep(interval)
 
     def list_topics(self) -> NamesList:
-        """The topics the client may push to or read (every one if it may query)."""
+        """The topics with messages that the client may push to or read (every one if it may query)."""
         return self._list(self._dll.ListTopics, "List topics")
 
     def list_nodes(self) -> NamesList:

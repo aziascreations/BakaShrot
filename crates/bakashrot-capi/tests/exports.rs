@@ -125,8 +125,8 @@ fn exports() {
             -1
         );
         let (failed, why) = error();
-        assert_eq!(failed, code(ErrorCode::UnknownName));
-        assert!(why.contains("unknown topic"), "{why}");
+        assert_eq!(failed, code(ErrorCode::NotAllowed));
+        assert!(why.contains("may not push to 'nothing'"), "{why}");
 
         // The latest; none yet in another topic.
         assert_eq!(
@@ -199,10 +199,11 @@ fn exports() {
         assert_eq!(bytes[1..3], [b'{', 0]);
 
         // Names, queries.
-        assert_eq!(BakaShrot_ListTopics(), 2);
+        // Topics: those with messages (nothing in `secret` yet).
+        assert_eq!(BakaShrot_ListTopics(), 1);
         assert_eq!(
             get_w(BakaShrot_GetNamesListW),
-            r#"{"kind":"topic","names":["logs","secret"],"truncated":false}"#
+            r#"{"kind":"topic","names":["logs"],"truncated":false}"#
         );
         assert_eq!(BakaShrot_ListNodes(), 1);
         assert_eq!(

@@ -67,7 +67,7 @@ macro_rules! error_codes {
 error_codes! {
     // Refused by the server: the connection is still open.
     NotAllowed = 1, "Not allowed to this client: its roles' permissions, or a request only peers may make.";
-    UnknownName = 2, "A topic or node this server doesn't know.";
+    UnknownName = 2, "A node this server has no message of.";
     NotFound = 3, "No such message or attachment.";
     NotReady = 4, "The attachment isn't on this server yet (still being replicated).";
     TooBig = 5, "A message, attachment or query result over a limit, or an attachment bigger than this server keeps.";
