@@ -220,8 +220,9 @@ over 500 streams picked at random, 100 per transaction, 200-byte JSON;
 middle id; retention of 10% of one topic. The new side is
 `compare_with_old` (`tests/storage.rs`, ignored by default:
 `PUSHES=1000000 SYNC=normal cargo test --release -p bakashrot-storage --
---ignored --nocapture`). The old side calls `OldSource`'s writer
-(`BakaShrot_Writer_WriteJobs()`, its group commit, PureBasic 5.73, SQLite
+--ignored --nocapture`, or `bench.ps1 -Only storage`). The old side
+calls `OldSource`'s writer (`BakaShrot_Writer_WriteJobs()`, its group
+commit, PureBasic 5.73, SQLite
 3.54.1 from `sqlite3.dll`), from a program built outside `OldSource`.
 Same machine, NVMe, one run each.
 

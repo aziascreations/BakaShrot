@@ -288,8 +288,8 @@ pub unsafe extern "C" fn BakaShrot_SetPrivateKeyW(key: *const u16) -> isize {
 }
 
 /// Sets the CA's CRL, optional: servers it revokes are refused. PEM text,
-/// or the path of a file holding it; null or empty for none. Before
-/// connecting.
+/// or the path of a file holding it (one that isn't there is a
+/// `FileError`); null or empty for none. Before connecting.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_SetCrlA(crl: *const c_char) -> isize {
     unsafe { set::<Utf8>(crl.cast(), "CRL", true, |state| &mut state.crl) }

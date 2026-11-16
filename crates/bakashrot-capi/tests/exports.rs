@@ -85,6 +85,9 @@ fn exports() {
             BakaShrot_SetPrivateKeyA(a(&file("kitchen.key")).as_ptr()),
             1
         );
+        // A CRL file asked for is needed (client.toml's may be missing).
+        assert_eq!(BakaShrot_SetCrlW(w(&file("missing.crl")).as_ptr()), 0);
+        assert_eq!(error().0, code(ErrorCode::FileError));
         assert_eq!(BakaShrot_SetCrlW(std::ptr::null()), 1);
         assert_eq!(BakaShrot_ConnectW(localhost.as_ptr(), 0), 0);
         assert_eq!(error().0, code(ErrorCode::InvalidArgument));

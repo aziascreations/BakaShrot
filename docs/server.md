@@ -77,7 +77,7 @@ beside it, on `debian:trixie-slim`, as uid 10001.
 | Writes | one writer thread | a queue of every write (pushes, uploads and their parts, replicated messages and parts, retention's deletes); the thread writes whatever is queued in one transaction (group commit, 1000 at most): the busier, the bigger the groups |
 | Reads, queries | tokio's blocking threads | a pool of read connections and one of query connections (`query_only`), reused |
 | WAL checkpoints | one thread, every second | its own connection, off the writer's way (`storage.md`) |
-| The CRL file | a task, every 5 s | reloaded when its time or size changes; one that isn't the CA's is refused, the previous one stays |
+| The CRL file | a task, every 5 s | reloaded when its time or size changes; one that isn't the CA's is refused, the previous one stays; no file: nothing revoked, warned |
 | Retention | a task, at start then every `retention_interval` (1 min) | below |
 | Replication | a task per server of `push_to` | below: links kept up, a check-in every `sync_interval` (5 s) |
 
@@ -237,6 +237,9 @@ server's, `ConnectionLost`, `ProtocolError`, `InvalidArgument`,
 `FileError`, `AttachmentMismatch`, `VersionMismatch`).
 
 ## Measured
+
+`bench.ps1` at the root runs these benchmarks (`-Only push,replication`,
+`-Sync full|normal`; the variables below from the environment).
 
 `push_rate` (`tests/end_to_end.rs`, ignored by default): a whole server on
 localhost, 10 clients each its own node (`CLIENTS`), one push at a time

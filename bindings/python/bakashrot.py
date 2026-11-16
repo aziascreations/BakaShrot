@@ -326,8 +326,8 @@ class Client:
     @classmethod
     def from_file(cls, path: Union[str, os.PathLike], dll_path: Optional[str] = None) -> "Client":
         """From a client.toml (server, ca, certificate, key, crl), the tools'
-        too; paths in it are relative to its folder. Needs Python 3.11+
-        (tomllib)."""
+        too; paths in it are relative to its folder, a crl whose file isn't
+        there yet is none. Needs Python 3.11+ (tomllib)."""
         import tomllib
 
         try:
@@ -351,7 +351,10 @@ class Client:
             value = get(key, required)
             return os.path.join(folder, value) if value else None
 
-        return cls(get("server"), file("ca"), file("certificate"), file("key"), file("crl", False), dll_path)
+        # No CRL file yet: nothing revoked, as with the tools and the server.
+        crl = file("crl", False)
+        crl = crl if crl and os.path.exists(crl) else None
+        return cls(get("server"), file("ca"), file("certificate"), file("key"), crl, dll_path)
 
     # --- Connection --------------------------------------------------------
 

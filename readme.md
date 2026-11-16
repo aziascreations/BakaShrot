@@ -35,8 +35,10 @@ From the repository's root, on Windows (`powershell -ExecutionPolicy Bypass -Fil
 | `test.ps1` | What CI runs: formatting, clippy (warnings are errors), the tests, the docs |
 | `release.ps1` | A release for this platform, smoke-tested (`release.py`, below); `-SkipTest` |
 | `clean.ps1` | Deletes `target\` (builds and releases) |
+| `bench.ps1` | The benchmarks, release mode: pushes, replication, storage (`docs/server.md`, "Measured"); `-Only`, `-Sync full` or `normal` |
 
-Elsewhere, the same with cargo: `cargo build --release`, `cargo test`, `python release.py`, `cargo clean`.
+Elsewhere, the same with cargo: `cargo build --release`, `cargo test`, `python release.py`, `cargo clean`;
+the benchmarks are ignored tests (`cargo test --release -- --ignored`).
 Generated keys and certificates never go in git.
 
 
@@ -46,7 +48,7 @@ A Cargo workspace:
 ```
 Cargo.toml              the workspace: shared lints, release profile
 rust-toolchain.toml     the pinned toolchain (1.100.0)
-build.ps1, test.ps1, release.ps1, clean.ps1
+build.ps1, test.ps1, release.ps1, clean.ps1, bench.ps1
 release.py              a release for this platform: build, package, smoke test
 docs/                   designs across crates: protocol.md, certificates.md, oid.md, config.md,
                         storage.md, server.md, client.md, known-issues.md, lab.md (a test lab, step by step)

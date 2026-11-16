@@ -24,7 +24,7 @@ between peers by name. Clients: a C DLL, CLI tools, a Python module. An
   (`rust-toolchain.toml`, 1.100.0, MSVC; Visual Studio 18 has the
   linker).
 - `test.ps1` runs what CI runs; it must pass before a step is done
-  (`build.ps1`, `release.ps1`, `clean.ps1` beside it, see `readme.md`).
+  (`build.ps1`, `release.ps1`, `clean.ps1`, `bench.ps1` beside it, see `readme.md`).
   Run them by absolute path (`-File <repo>\test.ps1`): a relative one
   fails when the shell's folder differs.
 

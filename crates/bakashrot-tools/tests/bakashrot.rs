@@ -550,7 +550,11 @@ fn settings() {
         format!("{kitchen}crl = \"none.crl\"\n"),
     )
     .unwrap();
-    run(folder, "crl", &["list"], None).fails(1, "Can't read the CRL");
+    // No CRL file yet: nothing revoked. One that isn't a CRL is refused.
+    let none = run(folder, "crl", &["list", "topics"], None);
+    assert_eq!(none.ok().out, "Topics (0):\n");
+    fs::write(folder.join("none.crl"), "not a CRL").unwrap();
+    run(folder, "crl", &["list"], None).fails(1, "the CRL");
     let closed = kitchen.replace(&server.port.to_string(), "1");
     fs::write(folder.join("closed.toml"), closed).unwrap();
     run(folder, "closed", &["list"], None)

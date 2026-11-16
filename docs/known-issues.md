@@ -123,13 +123,6 @@ Reproduce one before fixing it, and move it up (or drop it) once known.
   `GetMessages` answers `UnknownName` for a node without messages
   anywhere and none for one with messages in another topic
   (`reader.rs`, `messages`). Fix: none in both cases.
-- **A CRL file that isn't there.** The server takes it as nothing
-  revoked (`load_revocations`, `bakashrot-server/src/lib.rs`), the
-  `bakashrot` tool refuses to start when `client.toml`'s `crl` names a
-  missing file. Either may be right (a server that starts before its
-  first CRL; a client that must not skip the check): choose one and
-  say it in the docs. A server whose CRL file was deleted by mistake
-  revokes nothing, silently.
 - **No limits per client.** Any number of connections (each a task and
   its buffers), any amount pushed: an allowed client can fill the disk
   or the server's memory. Fine for the threat model; first thing to

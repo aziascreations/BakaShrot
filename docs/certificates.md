@@ -77,9 +77,12 @@ connected, `peer_identity()` gives the other end's `Identity`.
   handshake, no new configuration needed. `Revocations::revokes()` tells
   the server which open connections to drop.
 - **Both ends check it:** `server_config()` and `client_config()` both take
-  the revocations (`Revocations::none()` without a CRL). A server dialing
-  its peer is the peer's client, with the same CRL: servers block each
-  other, whichever end dials.
+  the revocations (`Revocations::none()` without a CRL, or when the
+  server's config or `client.toml` names a CRL file that isn't there
+  yet: never blocking, the server warns in its log; a path given to
+  the DLL is a `FileError`). A server dialing its peer is the peer's
+  client, with the same CRL: servers block each other, whichever end
+  dials.
 - **Revoking is by certificate, not by name:** each certificate has its own
   key and its own serial number (made from that key), so two of the same
   name (two servers named alike, a new one before the old one goes) are

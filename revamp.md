@@ -1,12 +1,13 @@
 # BakaShrot revamp
 
 Started 2026-11-13: what it should change, what's decided, what's still
-open, and the plan. Steps 0 to 12 of the plan are done (the workspace,
+open, and the plan. Every step of the plan is done (the workspace,
 `bakashrot-proto`, `bakashrot-pki` and `bakashrot-cert`,
 `bakashrot-config`, `bakashrot-storage`, `bakashrot-server` and
 `bakashrot-client` answering every request, attachments included, the C
 DLL with its C, PureBasic and Python bindings, the `bakashrot` tool,
-retention, replication, operations and releases), see "Plan".
+retention, replication, operations and releases, then the finish: one
+test runner, CI, Docker, `bench.ps1`), see "Plan".
 
 - **Old implementation:** PureBasic, protocol 6, schema v8. Removed on
   2026-11-15 ("The PureBasic version removed"): it's in git history,
@@ -135,6 +136,14 @@ Also decided (2026-11-13):
     drops the connections whose certificate it now revokes;
   - a new file that doesn't verify is refused, the previous one kept and
     the refusal logged; no file means nothing revoked;
+  - **a CRL file that isn't there** (2026-11-16): nothing revoked, on
+    both ends, never blocking, where it's a setting: the server's
+    config (warned in its log: a CRL deleted by mistake) and
+    `client.toml` (the tool, Python's `from_file()`). A path given
+    to the DLL's `SetCrl` or Python's `Client(crl=...)` is asked for
+    explicitly: missing, it's a `FileError`. `bakashrot-cert revoke`
+    needs no file to start from (it writes the first one). A file
+    that's there but can't be read or isn't the CA's is refused;
   - clients check it too when given one (`client_config()` takes the
     same revocations): a server dialing its peer is a client, so servers
     block each other whichever end dials;
@@ -394,7 +403,7 @@ hand in each).
 | 10 | Retention | Background deletion, `node_heads` kept, attachments cleaned up | `Retention-Test`'s local checks | | Done 2026-11-14 |
 | 11 | Replication | Peer links, sync state, batches by name, wildcards, attachments, skipping on arrival | `Names-Test` (replication), `Restart-Test`; the corrupted-attachment fix | Decided 2026-11-14 | Done 2026-11-14 |
 | 12 | Operations | Signals and a clean stop, logs, release, wheel | Runs unattended, stops cleanly, the release's smoke test | Decided 2026-11-14 | Done 2026-11-14 |
-| 13 | Finish | One test runner (the Rust tests, decided 2026-11-15), end-to-end tests in CI, the bench, Docker | Push speed against the old ~17,000 msg/s (4 servers, measured 2026-11-14: `docs/server.md`) | | |
+| 13 | Finish | One test runner (the Rust tests, decided 2026-11-15), end-to-end tests in CI, the bench, Docker | Push speed against the old ~17,000 msg/s (4 servers, measured 2026-11-14: `docs/server.md`) | | Done 2026-11-16 (`bench.ps1`) |
 
 Each step ends with its tests passing and its docs updated (the crate's
 docs, `docs/`, this file's status), then a commit when the owner

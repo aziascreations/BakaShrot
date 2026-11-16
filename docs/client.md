@@ -35,7 +35,7 @@ server = "10.0.0.2:7000"     # host:port, [an IPv6 address]:port
 ca = "ca.crt"
 certificate = "kitchen.crt"
 key = "kitchen.key"
-crl = "ca.crl"               # optional
+crl = "ca.crl"               # optional; a file not there yet: none
 ```
 
 ## The DLL

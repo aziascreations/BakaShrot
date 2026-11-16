@@ -294,11 +294,16 @@ fn read(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// The CRL file's revocations; none without one (no file, or not set).
+/// The CRL file's revocations; none without one (not set, or no file:
+/// warned, a CRL deleted by mistake would revoke nothing silently).
 fn load_revocations(path: Option<&Path>, ca: &str) -> Result<Revocations, String> {
-    let Some(path) = path.filter(|path| path.exists()) else {
+    let Some(path) = path else {
         return Ok(Revocations::none());
     };
+    if !path.exists() {
+        warn!("{}: no such file, nothing revoked", path.display());
+        return Ok(Revocations::none());
+    }
     Revocations::load(&read(path)?, ca).map_err(|error| format!("{}: {error}", path.display()))
 }
 
