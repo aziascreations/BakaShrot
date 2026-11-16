@@ -168,7 +168,13 @@ Also decided (2026-11-13):
     peer is read like any other, and a push to a topic nobody names is
     `NotAllowed` (`UnknownName` is only for nodes now). Before: `topics`
     since 2026-11-13, `replicated_topics` to filter on edge nodes (now
-    their peers' `send_topics`).
+    their peers' `send_topics`);
+  - **`list_topics` and `list_nodes`** (2026-11-16), two booleans of a
+    role, for a tool that browses a server: listing answers every topic,
+    every node with messages. Without them (or `query`, which gives
+    both): the topics it may push to or read, the nodes of the topics
+    it may read (every node until then). Names only, reading is still
+    `read_topics`.
 - **Schema v9, not compatible with v8** (2026-11-13): old databases aren't
   opened, their data isn't carried over (the real-life tests start empty).
   `docs/storage.md`:

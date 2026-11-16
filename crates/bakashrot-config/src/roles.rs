@@ -61,6 +61,14 @@ pub struct Role {
     /// Whether it may run read-only SQL, which reads every topic.
     #[serde(default)]
     pub query: bool,
+    /// Whether listing topics answers every topic with messages, not only
+    /// those it may push to or read.
+    #[serde(default)]
+    pub list_topics: bool,
+    /// Whether listing nodes answers every node with messages, not only
+    /// those of the topics it may read.
+    #[serde(default)]
+    pub list_nodes: bool,
     /// Replication: the topics sent to it.
     #[serde(default)]
     pub send_topics: NameList,
@@ -107,6 +115,17 @@ impl Permissions {
     /// Whether it may run read-only SQL.
     pub fn can_query(&self) -> bool {
         self.roles.iter().any(|role| role.query)
+    }
+
+    /// Whether listing topics answers every one: `list_topics`, or
+    /// `query` (which reads them all anyway).
+    pub fn lists_every_topic(&self) -> bool {
+        self.roles.iter().any(|role| role.list_topics || role.query)
+    }
+
+    /// Whether listing nodes answers every one: `list_nodes`, or `query`.
+    pub fn lists_every_node(&self) -> bool {
+        self.roles.iter().any(|role| role.list_nodes || role.query)
     }
 
     /// Whether `node`'s messages in `topic` are sent to it.

@@ -120,11 +120,11 @@ Reproduce one before fixing it, and move it up (or drop it) once known.
   taken from anyone. Listing topics also only shows those with
   messages: a client can't ask what it may push to. Fine for the
   threat model; names in `push_topics` where the set is closed.
-- **Every client sees every node's name.** `ListNames` for nodes
-  answers every node with messages (`list_names`, `reader.nodes()`),
-  whatever the client's roles read, to push-only clients too. Topics
-  are filtered by the roles. Fix: only the nodes of the topics it may read, or none
-  without `read_topics` or `query`.
+- **Whether a node exists can still be probed.** Listing nodes is
+  filtered by the roles since 2026-11-16 (`list_nodes`), but
+  `GetMessages` answers `UnknownName` for a node without messages
+  anywhere and none for one with messages in another topic
+  (`reader.rs`, `messages`). Fix: none in both cases.
 - **A CRL file that isn't there.** The server takes it as nothing
   revoked (`load_revocations`, `bakashrot-server/src/lib.rs`), the
   `bakashrot` tool refuses to start when `client.toml`'s `crl` names a

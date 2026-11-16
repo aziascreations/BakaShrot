@@ -37,10 +37,16 @@ What a role gives:
 | `push_topics` | none | pushing to these topics, always as its own node |
 | `read_topics` | none | reading these topics' messages |
 | `query` | `false` | read-only SQL, which reads every topic |
+| `list_topics` | `false` | listing topics answers every one with messages, not only those it may push to or read |
+| `list_nodes` | `false` | listing nodes answers every one with messages, not only those of the topics it may read |
 | `send_topics` | none | replication: these topics sent to it |
 | `accept_topics` | none | replication: these topics taken from it |
 | `send_nodes` | `["*"]` | replication: only these nodes' messages sent |
 | `accept_nodes` | `["*"]` | replication: only these nodes' messages taken |
+
+`list_topics` and `list_nodes` (2026-11-16) only give names, for a tool
+that browses a server: reading a topic is still `read_topics`. `query`
+gives both, it reads everything anyway.
 
 No `AllowRead` / `AllowWrite`: a list that's empty allows nothing. No
 default topic: a push always names its topic (protocol 7 has none).

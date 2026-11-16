@@ -56,6 +56,10 @@ push_topics = ["sensors.*"]          # always as its own node (its name)
 [roles.dashboard]
 read_topics = ["*"]
 query = true                         # read-only SQL, reads every topic
+# Listing answers the topics it may push to or read, and the nodes of the
+# topics it may read. These answer every one (query does too):
+# list_topics = true
+# list_nodes = true
 
 # Peers are roles too: what's replicated with a server whose certificate
 # has this role, whichever end dials.

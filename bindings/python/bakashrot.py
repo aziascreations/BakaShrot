@@ -542,11 +542,11 @@ class Client:
                 time.sleep(interval)
 
     def list_topics(self) -> NamesList:
-        """The topics with messages that the client may push to or read (every one if it may query)."""
+        """The topics with messages that the client may push to or read (every one with list_topics or query)."""
         return self._list(self._dll.ListTopics, "List topics")
 
     def list_nodes(self) -> NamesList:
-        """Every node with messages."""
+        """The nodes with messages in the topics the client may read (every one with list_nodes or query)."""
         return self._list(self._dll.ListNodes, "List nodes")
 
     def _list(self, function, what: str) -> NamesList:

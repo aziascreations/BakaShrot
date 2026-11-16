@@ -41,6 +41,10 @@ read_topics = ["logs"]
 [roles.analyst]
 query = true
 
+[roles.explorer]
+list_topics = true
+list_nodes = true
+
 [roles.peer]
 send_topics = ["*"]
 accept_topics = ["*"]
@@ -604,8 +608,24 @@ fn names() {
     assert_eq!(names(&mut sensor, NameKind::Topic), ["logs", "sensors"]);
     assert_eq!(names(&mut screen, NameKind::Topic), ["logs"]);
     assert_eq!(names(&mut analyst, NameKind::Topic), ["logs", "sensors"]);
-    // Nodes: every one with messages.
-    assert_eq!(names(&mut screen, NameKind::Node), ["garage", "kitchen"]);
+    // Nodes: those of the topics it may read; every one for a query role.
+    assert!(names(&mut sensor, NameKind::Node).is_empty());
+    assert_eq!(names(&mut screen, NameKind::Node), ["kitchen"]);
+    assert_eq!(names(&mut analyst, NameKind::Node), ["garage", "kitchen"]);
+    // `list_topics` and `list_nodes`: every one, without reading any.
+    let mut explorer = running
+        .connect(&running.issue("browser", &["explorer"]))
+        .unwrap();
+    assert_eq!(names(&mut explorer, NameKind::Topic), ["logs", "sensors"]);
+    assert_eq!(names(&mut explorer, NameKind::Node), ["garage", "kitchen"]);
+    assert_eq!(
+        code(
+            explorer
+                .get_messages("logs", "kitchen", None, 1)
+                .unwrap_err()
+        ),
+        ErrorCode::NotAllowed.code()
+    );
 }
 
 /// The query parts of `OldSource/Tests/BigMessages-Test.ps1`.

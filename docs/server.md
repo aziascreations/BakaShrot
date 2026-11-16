@@ -201,8 +201,8 @@ the same ids with different messages, undetected.
   (`MESSAGES_BYTES`, a bigger message alone), `more` if others follow.
 - **`ListNames`:** topics are those with messages (pushed here or
   replicated), those the roles may push to or read (every one with
-  `query`, which reads them all anyway); nodes are every one with
-  messages. `truncated` past 65,536.
+  `list_topics` or `query`); nodes are those with messages in the
+  topics the roles may read (every one with `list_nodes` or `query`). `truncated` past 65,536.
 - **`Query`:** the roles must allow it (`NotAllowed`); read-only SQL,
   refused with SQLite's message (`QueryFailed`, with a hint to add
   `is_json = 1` on "malformed JSON"), over 10,000 rows or 16 MB
