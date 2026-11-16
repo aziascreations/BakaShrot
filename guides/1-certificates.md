@@ -2,11 +2,6 @@
 
 [Index](readme.md) · Next: [Server](2-server.md)
 
-Every `bakashrot-cert` command prints this warning, ignore it for tests:
-```
-warning: the identity extension's OID is still a placeholder (docs/oid.md): fine for tests, not for certificates in use
-```
-
 More options: `bakashrot-cert.exe <command> --help`.
 
 
