@@ -5,16 +5,11 @@ from authenticated clients, store them in SQLite, and replicate them
 between peers by name. Clients: a C DLL, CLI tools, a Python module. An
 **internal tool on trusted machines**.
 
-**Rewritten in Rust** (since 2026-11-13):
-
-- `revamp.md`: why, what's decided, what's proposed and open, the plan and
-  its status. Read it first.
+- `revamp.md`: what's decided, what's proposed and open, the plan and its
+  status. Read it first.
 - The implementation is the Cargo workspace at the root (`readme.md`:
   layout, scripts, conventions; `docs/`: designs, `protocol.md` first,
   `known-issues.md` for what's left).
-- The old PureBasic implementation was removed on 2026-11-15: it's in git
-  history, `OldSource/` up to commit `68966a8`. Paths starting with
-  `OldSource/` in the code and docs point there.
 
 ## Toolchain
 
@@ -30,7 +25,7 @@ between peers by name. Clients: a C DLL, CLI tools, a Python module. An
 
 ## Working rules
 
-- **Commit only when the owner asks**, on a branch (`revamp`), not `master`.
+- **Commit only when the owner asks**, on a branch, not `master`.
 - **Follow the plan's order** (`revamp.md`, "Plan"); a step is done when its
   tests pass and its docs are updated, then its status goes in the table.
 - **Decisions go in `revamp.md`**: moved to "Decided" only when the owner

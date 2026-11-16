@@ -2,8 +2,6 @@
 -- keys below are packed integers, on purpose, and only bakashrot-storage
 -- packs and unpacks them.
 --
--- Not compatible with v8 (OldSource/Server/Storage/db_schema_v8.dbml): a
--- database of the old server isn't opened, its data isn't carried over.
 -- Needs SQLite 3.38+ (JSON functions, ->>), bundled with the crate.
 --
 -- Run once, in one transaction, on an empty database (Database::open).
@@ -128,7 +126,7 @@ FROM streams s
 JOIN data d ON d.key BETWEEN (s.stream_id << 43) AND (s.stream_id << 43) + 8796093022207
 LEFT JOIN attachments a ON a.message_key = d.key;
 
--- What to browse with a database tool (v8's): set topic, and node or NULL
+-- What to browse with a database tool: set topic, and node or NULL
 -- for all, in its one row, open browse_messages. Never written by the
 -- server.
 CREATE TABLE browse (

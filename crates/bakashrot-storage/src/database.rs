@@ -28,8 +28,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WRITER_CHECKPOINT_PAGES: u32 = 10_000;
 
 /// Copies the WAL into the database on a connection of its own, so the
-/// writer doesn't do it in the middle of a commit (the old server's way:
-/// `OldSource/Server/Storage/Writer.pbi`).
+/// writer doesn't do it in the middle of a commit.
 #[derive(Debug)]
 pub struct Checkpointer {
     connection: Connection,
@@ -74,7 +73,10 @@ impl Database {
                 [concat!("bakashrot-storage ", env!("CARGO_PKG_VERSION"))],
             )?;
         } else if application_id != APPLICATION_ID {
-            return Err(Error::Unusable(unusable(&transaction, path)?));
+            return Err(Error::Unusable(format!(
+                "{}: not a BakaShrot database",
+                path.display()
+            )));
         }
         let mut version = schema_version(&transaction)?;
         if version > SCHEMA_VERSION {
@@ -183,21 +185,4 @@ fn schema_version(connection: &Connection) -> Result<i64> {
         None
     };
     version.ok_or_else(|| Error::Unusable("a BakaShrot database without its schema version".into()))
-}
-
-/// Why a database that isn't ours can't be opened, in words.
-fn unusable(connection: &Connection, path: &Path) -> Result<String> {
-    let old: bool = connection.query_row(
-        "SELECT count(*) > 0 FROM sqlite_schema WHERE type = 'table' AND name = 'node_heads'",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(if old {
-        format!(
-            "{}: made by the old server (schema v8), which this one doesn't read: start a new database",
-            path.display()
-        )
-    } else {
-        format!("{}: not a BakaShrot database", path.display())
-    })
 }

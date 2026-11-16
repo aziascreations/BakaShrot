@@ -19,8 +19,7 @@ store them in SQLite, and replicate them to other servers by topic and node name
   * A CLI tool to push, read, query and list
   * A Python module over the library, without dependencies, as a wheel with the library in it
 
-See [revamp.md](revamp.md) for why it was rewritten in Rust, what was decided, and the plan.
-The PureBasic version it replaced (protocol 6) is in the git history: `OldSource/`, up to commit `68966a8`.
+See [revamp.md](revamp.md) for what was decided, and the plan.
 
 
 ## Building
@@ -63,7 +62,7 @@ crates/
   bakashrot-tools/      the CLI tools: bakashrot (push, read, query, list), bakashrot-cert
 bindings/
   c/                    bakashrot.h, generated from bakashrot-capi
-  purebasic/            the prototypes and error codes, as the PureBasic version's
+  purebasic/            the prototypes and error codes
   python/               bakashrot.py over the DLL, check_bakashrot.py, make_wheel.py
 .cargo/config.toml      the C runtime linked statically on Windows
 docker/                 the server's image: Dockerfile, compose.yml, test.sh
@@ -111,7 +110,6 @@ Publishing:
 * A crate's root docs say what it does; designs that span crates go in `docs/`, updated with the code.
 * Use existing crates rather than reimplementing (MessagePack is `rmp-serde`).
 * Protocol changes update `docs/protocol.md`; error codes are never renumbered, packet ids never reused.
-* `OldSource/` paths in comments and docs: the PureBasic version, in git history up to commit `68966a8`.
 
 
 ## Cloning

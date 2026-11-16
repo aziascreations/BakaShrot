@@ -1,8 +1,7 @@
 # Known issues and ideas
 
-What's still true of the PureBasic version's notes, for this one. That
-version was removed on 2026-11-15; it's in git history up to commit
-`68966a8` (`OldSource/Notes.md`, "Open items"; `OldSource/Design/`).
+What's known to be wrong or missing, what's left as it is and why, and
+ideas for later.
 
 ## Threat model
 
@@ -36,19 +35,27 @@ network**, not exposed to the internet. So:
 - **The attachments a server lacks:** it reports the 256 oldest at a
   time (`SyncState`). With several peers, ones none of them has can hold
   back newer ones.
-- **Peers are trusted with what they replicate** (old item 12): a server
+- **Peers are trusted with what they replicate:** a server
   in `accept_from` can send any message its roles accept, for any node.
   Messages carry no proof of who first wrote them. Fix: sign each message
   with its node's key when first stored, check it on replication (every
   server then needs every node's public key).
 - **Private keys sit in PEM files**, readable by whoever can read them: on
   trusted machines, file permissions are enough.
-- **One connection per process in the DLL** (old item 10, `revamp.md`,
+- **One connection per process in the DLL** (`revamp.md`,
   "Open questions"): a handle-based API for several. Polling rather than
   pushed subscriptions; nothing reconnects by itself, on purpose.
 - **At least once:** a push whose answer was lost (the server stopped
   between committing and answering) is stored twice if retried. A client
   that minds reads the latest message before retrying.
+- **1,048,575 topic and node pairs per database** (2^20 - 1,
+  `MAX_STREAMS`, `bakashrot-storage/src/lib.rs`), for all topics
+  together, and 2^43 - 1 message ids per pair (`MAX_MESSAGE_ID`): the
+  20 and 43 bits of a message's packed key (`storage.md`, "Keys"). Past
+  the first, a new pair is refused from anyone, pushed or replicated;
+  pairs aren't freed when their messages are deleted. Enough for now
+  (the owner, 2026-11-16). Raising it means another key layout, so a
+  new schema version.
 
 ## Found by reading the code, not reproduced
 
@@ -73,20 +80,7 @@ Reproduce one before fixing it, and move it up (or drop it) once known.
   the example config says so by `max_attachment_size` (1 GiB by
   default). Fix if needed: a wait scaled to the parts already received,
   or the hash's state kept with the attachment.
-- **Two peers sending the same attachment at once.** Both can be
-  answered `Continue` for the same `from_part` (the check and the first
-  part written aren't one step). Their parts then interleave in the
-  writer's queue: each part is stored once, from whichever came first,
-  and each sender has one refused (`InvalidRequest`). With few parts (4
-  or fewer in flight, `PARTS_IN_FLIGHT`), all of them can be stored
-  while both senders were refused: neither sends `FinishReplicated`,
-  and the attachment stays `replicating` with `received = size`, asked
-  for and refused at every check-in until a restart (`clean_up` starts
-  it over). Needs two parts at least and a narrow timing: servers that
-  take from two others having the same attachment. Fix: finish it
-  whenever the last part is stored, or one receiver at a time per
-  attachment.
-- **`SyncState` in one packet** (old item 9). Every head the peer may
+- **`SyncState` in one packet.** Every head the peer may
   send goes in one frame of 16 MiB at most: with very many topic and
   node pairs (hundreds of thousands) it doesn't fit, the packet can't
   be sent and replication stops. Fix: heads in several packets, or only
@@ -144,8 +138,7 @@ Reproduce one before fixing it, and move it up (or drop it) once known.
 
 ## Ideas for later
 
-From the old benchmarks and suggestions (`OldSource/Design/Suggestions.md`),
-worth it only when a use calls for them:
+Worth it only when a use calls for them:
 
 - **Several pushes in flight per connection.** One request at a time
   (`protocol.md`, "Rules") caps a node at one push per round trip:

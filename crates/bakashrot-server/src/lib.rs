@@ -28,6 +28,7 @@ use bakashrot_pki::{Revocations, SharedRevocations, summarize, tls};
 use bakashrot_proto::ErrorCode;
 use bakashrot_proto::packets::RequestRefused;
 use bakashrot_storage::{Database, QueryRunner, Reader};
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -66,6 +67,9 @@ struct Shared {
     readers: Mutex<Vec<Reader>>,
     /// Query connections not in use.
     queries: Mutex<Vec<QueryRunner>>,
+    /// The replicated attachments being received (topic, node, message
+    /// id): one peer at a time each (`accept_from.rs`).
+    receiving: Mutex<HashSet<(String, String, u64)>>,
 }
 
 impl Server {
@@ -108,6 +112,7 @@ impl Server {
                 pushes,
                 readers: Mutex::new(Vec::new()),
                 queries: Mutex::new(Vec::new()),
+                receiving: Mutex::new(HashSet::new()),
                 config,
             }),
         })
@@ -253,7 +258,7 @@ impl Shared {
 
 /// Checkpoints the WAL every second, on a thread and a connection of its
 /// own, so the writer doesn't do it in the middle of a commit (2.5 times
-/// the pushes: `docs/storage.md`, "Against the old storage").
+/// the pushes: `docs/storage.md`, "The benchmark").
 fn start_checkpoints(database: &Database) -> Result<(), String> {
     let checkpointer = database.checkpointer().map_err(|error| error.to_string())?;
     std::thread::Builder::new()

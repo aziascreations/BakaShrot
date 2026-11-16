@@ -1,5 +1,4 @@
-//! Topic and node names, and wildcards: the rules of protocol 6
-//! (`OldSource/Commons/Networking/Names.pbi`), without its ids.
+//! Topic and node names, and wildcards.
 //!
 //! Topics and nodes go by name everywhere on the wire: a server's ids for
 //! them are its own business, in its database.

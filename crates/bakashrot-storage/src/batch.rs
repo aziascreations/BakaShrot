@@ -36,18 +36,6 @@ impl Writer {
         batch.transaction.commit()?;
         Ok(value)
     }
-
-    /// Gives the space of deleted messages back to the disk: rewrites the
-    /// database (`VACUUM`), then empties the WAL. SQLite reuses that space
-    /// by itself; this only shrinks the file. Slow on a big database, and
-    /// every other write waits meanwhile: the old server's `vacuum`
-    /// command.
-    pub fn vacuum(&mut self) -> Result<()> {
-        self.connection.execute_batch("VACUUM")?;
-        self.connection
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-        Ok(())
-    }
 }
 
 /// What's written in one transaction ([`Writer::batch`]). Names come

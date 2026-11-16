@@ -83,7 +83,6 @@ class ErrorCode(enum.IntEnum):
     NOT_FOUND = 3            # no such message or attachment
     NOT_READY = 4            # the attachment isn't on this server yet: retry later
     TOO_BIG = 5              # over a limit, or more than this server keeps
-    NO_DEFAULT_TOPIC = 6     # protocol 6's, never sent any more
     INVALID_REQUEST = 7      # a request that doesn't fit (parts out of order...)
     DATA_MISMATCH = 8        # an upload that doesn't match its SHA-256
     QUERY_FAILED = 9         # the SQL failed

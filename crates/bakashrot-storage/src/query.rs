@@ -1,4 +1,4 @@
-//! Clients' read-only SQL (`Query`), as the old server ran it.
+//! Clients' read-only SQL (`Query`).
 //!
 //! Read-only three ways: the connection has `query_only` on (SQLite
 //! refuses any write), the statement must be one SQLite says only reads
@@ -6,8 +6,8 @@
 //! error, not ignored). PRAGMAs are refused as they're prepared
 //! (`Database::query_runner`'s authorizer): some would change the
 //! connection, `query_only` included, before the statement is looked
-//! at. The result is JSON, every value a string or null
-//! (as in protocol 6): `{"columns":[...],"rows":[[...],...]}`.
+//! at. The result is JSON, every value a string or null:
+//! `{"columns":[...],"rows":[[...],...]}`.
 
 use crate::{Error, Result};
 use bakashrot_proto::limits::MAX_MESSAGE_SIZE;
@@ -77,7 +77,7 @@ impl QueryRunner {
     }
 }
 
-/// SQLite's error, with a hint where the old server gave one.
+/// SQLite's error, with a hint where one helps.
 fn explain(why: String) -> String {
     if why.contains("malformed JSON") {
         format!("{why} (a row isn't JSON: add is_json = 1 to the WHERE)")

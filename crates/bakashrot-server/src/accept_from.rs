@@ -12,7 +12,46 @@ use bakashrot_proto::packets::{
 use bakashrot_proto::{ErrorCode, Packet};
 use bakashrot_storage::AttachmentState;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
+use tracing::warn;
+
+/// A replicated attachment being received over one connection: another
+/// asking for it is refused until this is dropped (finished, refused,
+/// the connection gone).
+struct Receiving<'a> {
+    shared: &'a Shared,
+    key: (String, String, u64),
+}
+
+impl<'a> Receiving<'a> {
+    /// None when it's being received already. Names without case, as
+    /// everywhere ("Logs" is "logs").
+    fn claim(shared: &'a Shared, topic: &str, node: &str, message_id: u64) -> Option<Self> {
+        let key = (
+            topic.to_ascii_lowercase(),
+            node.to_ascii_lowercase(),
+            message_id,
+        );
+        let claimed = shared
+            .receiving
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key.clone());
+        // Made only when claimed, the lock let go: dropping one releases it.
+        claimed.then(|| Receiving { shared, key })
+    }
+}
+
+impl Drop for Receiving<'_> {
+    fn drop(&mut self) {
+        let mut receiving = self
+            .shared
+            .receiving
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        receiving.remove(&self.key);
+    }
+}
 
 /// Whether `address` is in `accept_from`: `*`, an address as written, or
 /// a hostname resolving to it (looked up now).
@@ -152,6 +191,16 @@ pub(crate) async fn replicate_attachment(
         return Ok(refusal);
     }
     let message = format!("{}:{}#{}", request.topic, request.node, request.message_id);
+    // One peer at a time per attachment, until this returns (or the
+    // connection goes): two at once would both be refused a part.
+    let Some(_receiving) =
+        Receiving::claim(shared, &request.topic, &request.node, request.message_id)
+    else {
+        return Ok(refused(
+            ErrorCode::NotReady,
+            format!("{message}: being received from another server"),
+        ));
+    };
     let ReplicateAttachment {
         topic,
         node,
@@ -175,8 +224,22 @@ pub(crate) async fn replicate_attachment(
         size: stored.size,
         sha256: stored.sha256,
     };
-    let next = stored.received / ATTACHMENT_PART_SIZE;
-    if from_part != next || stored.received == stored.size {
+    // Every part came but nobody is checking them (finishing it failed):
+    // started over, it's never taken unchecked.
+    let mut received = stored.received;
+    if received == stored.size {
+        warn!("{message}: its attachment came whole but wasn't checked, asked for again");
+        let restart = Write::FinishReplicated {
+            attachment: stored.id as u64,
+            matches: false,
+        };
+        if let Err(refusal) = shared.pushes.send(restart).await {
+            return Ok(refusal.into());
+        }
+        received = 0;
+    }
+    let next = received / ATTACHMENT_PART_SIZE;
+    if from_part != next {
         return Ok(refused(
             ErrorCode::InvalidRequest,
             format!("{message}: part {next} is the next one here, not {from_part}"),

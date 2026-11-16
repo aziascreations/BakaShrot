@@ -1,5 +1,5 @@
-//! `bakashrot` end to end against a server on a free port: the old suites'
-//! tool checks (GetMessages, Names, BigMessages).
+//! `bakashrot` end to end against a server on a free port: messages,
+//! pushes and refusals, big messages, attachments, queries, lists.
 
 use bakashrot_client::{Client, Settings};
 use bakashrot_config::Config;

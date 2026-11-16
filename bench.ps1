@@ -1,7 +1,7 @@
 # Runs the benchmarks, release mode: the tests ignored by default.
 #   push         pushes through one server, 10 clients (end_to_end.rs, push_rate)
 #   replication  4 servers in a Y, pushed to flat out (end_to_end.rs, replication_rate)
-#   storage      the storage alone, the old storage's workload (storage.rs, compare_with_old)
+#   storage      the storage alone, pushes then reads (storage.rs, storage_rate)
 # docs/server.md and docs/storage.md have the numbers measured so far.
 # Usage: powershell -ExecutionPolicy Bypass -File bench.ps1 [-Only push,replication,storage] [-Sync full|normal]
 # -Sync sets SQLite's synchronous for all of them (otherwise each one's
@@ -25,7 +25,7 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 $benches = [ordered]@{
     push        = @("bakashrot-server", "end_to_end", "push_rate")
     replication = @("bakashrot-server", "end_to_end", "replication_rate")
-    storage     = @("bakashrot-storage", "storage", "compare_with_old")
+    storage     = @("bakashrot-storage", "storage", "storage_rate")
 }
 
 $oldSync = $env:SYNC

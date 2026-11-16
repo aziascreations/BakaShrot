@@ -93,8 +93,7 @@ pub trait Body: Serialize + DeserializeOwned + Check + Into<Packet> {
 }
 
 // The one table of packets: their names (the struct's and the variant's)
-// and ids. Protocol 7's own: protocol 6's ids don't apply (the versions are
-// checked before any packet).
+// and ids (the versions are checked before any packet).
 macro_rules! packets {
     ($( $(#[$doc:meta])* $name:ident = $id:literal, )*) => {
         /// The type of a packet: its first value.

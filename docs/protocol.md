@@ -1,10 +1,7 @@
 # Protocol 7
 
 What goes over a connection between a client and a server, or two servers.
-The code is `crates/bakashrot-proto`; this describes it. Protocol 6, the
-PureBasic one, is `OldSource/Design/Packets.md`: what the requests do is
-mostly the same, the transport, the encoding and the packets themselves
-were simplified (see the end).
+The code is `crates/bakashrot-proto`; this describes it.
 
 **Status (2026-11-13):** packets, frames, names and error codes are written
 and tested (`bakashrot-proto`), so is the TLS setup (`bakashrot-pki`,
@@ -123,6 +120,7 @@ An attachment   C: GetAttachment(from_part)         S: Attachment, then Attachme
 Replicating     P: SyncStateRequest                 S: SyncState
                 P: ReplicateMessages x the batches  S: MessagePushed each / RequestRefused
                 P: ReplicateAttachment x missing    S: Continue / RequestRefused
+                                                       (NotReady: another peer sending it)
                 P: AttachmentPart x from next_part  S: MessagePushed / RequestRefused
 ```
 
@@ -141,8 +139,6 @@ Replicating     P: SyncStateRequest                 S: SyncState
 
 ## Rules
 
-The same as protocol 6:
-
 - **One request at a time:** a client sends one, waits for its answer (the
   parts of an attachment being part of its request or answer).
 - **Refuse or abort:** valid but not allowed or not found (permissions,
@@ -152,33 +148,5 @@ The same as protocol 6:
   to answers.
 - **The identity is the connection's:** requests never say who sends them.
   A push picks its topic, never its node.
-- **Error codes** (`error`): 1-99 refusals, 100+ the client's own; the
-  numbers of protocol 6, never renumbered.
-
-## What changed from protocol 6
-
-- **TLS** instead of the sealed Hello, the signed key exchange and the own
-  cipher: the handshake packets are gone, `Welcome` is new, the identity
-  comes from the certificate.
-- **The version is checked once**, sent by both ends before anything else:
-  packets lost their magic and version.
-- **Names only:** no ids on the wire, no refs. `ResolveName` /
-  `NameResolved` are gone, answers don't echo ids, `NamesList` is names,
-  `SyncState` gives its heads by name.
-- **No default topic:** a push always names its topic, `Welcome` doesn't
-  give one (`NoDefaultTopic`, 6, is never sent).
-- **Fewer packets, 26 → 18:** `GetMessages` with `after: nil` replaces
-  `GetLatestMessage`, `Messages` replaces `LatestMessage`; `SyncState`
-  lists the missing attachments (no `MissingAttachmentsRequest` /
-  `MissingAttachments`); answers don't echo what was asked.
-- **Attachments are streamed in their request:** no upload ids, no uploads
-  waiting for their push (and no `UploadTimeout`), no request or answer per
-  part (`UploadStart`, `UploadStarted`, `UploadChunk`, `ChunkStored`,
-  `AttachmentChunk`, `ReplicateAttachmentChunk` are gone). An upload cut
-  short starts over (none resumed in protocol 6 either); reads and
-  replication go on `from_part`.
-- **Encoding:** derived with `serde`, `[type, [fields...]]`, booleans and
-  nil where they belong (were 0/1 and empty values). Nothing may follow a
-  packet (was ignored).
-- **No 4 KB limit before authentication:** TLS has authenticated both ends
-  before any frame.
+- **Error codes** (`error`): 1-99 refusals, 100+ the client's own, never
+  renumbered.

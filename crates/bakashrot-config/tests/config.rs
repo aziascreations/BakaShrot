@@ -235,12 +235,6 @@ fn refusals() {
         ("", "missing field `server`"),
         (&with("lsiten = \"x\"\n"), "unknown field `lsiten`"),
         (&with("[other]\n"), "unknown field `other`"),
-        // The old ini's keys.
-        (&with("PrivateKey = \"x\"\n"), "unknown field `PrivateKey`"),
-        (
-            &with("[roles.sensor]\nAllowWrite = 1\n"),
-            "unknown field `AllowWrite`",
-        ),
         (
             &with("[roles.sensor]\ndefault_topic = \"x\"\n"),
             "unknown field `default_topic`",

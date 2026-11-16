@@ -1,7 +1,6 @@
 //! `bakashrot`: pushes messages, reads them and their attachments, runs
 //! queries and lists names from the command line, connecting with a
-//! `client.toml`. The old `BakaShrot*` tools in one program; see
-//! `docs/client.md`, "The tools".
+//! `client.toml`; see `docs/client.md`, "The tools".
 
 use bakashrot_client::{Client, Error, Settings};
 use bakashrot_proto::error::{code_name, is_refusal_code};

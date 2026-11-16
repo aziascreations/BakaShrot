@@ -6,7 +6,7 @@
 //! through `serde` and `rmp-serde`.
 //!
 //! - [`limits`]: the protocol's numbers (sizes, counts, the version).
-//! - [`error`]: the error codes, the same numbers as protocol 6.
+//! - [`error`]: the error codes, never renumbered.
 //! - [`names`]: topic and node names, wildcards.
 //! - [`frame`]: frames, a 4-byte size then a packet.
 //! - [`packets`]: every packet, and [`Packet`] to encode and decode them.

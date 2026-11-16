@@ -3,7 +3,7 @@
 //! Python (ctypes) and anything that loads a DLL. `docs/client.md`
 //! has the whole API; `bindings/c/bakashrot.h` is generated from this file.
 //!
-//! The conventions, the old DLL's:
+//! The conventions:
 //!
 //! - **One connection per process:** set the certificates, connect, send
 //!   requests, one at a time (calls from several threads wait for each

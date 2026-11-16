@@ -429,8 +429,7 @@ fn ids(messages: &Messages) -> Vec<u64> {
     messages.messages.iter().map(|message| message.id).collect()
 }
 
-/// `OldSource/Tests/GetMessages-Test.ps1`, the server's part (the tool's
-/// is step 8).
+/// Runs of messages: after an id, limits, `more`, the latest.
 #[test]
 fn runs_of_messages() {
     let running = Running::start("runs");
@@ -515,8 +514,7 @@ fn runs_of_messages() {
     assert_eq!(run(&mut kitchen, None, 1).messages[0].data, text);
 }
 
-/// `OldSource/Tests/BigMessages-Test.ps1`, one server's part (replicating
-/// them is step 11): up to the limit, answers split at about 1 MB.
+/// Big messages: up to the limit, answers split at about 1 MB.
 #[test]
 fn big_messages() {
     let running = Running::start("big");
@@ -628,7 +626,7 @@ fn names() {
     );
 }
 
-/// The query parts of `OldSource/Tests/BigMessages-Test.ps1`.
+/// Queries: allowed or not, results, refusals.
 #[test]
 fn queries() {
     let running = Running::start("queries");
@@ -1157,8 +1155,7 @@ fn retention() {
     assert_eq!(latest.messages[0].id, 4);
 }
 
-/// Replication flat out, as the old `Tests/Bench/Bench-Replication.ps1`
-/// (`-Parts Ramp -Ramp 10x0`): 4 servers in a Y (a hub pushing to 3
+/// Replication flat out: 4 servers in a Y (a hub pushing to 3
 /// leaves, each pushing to the hub), `NODES` nodes (10) pushing to each
 /// as fast as they're answered for `SECONDS` (30), then how far behind
 /// each server is and how long until every one has every message. Run
@@ -1581,4 +1578,141 @@ fn replication_edges() {
         messages: vec![message(9, now, None)],
     });
     other.refused(ErrorCode::NotAllowed);
+}
+
+/// Message `id`'s attachment in `running`'s database: its state and
+/// how much of it came.
+fn attachment_row(running: &Running, id: u64) -> (String, u64) {
+    let raw = rusqlite::Connection::open(running.folder.join("bakashrot.sqlite")).unwrap();
+    raw.query_row(
+        "SELECT a.state, a.received FROM attachments a \
+         JOIN data d ON d.key = a.message_key WHERE d.message_id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn two_peers_one_attachment() {
+    // The test plays two peers having the same attachments.
+    let running = Running::start_with(
+        "two-peers",
+        "\n[replication]\naccept_from = [\"127.0.0.1\"]\n",
+    );
+    let x = running.issue("server-x", &["peer"]);
+    let mut a = Raw::connect(&running, &x);
+    let mut b = Raw::connect(&running, &running.issue("server-y", &["peer"]));
+    let small = bytes(MIB + 10, 7);
+    let whole = bytes(2 * MIB, 8);
+    let message = |id, file: &[u8]| ReplicatedMessage {
+        id,
+        pushed_at: 1_800_000_000_000,
+        data: format!("m{id}"),
+        attachment: Some(Attachment {
+            size: file.len() as u64,
+            sha256: sha256(file),
+        }),
+    };
+    a.send(ReplicateMessages {
+        topic: "logs".into(),
+        node: "far".into(),
+        messages: vec![message(1, &small), message(2, &small), message(3, &whole)],
+    });
+    assert_eq!(a.receive(), Some(MessagePushed { message_id: 3 }.into()));
+    let ask = |raw: &mut Raw, topic: &str, message_id, from_part| {
+        raw.send(ReplicateAttachment {
+            topic: topic.into(),
+            node: "far".into(),
+            message_id,
+            from_part,
+        })
+    };
+    let send_parts = |raw: &mut Raw, file: &[u8]| {
+        for part in file.chunks(MIB) {
+            raw.send(AttachmentPart {
+                data: part.to_vec(),
+            });
+        }
+    };
+    let mut reader = running
+        .connect(&running.issue("watcher", &["reader"]))
+        .unwrap();
+    let mut got = |id| {
+        let mut out = Vec::new();
+        reader.get_attachment("logs", "far", id, &mut out).unwrap();
+        out
+    };
+
+    // One peer at a time: the other is refused before any part (in any
+    // case of the names), the first one finishes it.
+    ask(&mut a, "logs", 1, 0);
+    assert!(matches!(a.receive(), Some(Packet::Continue(_))));
+    ask(&mut b, "logs", 1, 0);
+    b.refused(ErrorCode::NotReady);
+    ask(&mut b, "LOGS", 1, 0);
+    b.refused(ErrorCode::NotReady);
+    send_parts(&mut a, &small);
+    assert_eq!(a.receive(), Some(MessagePushed { message_id: 1 }.into()));
+    assert!(got(1) == small);
+    ask(&mut b, "logs", 1, 0);
+    b.refused(ErrorCode::NotFound);
+
+    // A peer gone partway: the next one takes it from there.
+    ask(&mut a, "logs", 2, 0);
+    assert!(matches!(a.receive(), Some(Packet::Continue(_))));
+    a.send(AttachmentPart {
+        data: small[..MIB].to_vec(),
+    });
+    wait_for("the first part", || {
+        attachment_row(&running, 2).1 == MIB as u64
+    });
+    drop(a);
+    wait_for("the attachment let go", || {
+        ask(&mut b, "logs", 2, 1);
+        match b.receive() {
+            Some(Packet::Continue(_)) => true,
+            Some(Packet::RequestRefused(refused)) => {
+                assert_eq!(refused.code, ErrorCode::NotReady.code(), "{refused:?}");
+                false
+            }
+            other => panic!("expected Continue or NotReady, got {other:?}"),
+        }
+    });
+    send_parts(&mut b, &small[MIB..]);
+    assert_eq!(b.receive(), Some(MessagePushed { message_id: 2 }.into()));
+    assert!(got(2) == small);
+
+    // Whole but never checked (finishing it failed): asked for from the
+    // first part, not past its last; started over, never taken unchecked.
+    let mut a = Raw::connect(&running, &x);
+    ask(&mut a, "logs", 3, 0);
+    assert!(matches!(a.receive(), Some(Packet::Continue(_))));
+    send_parts(&mut a, &whole);
+    assert_eq!(a.receive(), Some(MessagePushed { message_id: 3 }.into()));
+    let raw = rusqlite::Connection::open(running.folder.join("bakashrot.sqlite")).unwrap();
+    raw.execute(
+        "UPDATE attachments SET state = 'replicating' \
+         WHERE message_key = (SELECT key FROM data WHERE message_id = 3)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        attachment_row(&running, 3),
+        ("replicating".into(), whole.len() as u64)
+    );
+    let missing: Vec<_> = sync_state(&mut a)
+        .missing
+        .iter()
+        .map(|missing| (missing.message_id, missing.next_part))
+        .collect();
+    assert_eq!(missing, [(3, 0)], "not part 2: then it's never asked for");
+    ask(&mut a, "logs", 3, 2);
+    a.refused(ErrorCode::InvalidRequest);
+    assert_eq!(attachment_row(&running, 3), ("replicating".into(), 0));
+    ask(&mut a, "logs", 3, 0);
+    assert!(matches!(a.receive(), Some(Packet::Continue(_))));
+    send_parts(&mut a, &whole);
+    assert_eq!(a.receive(), Some(MessagePushed { message_id: 3 }.into()));
+    assert!(got(3) == whole);
 }

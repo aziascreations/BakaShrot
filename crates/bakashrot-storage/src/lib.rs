@@ -4,8 +4,7 @@
 //!   and hands out connections.
 //! - [`Writer`]: the one connection that writes. Everything is written in
 //!   a [`Batch`], one transaction: pushes, replication, attachments,
-//!   retention. Many pushes in one batch is a group commit. And
-//!   [`Writer::vacuum`], to shrink the file.
+//!   retention. Many pushes in one batch is a group commit.
 //! - [`Reader`]: as many as needed, reading while the writer writes (WAL).
 //! - [`QueryRunner`]: clients' read-only SQL, on a read-only connection.
 //!

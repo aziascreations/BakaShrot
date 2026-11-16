@@ -54,7 +54,9 @@ batch_size = 1000                    # messages per packet, 1-10000
 # roles allow; one without any role listed here is refused. Every key is
 # optional: an empty list allows nothing. The topics are only named here:
 # one exists from its first message, pushed (push_topics) or replicated
-# (accept_topics).
+# (accept_topics). A database holds 1,048,575 topic and node pairs at
+# most, all topics together, never freed: patterns like "*" in
+# push_topics let clients make as many as they like.
 [roles.sensor]
 push_topics = ["sensors.*"]          # always as its own node (its name)
 

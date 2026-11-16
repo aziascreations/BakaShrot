@@ -29,9 +29,7 @@ is a CRL file from the CA, pushed to the servers.
   only digits), 64 roles at most. Roles mean nothing to the certificates:
   the server's config says what each may do.
 - **Its OID is `1.3.6.1.4.1.67681.1.1`** (`IDENTITY_OID`), under
-  NibblePoker's own PEN (67681), since 0.3.0. Certificates made before
-  (a placeholder OID) aren't read: issue them again. The branches:
-  `oid.md`.
+  NibblePoker's own PEN (67681). The branches: `oid.md`.
 - **The CN is the name too**, for people (`openssl x509 -text`, logs). Only
   the extension is trusted.
 - **Clients' certificates** are for `clientAuth`. **Servers'** are for

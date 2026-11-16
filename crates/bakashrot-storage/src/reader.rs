@@ -190,17 +190,23 @@ impl Reader {
     pub fn missing_attachments(&self, limit: usize) -> Result<Vec<MissingAttachment>> {
         self.connection
             .prepare_cached(
-                "SELECT s.topic, s.node, d.message_id, a.received FROM attachments a \
+                "SELECT s.topic, s.node, d.message_id, a.received, a.size FROM attachments a \
                  JOIN data d ON d.key = a.message_key \
                  JOIN streams s ON s.stream_id = d.stream_id \
                  WHERE a.state = 'replicating' ORDER BY a.attachment_id LIMIT ?1",
             )?
             .query_map([limit as i64], |row| {
+                let (received, size): (u64, u64) = (row.get(3)?, row.get(4)?);
                 Ok(MissingAttachment {
                     topic: row.get(0)?,
                     node: row.get(1)?,
                     message_id: row.get(2)?,
-                    next_part: row.get::<_, u64>(3)? / ATTACHMENT_PART_SIZE,
+                    // Whole but not checked: it starts over from the first.
+                    next_part: if received == size {
+                        0
+                    } else {
+                        received / ATTACHMENT_PART_SIZE
+                    },
                 })
             })?
             .collect::<rusqlite::Result<_>>()
