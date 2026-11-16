@@ -28,7 +28,6 @@ ca = "ca.crt"
 certificate = "server.crt"
 key = "server.key"
 crl = "ca.crl"
-topics = ["logs", "sensors"]
 
 [roles.sensor]
 push_topics = ["logs", "sensors"]
@@ -41,6 +40,10 @@ read_topics = ["logs"]
 
 [roles.analyst]
 query = true
+
+[roles.explorer]
+list_topics = true
+list_nodes = true
 
 [roles.peer]
 send_topics = ["*"]
@@ -237,9 +240,10 @@ fn refusals_keep_the_connection() {
         refused(reader.push("logs", "{}")),
         ErrorCode::NotAllowed.code()
     );
+    // A topic is its roles': one that none of them names.
     assert_eq!(
         refused(sensor.push("nope", "{}")),
-        ErrorCode::UnknownName.code()
+        ErrorCode::NotAllowed.code()
     );
     // The client checks names before sending.
     assert_eq!(
@@ -487,9 +491,13 @@ fn runs_of_messages() {
         refused(screen.get_messages("sensors", "kitchen", None, 1)),
         ErrorCode::NotAllowed.code()
     );
-    assert_eq!(
-        refused(kitchen.get_messages("nothing", "kitchen", None, 1)),
-        ErrorCode::UnknownName.code()
+    // A topic without messages: none, for a node that has some elsewhere.
+    assert!(
+        kitchen
+            .get_messages("nothing", "kitchen", None, 1)
+            .unwrap()
+            .messages
+            .is_empty()
     );
     assert_eq!(
         refused(kitchen.get_messages("logs", "nobody", None, 1)),
@@ -600,8 +608,24 @@ fn names() {
     assert_eq!(names(&mut sensor, NameKind::Topic), ["logs", "sensors"]);
     assert_eq!(names(&mut screen, NameKind::Topic), ["logs"]);
     assert_eq!(names(&mut analyst, NameKind::Topic), ["logs", "sensors"]);
-    // Nodes: every one with messages.
-    assert_eq!(names(&mut screen, NameKind::Node), ["garage", "kitchen"]);
+    // Nodes: those of the topics it may read; every one for a query role.
+    assert!(names(&mut sensor, NameKind::Node).is_empty());
+    assert_eq!(names(&mut screen, NameKind::Node), ["kitchen"]);
+    assert_eq!(names(&mut analyst, NameKind::Node), ["garage", "kitchen"]);
+    // `list_topics` and `list_nodes`: every one, without reading any.
+    let mut explorer = running
+        .connect(&running.issue("browser", &["explorer"]))
+        .unwrap();
+    assert_eq!(names(&mut explorer, NameKind::Topic), ["logs", "sensors"]);
+    assert_eq!(names(&mut explorer, NameKind::Node), ["garage", "kitchen"]);
+    assert_eq!(
+        code(
+            explorer
+                .get_messages("logs", "kitchen", None, 1)
+                .unwrap_err()
+        ),
+        ErrorCode::NotAllowed.code()
+    );
 }
 
 /// The query parts of `OldSource/Tests/BigMessages-Test.ps1`.
@@ -746,7 +770,7 @@ fn attachments() {
     let error = kitchen
         .get_attachment("nothing", "kitchen", 1, &mut Vec::new())
         .unwrap_err();
-    assert_eq!(error.code(), ErrorCode::UnknownName.code(), "{error}");
+    assert_eq!(error.code(), ErrorCode::NotFound.code(), "{error}");
     let mut logs_only = running
         .connect(&running.issue("lounge", &["logs"]))
         .unwrap();
@@ -1510,6 +1534,42 @@ fn replication_edges() {
     raw.send(AttachmentPart { data: vec![1; 10] });
     raw.refused(ErrorCode::DataMismatch);
     assert_eq!(sync_state(&mut raw).missing[0].next_part, 0);
+
+    // A topic nobody pushed here: it's there from its first replicated
+    // message, read and listed by the roles that name it.
+    raw.send(ReplicateMessages {
+        topic: "elsewhere".into(),
+        node: "far".into(),
+        messages: vec![message(1, now, None)],
+    });
+    assert_eq!(raw.receive(), Some(MessagePushed { message_id: 1 }.into()));
+    let mut reader = running
+        .connect(&running.issue("screen", &["reader"]))
+        .unwrap();
+    let got = reader
+        .get_messages("elsewhere", "far", Some(0), 10)
+        .unwrap();
+    assert_eq!(got.messages[0].data, "m1");
+    // (`old` had a message, past its age.)
+    assert_eq!(
+        reader.list_names(NameKind::Topic).unwrap().names,
+        ["elsewhere", "logs", "old"]
+    );
+    let mut logs_only = running
+        .connect(&running.issue("lounge", &["logs"]))
+        .unwrap();
+    assert_eq!(
+        logs_only.list_names(NameKind::Topic).unwrap().names,
+        ["logs"]
+    );
+    assert_eq!(
+        code(
+            logs_only
+                .get_messages("elsewhere", "far", Some(0), 10)
+                .unwrap_err()
+        ),
+        ErrorCode::NotAllowed.code()
+    );
 
     // A certificate whose roles take nothing: refused.
     let mut other = Raw::connect(&running, &running.issue("nosy", &["reader"]));

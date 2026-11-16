@@ -7,6 +7,7 @@
 //! `send_*` allow. `accept_from.rs` is the other end.
 
 use crate::Shared;
+use crate::connection::SEND_TIMEOUT;
 use crate::writer::Write;
 use bakashrot_config::Permissions;
 use bakashrot_pki::tls;
@@ -297,10 +298,11 @@ impl Link {
     }
 
     async fn send(&mut self, packet: Packet) -> Result<(), String> {
-        self.frames
-            .send(bytes::Bytes::from(packet.encode()))
-            .await
-            .map_err(|error| error.to_string())
+        let sending = self.frames.send(bytes::Bytes::from(packet.encode()));
+        match timeout(SEND_TIMEOUT, sending).await {
+            Ok(sent) => sent.map_err(|error| error.to_string()),
+            Err(_) => Err("too slow to take a packet".into()),
+        }
     }
 
     async fn receive(&mut self) -> Result<Packet, String> {

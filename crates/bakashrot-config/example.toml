@@ -20,9 +20,6 @@ key = "server-1.key"
 
 database = "bakashrot.sqlite"
 
-# The topics clients push to. Peers may bring others (accept_topics).
-topics = ["logs", "sensors.kitchen", "sensors.garage"]
-
 # "full": every push flushed to disk before it's answered, it survives a
 # power loss. "normal": about twice the pushes, a power loss loses the last
 # second or so. ("off" isn't allowed.)
@@ -44,22 +41,25 @@ logs = "30d"
 [replication]
 push_to = []                         # dialed and sent to: ["10.0.0.2:7000", "server-2.lan:7000"]
 accept_from = []                     # taken from: ["10.0.0.2", "server-2.lan"], or ["*"]
-# The only topics replicated at all, whatever the roles say: a filter for
-# edge nodes. Without it, no filter; [] replicates nothing.
-# replicated_topics = ["logs", "alerts.*"]
 retry_delay = "10s"
 sync_interval = "5s"
 batch_size = 1000                    # messages per packet, 1-10000
 
 # What certificates with a role may do. A certificate gets everything its
 # roles allow; one without any role listed here is refused. Every key is
-# optional: an empty list allows nothing.
+# optional: an empty list allows nothing. The topics are only named here:
+# one exists from its first message, pushed (push_topics) or replicated
+# (accept_topics).
 [roles.sensor]
 push_topics = ["sensors.*"]          # always as its own node (its name)
 
 [roles.dashboard]
 read_topics = ["*"]
 query = true                         # read-only SQL, reads every topic
+# Listing answers the topics it may push to or read, and the nodes of the
+# topics it may read. These answer every one (query does too):
+# list_topics = true
+# list_nodes = true
 
 # Peers are roles too: what's replicated with a server whose certificate
 # has this role, whichever end dials.

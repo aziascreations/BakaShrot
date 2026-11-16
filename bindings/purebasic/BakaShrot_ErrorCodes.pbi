@@ -49,7 +49,7 @@
 ; Not allowed to this client: its roles' permissions (or, when connecting,
 ; none of its roles is the server's).
 #BakaShrot_Refused_NotAllowed     = 1
-; A topic or node this server doesn't know.
+; A node this server has no message of.
 #BakaShrot_Refused_UnknownName    = 2
 ; No such message or attachment.
 #BakaShrot_Refused_NotFound       = 3

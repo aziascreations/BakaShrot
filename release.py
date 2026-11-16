@@ -275,7 +275,6 @@ ca = "ca.crt"
 certificate = "server-1.crt"
 key = "server-1.key"
 database = "test.sqlite"
-topics = ["releasetest"]
 
 [roles.tester]
 push_topics = ["releasetest"]

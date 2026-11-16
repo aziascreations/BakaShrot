@@ -6,9 +6,8 @@ machine, 2026-11-15, Windows): the outputs shown are what came back.
 
 Get a release (CI's artifacts, or `release.ps1` / `python release.py`):
 the programs, `bakashrot.dll` / `libbakashrot.so`, the wheel, the
-example configs. The certificates are throwaway for now: the identity
-OID is a placeholder until NibblePoker's PEN (`oid.md`), every tool run
-says so. Reissue them all once it changes.
+example configs. Certificates made before 0.3.0 had a placeholder
+identity OID (`oid.md`) and aren't read any more: issue them again.
 
 | Machine | What runs there | Files it gets |
 |---|---|---|
@@ -50,7 +49,6 @@ certificate = "server-1.crt"
 key = "server-1.key"
 crl = "ca.crl"                 # optional; a missing file is fine, it's watched
 database = "bakashrot.sqlite"
-topics = ["lab.temps", "lab.events"]
 
 [retention]
 "*" = "7d"
@@ -71,8 +69,8 @@ send_topics = ["lab.*"]
 accept_topics = ["lab.*"]
 ```
 
-- `topics` are names, not patterns (`"lab.*"` there is refused, with its
-  line); the roles take patterns.
+- The roles are the only lists of topics, names or patterns: a topic
+  exists from its first message.
 - Every setting, with its default: `server.example.toml` (`config.md`).
 - Open the port: `New-NetFirewallRule -DisplayName BakaShrot -Direction
   Inbound -Protocol TCP -LocalPort 7000 -Action Allow` on Windows, the
@@ -139,11 +137,11 @@ Saved 6 bytes as got.txt
 {"columns":["topic","node","message_id","c"],"rows":[["lab.events","kitchen","1",null],["lab.temps","kitchen","1","21.5"]]}
 ```
 
-**Refusals.** A topic not in the config:
+**Refusals.** A topic none of its roles names:
 
 ```
 > bakashrot push other "{}"
-Refused by the server (UnknownName): unknown topic 'other'
+Refused by the server (NotAllowed): kitchen may not push to 'other'
 ```
 
 A certificate whose roles aren't in the config
@@ -166,7 +164,7 @@ certificate is refused, at its next connection or request:
 Failed to connect to server-2.lab:7000 (AuthRejected): the server refused this client's certificate (CertificateRevoked)
 ```
 
-**Python.** `pip install bakashrot-0.2.0-py3-none-<platform>.whl` (from the
+**Python.** `pip install bakashrot-0.3.0-py3-none-<platform>.whl` (from the
 release's `python/`), then, next to lab-py's `client.toml` (it may push and
 read: `sensor` and `dashboard`):
 

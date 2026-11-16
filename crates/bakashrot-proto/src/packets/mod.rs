@@ -12,7 +12,7 @@
 //! field names is taken too, `serde`'s derive: nothing writes that form, it
 //! isn't part of the format, its values are checked all the same.) Whatever isn't right is a
 //! [`DecodeError`]: the connection is aborted. What's well-formed but not
-//! allowed or not found (a topic this server doesn't have) is the server's
+//! allowed or not found (a node without messages) is the server's
 //! to refuse, with a `RequestRefused`.
 //!
 //! Topics and nodes are names everywhere, never ids.

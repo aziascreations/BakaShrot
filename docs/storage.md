@@ -109,7 +109,7 @@ read while the writer writes. Answers are the protocol's own types:
 
 A topic and node with no messages read as none, unless the node has none
 in any topic: `Error::UnknownName`, as the old server refused unknown
-nodes. Whether a topic is known is the server's (the config's topics).
+nodes. A topic is never unknown: it's allowed or not, by the roles.
 
 ## Attachments
 
@@ -140,7 +140,11 @@ afterwards, `purge_attachments(max_parts)` a batch at a time.
 
 Clients' `Query` runs on `Database::query_runner()`, read-only three ways:
 the connection is `query_only`, the statement must be one SQLite says only
-reads, and one statement only (more is refused, not ignored). The result is
+reads, and one statement only (more is refused, not ignored). PRAGMAs are
+refused as they're prepared ("not authorized", SQLite's authorizer), the
+`pragma_*` table functions too: some take effect at that point, and
+`PRAGMA query_only = 0`, though refused, turned `query_only` off for the
+connection's next queries (found 2026-11-15). The result is
 `{"columns":[...],"rows":[[...]]}`, every value a string or null (blobs in
 hex), 10,000 rows and 16 MB at most (`TooBig`). A failing row fails it all,
 with SQLite's message: never a partial result. "malformed JSON" (a JSON

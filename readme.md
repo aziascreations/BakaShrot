@@ -53,7 +53,7 @@ docs/                   designs across crates: protocol.md, certificates.md, oid
 crates/
   bakashrot-proto/      packets, frames, names, limits, error codes, shared by everything
   bakashrot-pki/        certificates: issuing, identities, CRLs, the TLS setup
-  bakashrot-config/     the server's config (TOML): topics, retention, replication, roles
+  bakashrot-config/     the server's config (TOML): retention, replication, roles
   bakashrot-storage/    SQLite, schema v9: the writer, reads, attachments, queries
   bakashrot-server/     the server: TLS, identities, requests, the writer thread (and its program)
   bakashrot-client/     the client library, Rust API, blocking

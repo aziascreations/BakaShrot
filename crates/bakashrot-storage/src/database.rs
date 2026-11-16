@@ -3,6 +3,7 @@
 
 use crate::{Error, QueryRunner, Reader, Result, SCHEMA_VERSION, Writer};
 use bakashrot_config::Synchronous;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -126,10 +127,18 @@ impl Database {
         Ok(Reader::new(self.connect()?))
     }
 
-    /// A connection for clients' queries: read-only (`query_only`).
+    /// A connection for clients' queries: read-only (`query_only`), and
+    /// every PRAGMA refused from then on (SQLite's authorizer). Some take
+    /// effect when they're prepared, before a statement can be refused
+    /// for what it is: `PRAGMA query_only = 0` turned `query_only` off
+    /// for the connection's next queries.
     pub fn query_runner(&self) -> Result<QueryRunner> {
-        let connection = self.connect()?;
+        let mut connection = self.connect()?;
         connection.pragma_update(None, "query_only", true)?;
+        connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Pragma { .. } => Authorization::Deny,
+            _ => Authorization::Allow,
+        }))?;
         Ok(QueryRunner::new(connection))
     }
 

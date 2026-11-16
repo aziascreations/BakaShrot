@@ -2,7 +2,7 @@
 //! addresses, names.
 
 use bakashrot_proto::limits::{MAX_ATTACHMENT_SIZE, MAX_MESSAGES_PER_PACKET};
-use bakashrot_proto::names::{is_valid_name, is_valid_name_or_pattern, names_equal};
+use bakashrot_proto::names::{is_valid_name_or_pattern, names_equal};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 use std::net::{Ipv6Addr, SocketAddr};
@@ -184,23 +184,11 @@ pub(crate) fn batch_size<'de, D: Deserializer<'de>>(reader: D) -> Result<u32, D:
     Ok(size)
 }
 
-/// Topic names (no patterns), none twice.
-pub(crate) fn topic_names<'de, D: Deserializer<'de>>(reader: D) -> Result<Vec<String>, D::Error> {
-    let names = Vec::<String>::deserialize(reader)?;
-    check_names(&names, false).map_err(D::Error::custom)?;
-    Ok(names)
-}
-
-/// Checks a list of names (`patterns`: or patterns), none twice.
-pub(crate) fn check_names(list: &[String], patterns: bool) -> Result<(), String> {
+/// Checks a list of names or patterns, none twice.
+pub(crate) fn check_names(list: &[String]) -> Result<(), String> {
     for (at, entry) in list.iter().enumerate() {
-        let (valid, what) = if patterns {
-            (is_valid_name_or_pattern(entry), "a name or a pattern")
-        } else {
-            (is_valid_name(entry), "a name")
-        };
-        if !valid {
-            return Err(format!("'{entry}' isn't {what} ({NAME_HELP})"));
+        if !is_valid_name_or_pattern(entry) {
+            return Err(format!("'{entry}' isn't a name or a pattern ({NAME_HELP})"));
         }
         if list[..at].iter().any(|before| names_equal(before, entry)) {
             return Err(format!("'{entry}' is given twice"));

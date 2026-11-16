@@ -311,7 +311,7 @@ CompilerIf #PB_Compiler_IsMainFile
 	PrintN("Topics: " + BakaShrot_GetNamesListString())
 
 	If BakaShrot_PushMessageTo("nothing", "{}") < 0
-		PrintN("A push to an unknown topic: " + BakaShrot_ErrorName(BakaShrot_GetLastError()) + ", " + BakaShrot_GetRefusalReasonString())
+		PrintN("A push to a topic it may not push to: " + BakaShrot_ErrorName(BakaShrot_GetLastError()) + ", " + BakaShrot_GetRefusalReasonString())
 	EndIf
 
 	BakaShrot_Disconnect()

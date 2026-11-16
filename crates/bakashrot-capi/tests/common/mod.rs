@@ -12,7 +12,6 @@ listen = "127.0.0.1:0"
 ca = "ca.crt"
 certificate = "server.crt"
 key = "server.key"
-topics = ["logs", "secret"]
 
 [roles.home]
 push_topics = ["logs", "secret"]

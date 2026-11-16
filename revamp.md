@@ -107,9 +107,11 @@ Also decided (2026-11-13):
     critical ones it doesn't know): `SEQUENCE { version INTEGER (1), name
     UTF8String, roles SEQUENCE OF UTF8String }`. The name is the node;
     roles are free strings with the name rules, their meaning in the
-    server's config. Only the server reads it. Its OID is a placeholder
-    for now, see "Open questions" (the UUID arc of `OldSource/` can't be
-    used: `rcgen` writes OID parts of 64 bits at most);
+    server's config. Only the server reads it. Its OID is
+    `1.3.6.1.4.1.67681.1.1`, under NibblePoker's PEN (2026-11-16,
+    `docs/oid.md`; a placeholder until then; the UUID arc of
+    `OldSource/` can't be used: `rcgen` writes OID parts of 64 bits at
+    most);
   - the name again as the subject's CN, for people (`openssl x509 -text`,
     logs); the server only trusts the extension;
   - extended key usage `clientAuth` for clients, `serverAuth` and
@@ -158,8 +160,23 @@ Also decided (2026-11-13):
     "Replication by address" below);
   - **no default topic** (dropped from the protocol too, 2026-11-13): a
     push always names its topic;
-  - `[replication] replicated_topics`, optional: the only topics
-    replicated at all, whatever the roles say, to filter on edge nodes.
+  - **the roles are the only lists of topics** (2026-11-16): `[server]
+    topics` and `[replication] replicated_topics` are gone (refused as
+    unknown keys), they repeated the roles. A push is taken if its
+    roles' `push_topics` name the topic, a replicated message if the
+    peer's `accept_topics` do; a topic exists from its first message,
+    and is read, listed (`ListNames`: the topics with messages) and
+    sent on by the roles that name it. So a topic that only came from a
+    peer is read like any other, and a push to a topic nobody names is
+    `NotAllowed` (`UnknownName` is only for nodes now). Before: `topics`
+    since 2026-11-13, `replicated_topics` to filter on edge nodes (now
+    their peers' `send_topics`);
+  - **`list_topics` and `list_nodes`** (2026-11-16), two booleans of a
+    role, for a tool that browses a server: listing answers every topic,
+    every node with messages. Without them (or `query`, which gives
+    both): the topics it may push to or read, the nodes of the topics
+    it may read (every node until then). Names only, reading is still
+    `read_topics`.
 - **Schema v9, not compatible with v8** (2026-11-13): old databases aren't
   opened, their data isn't carried over (the real-life tests start empty).
   `docs/storage.md`:
@@ -247,7 +264,9 @@ Also decided (2026-11-13):
     programs, the client library and its bindings, the example configs,
     the docs, the licenses, and a smoke test;
   - **the Python wheel has the library in it**, for a simple install;
-  - **version 0.2.0.**
+  - **version 0.2.0**; **0.3.0** on 2026-11-16 (the identity OID under
+    NibblePoker's PEN, the roles as the only lists of topics,
+    `list_topics` / `list_nodes`).
 - **The PureBasic version removed** (2026-11-15): `OldSource/` deleted,
   kept in git history (up to `68966a8`). What of its notes and designs
   still holds went to `docs/known-issues.md`; the rest was already
@@ -290,14 +309,6 @@ come back as text either way; only what SQL computes would gain
 
 - **A handle-based DLL API** (several connections per process, old open item
   10): later maybe, the owner's call (one connection per process for now).
-- **The identity extension's OID, a placeholder for now:** it goes under a
-  Private Enterprise Number of NibblePoker's, from IANA (free, within a
-  week; the owner's to request). Until then `bakashrot_pki::IDENTITY_OID`
-  is under RFC 5612's documentation PEN (32473),
-  `IDENTITY_OID_IS_PLACEHOLDER` is `true` and `bakashrot-cert` warns when
-  it makes a certificate. Certificates issued with it stop being read once
-  it changes: get the number before any is in use. How to request it and
-  what to change then: `docs/oid.md`.
 
 ## Kept: the behaviour to carry over
 

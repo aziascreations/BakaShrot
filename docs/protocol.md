@@ -69,8 +69,9 @@ format, its values are checked all the same.)
 
 - **Topics and nodes are names**, everywhere: 1-64 of `A-Z a-z 0-9 _ . -`,
   not only digits, compared without case (`names`). A name that isn't one
-  is malformed (the client libraries check before sending); one the server
-  doesn't have is refused (`UnknownName`). Ids are each server's own, in
+  is malformed (the client libraries check before sending); a node the
+  server has no message of is refused (`UnknownName`), a topic is only
+  ever allowed or not (the roles). Ids are each server's own, in
   its database, never on the wire.
 - **Patterns** (in a `SyncState`): names with `*` (any characters, none
   included) and `?` (one).

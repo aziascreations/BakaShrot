@@ -18,7 +18,6 @@ listen = "127.0.0.1:0"
 ca = "ca.crt"
 certificate = "server.crt"
 key = "server.key"
-topics = ["logs", "secret"]
 synchronous = "normal"
 
 [roles.home]
@@ -214,7 +213,7 @@ fn pushes_and_latest() {
     server
         .tool("lounge", &["push", "logs", "{}"])
         .fails(1, "Refused by the server (NotAllowed)");
-    push(&["nope", "{}"]).fails(1, "Refused by the server (UnknownName): ");
+    push(&["nope", "{}"]).fails(1, "Refused by the server (NotAllowed): ");
     push(&["bad name!", "{}"]).fails(1, "Failed (InvalidArgument)");
     push(&["logs", "@missing.json"]).fails(1, "Can't read missing.json");
     let big = "x".repeat(bakashrot_proto::limits::MAX_MESSAGE_SIZE + 1);
@@ -319,7 +318,13 @@ fn messages() {
     assert_eq!(messages("kitchen", &["secret", "kitchen"]).ok().ids(), [1]);
     messages("lounge", &["secret", "kitchen"]).fails(1, "(NotAllowed)");
     messages("kitchen", &["logs", "nobody"]).fails(1, "(UnknownName)");
-    messages("kitchen", &["nothing", "kitchen"]).fails(1, "(UnknownName)");
+    assert!(
+        messages("kitchen", &["nothing", "kitchen"])
+            .ok()
+            .out
+            .is_empty(),
+        "a topic without messages"
+    );
     assert!(
         messages("lounge", &["logs", "lounge"]).ok().out.is_empty(),
         "its own node, none yet"
@@ -448,10 +453,7 @@ fn queries_and_lists() {
         .fails(1, "(QueryFailed)");
 
     let all = server.tool("kitchen", &["list"]);
-    assert_eq!(
-        all.ok().out,
-        "Topics (2):\n  logs\n  secret\nNodes (1):\n  kitchen\n"
-    );
+    assert_eq!(all.ok().out, "Topics (1):\n  logs\nNodes (1):\n  kitchen\n");
     assert_eq!(
         server.tool("lounge", &["list", "topics"]).ok().out,
         "Topics (1):\n  logs\n"
@@ -534,7 +536,7 @@ fn settings() {
         &["list", "topics"],
         None,
     );
-    assert_eq!(up.ok().out, "Topics (2):\n  logs\n  secret\n");
+    assert_eq!(up.ok().out, "Topics (0):\n");
 
     let kitchen = fs::read_to_string(folder.join("kitchen.toml")).unwrap();
     fs::write(

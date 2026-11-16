@@ -35,6 +35,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long an attachment's next part may take to come.
 const PART_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a packet may take to be sent (an attachment's part is 1 MiB):
+/// a client that stopped reading is dropped rather than waited for.
+pub(crate) const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// An upload's parts given to the writer and not written yet, at most: the
 /// next ones wait (the client with them, through TCP).
 const PARTS_IN_FLIGHT: usize = 4;
@@ -219,12 +223,6 @@ async fn push(
     frames: &mut Frames,
     push: PushMessage,
 ) -> Result<Packet, String> {
-    if !shared.config.server.has_topic(&push.topic) {
-        return Ok(refused(
-            ErrorCode::UnknownName,
-            format!("unknown topic '{}'", push.topic),
-        ));
-    }
     if !peer.permissions.can_push(&push.topic) {
         return Ok(refused(
             ErrorCode::NotAllowed,
@@ -378,12 +376,6 @@ async fn get_attachment(
             format!("{} may not read '{}'", peer.node, get.topic),
         )));
     }
-    if !shared.config.server.has_topic(&get.topic) {
-        return Ok(Some(refused(
-            ErrorCode::UnknownName,
-            format!("unknown topic '{}'", get.topic),
-        )));
-    }
     let message = format!("{}:{}#{}", get.topic, get.node, get.message_id);
     let GetAttachment {
         topic,
@@ -462,12 +454,6 @@ async fn get_messages(shared: &Arc<Shared>, peer: &Peer, get: GetMessages) -> Pa
             format!("{} may not read '{}'", peer.node, get.topic),
         );
     }
-    if !shared.config.server.has_topic(&get.topic) {
-        return refused(
-            ErrorCode::UnknownName,
-            format!("unknown topic '{}'", get.topic),
-        );
-    }
     let GetMessages {
         topic,
         node,
@@ -490,26 +476,41 @@ async fn get_messages(shared: &Arc<Shared>, peer: &Peer, get: GetMessages) -> Pa
     }
 }
 
-/// Topics: the server's, those it may push to or read unless it may query
-/// (queries read everything). Nodes: every one with messages.
+/// Topics: those with messages (pushed here or replicated) that it may
+/// push to or read; every one with `list_topics` or `query`. Nodes: those
+/// with messages in the topics it may read; every one with `list_nodes`
+/// or `query`.
 async fn list_names(shared: &Arc<Shared>, peer: &Peer, list: ListNames) -> Packet {
-    let mut names = match list.kind {
+    let permissions = &peer.permissions;
+    let found = match list.kind {
         NameKind::Topic => shared
-            .config
-            .server
-            .topics
-            .iter()
-            .filter(|topic| {
-                peer.permissions.can_query()
-                    || peer.permissions.can_push(topic)
-                    || peer.permissions.can_read(topic)
-            })
-            .cloned()
-            .collect(),
-        NameKind::Node => match shared.read(|reader| reader.nodes()).await {
-            Ok(nodes) => nodes,
-            Err(refused) => return refused.into(),
-        },
+            .read(|reader| reader.topics())
+            .await
+            .map(|mut topics| {
+                if !permissions.lists_every_topic() {
+                    topics
+                        .retain(|topic| permissions.can_push(topic) || permissions.can_read(topic));
+                }
+                topics
+            }),
+        NameKind::Node if permissions.lists_every_node() => {
+            shared.read(|reader| reader.nodes()).await
+        }
+        NameKind::Node => shared.read(|reader| reader.heads()).await.map(|heads| {
+            let mut nodes: Vec<String> = heads
+                .into_iter()
+                .filter(|head| permissions.can_read(&head.topic))
+                .map(|head| head.node)
+                .collect();
+            // As `reader.nodes()` answers them: in order, none twice.
+            nodes.sort_by_cached_key(|node| node.to_ascii_lowercase());
+            nodes.dedup_by(|a, b| names_equal(a, b));
+            nodes
+        }),
+    };
+    let mut names = match found {
+        Ok(names) => names,
+        Err(refused) => return refused.into(),
     };
     let truncated = names.len() > MAX_NAMES_LIST_ENTRIES;
     names.truncate(MAX_NAMES_LIST_ENTRIES);
@@ -538,6 +539,18 @@ pub(crate) fn refused(code: ErrorCode, reason: String) -> Packet {
     RequestRefused::new(code, reason).into()
 }
 
+/// Sends a packet, within [`SEND_TIMEOUT`]: an error closes the connection.
 pub(crate) async fn send(frames: &mut Frames, packet: Packet) -> std::io::Result<()> {
-    frames.send(bytes::Bytes::from(packet.encode())).await
+    match timeout(
+        SEND_TIMEOUT,
+        frames.send(bytes::Bytes::from(packet.encode())),
+    )
+    .await
+    {
+        Ok(sent) => sent,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "too slow to take an answer",
+        )),
+    }
 }

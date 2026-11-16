@@ -131,8 +131,8 @@ with kitchen:
     check("limit 0: ValueError, before asking", ok, detail)
     ok, detail = raises(lambda: kitchen.get_messages("logs", "kitchen", after=-1), ValueError)
     check("after -1: ValueError", ok, detail)
-    ok, detail = raises(lambda: kitchen.push("x", "nothing"), RefusedError, "unknown topic", ErrorCode.UNKNOWN_NAME)
-    check("Push to an unknown topic: RefusedError, UNKNOWN_NAME", ok, detail)
+    ok, detail = raises(lambda: kitchen.push("x", "nothing"), RefusedError, "may not push to 'nothing'", ErrorCode.NOT_ALLOWED)
+    check("Push to a topic not in its push_topics: RefusedError, NOT_ALLOWED", ok, detail)
     ok, detail = raises(lambda: kitchen.push("x", "a b"), BakaShrotError, "isn't a topic name", ErrorCode.INVALID_ARGUMENT)
     check("A topic that isn't a name: refused before sending", ok, detail)
     ok, detail = raises(lambda: kitchen.push("x" * (bakashrot.MAX_MESSAGE_SIZE + 1), "logs"), BakaShrotError, "too big",
