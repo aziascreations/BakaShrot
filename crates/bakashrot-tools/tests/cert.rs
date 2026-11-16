@@ -121,6 +121,20 @@ fn nothing_is_overwritten_or_mixed_up() {
     assert!(!ok, "{text}");
     assert_eq!(read(&folder, "ca.key"), key, "the CA's key is still there");
 
+    // Half of a pair there already: refused, the other half not written.
+    let half = folder.join("half");
+    fs::create_dir_all(&half).unwrap();
+    fs::write(half.join("ca.key"), "kept").unwrap();
+    let (ok, text) = cert(&half, &["ca", "--name", "Half"]);
+    assert!(!ok && text.contains("nothing written"), "{text}");
+    assert!(!half.join("ca.crt").exists());
+    assert_eq!(read(&half, "ca.key"), "kept");
+    fs::write(folder.join("porch.key"), "kept").unwrap();
+    let (ok, text) = cert(&folder, &["issue", "--name", "porch"]);
+    assert!(!ok && text.contains("nothing written"), "{text}");
+    assert!(!folder.join("porch.crt").exists());
+    assert_eq!(read(&folder, "porch.key"), "kept");
+
     assert!(cert(&folder, &["issue", "--name", "kitchen"]).0);
     assert!(
         !cert(&folder, &["issue", "--name", "kitchen"]).0,

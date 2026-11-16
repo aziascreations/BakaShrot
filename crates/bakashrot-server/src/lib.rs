@@ -72,6 +72,7 @@ impl Server {
     /// Reads the server's certificates and CRL, opens its database, starts
     /// its writer. Errors say which file and why.
     pub fn start(config: Config) -> Result<Server, String> {
+        check_clock(SystemTime::now())?;
         let server = &config.server;
         let ca = read(&server.ca)?;
         let certificate = read(&server.certificate)?;
@@ -307,6 +308,15 @@ fn load_revocations(path: Option<&Path>, ca: &str) -> Result<Revocations, String
     Revocations::load(&read(path)?, ca).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// Refuses a clock before 1970: messages would be stamped `pushed_at` 0,
+/// which readers refuse.
+fn check_clock(now: SystemTime) -> Result<(), String> {
+    match now.duration_since(UNIX_EPOCH) {
+        Ok(_) => Ok(()),
+        Err(_) => Err("the system's clock is before 1970: set it right first".into()),
+    }
+}
+
 /// Now, in ms since 1970 UTC: when a message is pushed.
 fn now() -> u64 {
     SystemTime::now()
@@ -318,4 +328,18 @@ fn now() -> u64 {
 fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
     let metadata = std::fs::metadata(path).ok()?;
     Some((metadata.modified().ok()?, metadata.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clock_before_1970_is_refused() {
+        assert!(check_clock(UNIX_EPOCH).is_ok());
+        assert!(check_clock(SystemTime::now()).is_ok());
+        let before = UNIX_EPOCH - Duration::from_secs(1);
+        let error = check_clock(before).unwrap_err();
+        assert!(error.contains("before 1970"), "{error}");
+    }
 }

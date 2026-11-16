@@ -106,8 +106,10 @@ bakashrot-cert show kitchen.crt
 
 `--ca` (the folder of `ca.crt` / `ca.key`, `.` by default), `--out` (where
 to write), `--days`, `--file` (the files' name when it isn't the node's:
-another certificate of the same name, `--file server-1b`). Files are PEM. Nothing is ever written over an
-existing certificate or key; keys are readable by their owner only on
+another certificate of the same name, `--file server-1b`). Files are
+PEM. Nothing is ever written over an existing certificate or key, and a
+certificate and its key are written both or neither (one of them there
+already: nothing written); keys are readable by their owner only on
 Unix. `revoke` only takes certificates the CA issued.
 
 ## Tests

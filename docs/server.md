@@ -16,8 +16,9 @@ bakashrot-server server.toml
 ```
 
 The config (`config.md`) gives where to listen, the certificates, the CRL,
-the database, the topics and the roles. Decided 2026-11-14
-(`../revamp.md`, "Operations"):
+the database, the topics and the roles. A system clock before 1970
+is refused at start (messages are stamped with it, `pushed_at`).
+Decided 2026-11-14 (`../revamp.md`, "Operations"):
 
 - **Stopping:** SIGTERM or SIGINT on Linux; Ctrl+C, Ctrl+Break or its
   console closed on Windows. It stops taking connections and writes

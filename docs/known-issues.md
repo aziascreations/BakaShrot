@@ -58,14 +58,20 @@ Reproduce one before fixing it, and move it up (or drop it) once known.
 - **`sync_interval` over 5 min.** The server dialed closes the idle link
   (`IDLE_TIMEOUT`), so every check-in fails once ("closed the link",
   warned), then the link is dialed again after `retry_delay`. Nothing
-  in the config caps `sync_interval`. Fix: cap it under the idle
-  timeout, or have an idle link ask its `SyncState` more often.
+  in the config caps `sync_interval`. Left as it is (the owner,
+  2026-11-16): replicating every 5 min or more isn't a real use, the
+  example config says to keep it under. Fix if needed: cap it under the
+  idle timeout, or have an idle link ask its `SyncState` more often.
 - **Resuming a big replicated attachment.** Before answering `Continue`,
   the receiver reads back and hashes every part it already has
   (`accept_from.rs`, `replicate_attachment`, `hash_parts`), while the
-  sender waits 30 s for that answer (`push_to.rs`, `ANSWER_TIMEOUT`). On
-  a slow disk, hundreds of parts may take longer: the link drops, and
-  the same happens at every retry. Fix: a longer wait for that answer,
+  sender waits 30 s for that answer (`push_to.rs`, `ANSWER_TIMEOUT`).
+  Past what the disk reads and hashes in 30 s (estimated: about 4 GB
+  on a hard disk, 15 GB on a SATA SSD, 30-60 GB on NVMe), the link
+  drops, and the same happens at every retry. Left as it is (the
+  owner, 2026-11-16): attachments over a few GB are excessive for this;
+  the example config says so by `max_attachment_size` (1 GiB by
+  default). Fix if needed: a wait scaled to the parts already received,
   or the hash's state kept with the attachment.
 - **Two peers sending the same attachment at once.** Both can be
   answered `Continue` for the same `from_part` (the check and the first
@@ -127,11 +133,14 @@ Reproduce one before fixing it, and move it up (or drop it) once known.
   its buffers), any amount pushed: an allowed client can fill the disk
   or the server's memory. Fine for the threat model; first thing to
   add if it changes (a cap on connections, a quota per node).
-- **Small ones:** the client's connect timeout is per socket
-  operation, not for the whole connection; `bakashrot-cert ca` writes
-  `ca.crt` before failing when only `ca.key` is there already; a
-  server whose clock is before 1970 stamps `pushed_at` 0, which
-  readers refuse when decoding.
+- **A clock set before 1970 while running.** The server refuses to
+  start with one (`check_clock`, `bakashrot-server/src/lib.rs`), but
+  isn't checked again: set back that far afterwards, pushes are stamped
+  `pushed_at` 0 (`now()`), which readers refuse when decoding. Fix if
+  ever needed: refuse pushes (`ServerError`) while the clock is before
+  1970.
+- **A small one:** the client's connect timeout is per socket
+  operation, not for the whole connection.
 
 ## Ideas for later
 
