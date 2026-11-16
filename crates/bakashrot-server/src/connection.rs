@@ -35,6 +35,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long an attachment's next part may take to come.
 const PART_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a packet may take to be sent (an attachment's part is 1 MiB):
+/// a client that stopped reading is dropped rather than waited for.
+pub(crate) const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// An upload's parts given to the writer and not written yet, at most: the
 /// next ones wait (the client with them, through TCP).
 const PARTS_IN_FLIGHT: usize = 4;
@@ -535,6 +539,18 @@ pub(crate) fn refused(code: ErrorCode, reason: String) -> Packet {
     RequestRefused::new(code, reason).into()
 }
 
+/// Sends a packet, within [`SEND_TIMEOUT`]: an error closes the connection.
 pub(crate) async fn send(frames: &mut Frames, packet: Packet) -> std::io::Result<()> {
-    frames.send(bytes::Bytes::from(packet.encode())).await
+    match timeout(
+        SEND_TIMEOUT,
+        frames.send(bytes::Bytes::from(packet.encode())),
+    )
+    .await
+    {
+        Ok(sent) => sent,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "too slow to take an answer",
+        )),
+    }
 }

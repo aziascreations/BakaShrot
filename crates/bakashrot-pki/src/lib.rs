@@ -23,19 +23,12 @@ pub use revocation::{Revocations, SharedRevocations, serial};
 use std::fmt;
 use x509_parser::certificate::X509Certificate;
 
-/// The identity extension's OID.
-///
-/// **A placeholder** ([`IDENTITY_OID_IS_PLACEHOLDER`]): under PEN 32473,
-/// which RFC 5612 reserves for documentation. Replace it with one under
-/// NibblePoker's own PEN once IANA gave it (`docs/oid.md`), before
-/// issuing certificates for real: certificates made with this one stop
-/// being read once it changes.
-pub const IDENTITY_OID: &[u64] = &[1, 3, 6, 1, 4, 1, 32473, 1, 1];
-
-/// Whether [`IDENTITY_OID`] is still the placeholder: `bakashrot-cert`
-/// warns when it makes a CA or a certificate then. Set it to `false` with
-/// the real OID.
-pub const IDENTITY_OID_IS_PLACEHOLDER: bool = true;
+/// The identity extension's OID: `1.3.6.1.4.1.67681.1.1`, under
+/// NibblePoker's Private Enterprise Number (67681, from IANA), BakaShrot's
+/// branch (`.1`), its identity extension (`.1`). `docs/oid.md` has the
+/// branches. It never changes: certificates made with another one aren't
+/// read (those of 0.2.0 and before had a placeholder).
+pub const IDENTITY_OID: &[u64] = &[1, 3, 6, 1, 4, 1, 67681, 1, 1];
 
 /// The DNS name every server certificate has, and every client asks for:
 /// a label, not a host. Servers are known by their certificate, wherever

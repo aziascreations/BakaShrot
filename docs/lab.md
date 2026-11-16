@@ -6,9 +6,8 @@ machine, 2026-11-15, Windows): the outputs shown are what came back.
 
 Get a release (CI's artifacts, or `release.ps1` / `python release.py`):
 the programs, `bakashrot.dll` / `libbakashrot.so`, the wheel, the
-example configs. The certificates are throwaway for now: the identity
-OID is a placeholder until NibblePoker's PEN (`oid.md`), every tool run
-says so. Reissue them all once it changes.
+example configs. Certificates made before 0.3.0 had a placeholder
+identity OID (`oid.md`) and aren't read any more: issue them again.
 
 | Machine | What runs there | Files it gets |
 |---|---|---|
@@ -165,7 +164,7 @@ certificate is refused, at its next connection or request:
 Failed to connect to server-2.lab:7000 (AuthRejected): the server refused this client's certificate (CertificateRevoked)
 ```
 
-**Python.** `pip install bakashrot-0.2.0-py3-none-<platform>.whl` (from the
+**Python.** `pip install bakashrot-0.3.0-py3-none-<platform>.whl` (from the
 release's `python/`), then, next to lab-py's `client.toml` (it may push and
 read: `sensor` and `dashboard`):
 

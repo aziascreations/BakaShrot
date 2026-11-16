@@ -2,10 +2,7 @@
 //! them. Every file is PEM; keys are written once, never over an existing
 //! file. See `docs/certificates.md`.
 
-use bakashrot_pki::{
-    CA_DAYS, CERTIFICATE_DAYS, Ca, IDENTITY_OID_IS_PLACEHOLDER, Identity, Revocations, Usage,
-    summarize,
-};
+use bakashrot_pki::{CA_DAYS, CERTIFICATE_DAYS, Ca, Identity, Revocations, Usage, summarize};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::io::Write;
@@ -98,15 +95,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Said whenever a certificate is made while the OID is the placeholder.
-const PLACEHOLDER_WARNING: &str = "warning: the identity extension's OID is still a placeholder \
-(docs/oid.md): fine for tests, not for certificates in use";
-
 fn run(command: Command) -> Result<(), String> {
-    if IDENTITY_OID_IS_PLACEHOLDER && matches!(command, Command::Ca { .. } | Command::Issue { .. })
-    {
-        eprintln!("{PLACEHOLDER_WARNING}");
-    }
     match command {
         Command::Ca { name, days, out } => {
             let ca = Ca::create(&name, days).map_err(|e| e.to_string())?;

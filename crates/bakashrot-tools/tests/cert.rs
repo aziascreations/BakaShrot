@@ -36,9 +36,6 @@ fn a_ca_issues_and_revokes() {
     let folder = folder("cert-tool");
     let (ok, text) = cert(&folder, &["ca", "--name", "Test CA"]);
     assert!(ok, "{text}");
-    if bakashrot_pki::IDENTITY_OID_IS_PLACEHOLDER {
-        assert!(text.contains("OID is still a placeholder"), "{text}");
-    }
     assert!(
         cert(
             &folder,

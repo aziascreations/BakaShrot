@@ -107,9 +107,11 @@ Also decided (2026-11-13):
     critical ones it doesn't know): `SEQUENCE { version INTEGER (1), name
     UTF8String, roles SEQUENCE OF UTF8String }`. The name is the node;
     roles are free strings with the name rules, their meaning in the
-    server's config. Only the server reads it. Its OID is a placeholder
-    for now, see "Open questions" (the UUID arc of `OldSource/` can't be
-    used: `rcgen` writes OID parts of 64 bits at most);
+    server's config. Only the server reads it. Its OID is
+    `1.3.6.1.4.1.67681.1.1`, under NibblePoker's PEN (2026-11-16,
+    `docs/oid.md`; a placeholder until then; the UUID arc of
+    `OldSource/` can't be used: `rcgen` writes OID parts of 64 bits at
+    most);
   - the name again as the subject's CN, for people (`openssl x509 -text`,
     logs); the server only trusts the extension;
   - extended key usage `clientAuth` for clients, `serverAuth` and
@@ -262,7 +264,9 @@ Also decided (2026-11-13):
     programs, the client library and its bindings, the example configs,
     the docs, the licenses, and a smoke test;
   - **the Python wheel has the library in it**, for a simple install;
-  - **version 0.2.0.**
+  - **version 0.2.0**; **0.3.0** on 2026-11-16 (the identity OID under
+    NibblePoker's PEN, the roles as the only lists of topics,
+    `list_topics` / `list_nodes`).
 - **The PureBasic version removed** (2026-11-15): `OldSource/` deleted,
   kept in git history (up to `68966a8`). What of its notes and designs
   still holds went to `docs/known-issues.md`; the rest was already
@@ -305,14 +309,6 @@ come back as text either way; only what SQL computes would gain
 
 - **A handle-based DLL API** (several connections per process, old open item
   10): later maybe, the owner's call (one connection per process for now).
-- **The identity extension's OID, a placeholder for now:** it goes under a
-  Private Enterprise Number of NibblePoker's, from IANA (free, within a
-  week; the owner's to request). Until then `bakashrot_pki::IDENTITY_OID`
-  is under RFC 5612's documentation PEN (32473),
-  `IDENTITY_OID_IS_PLACEHOLDER` is `true` and `bakashrot-cert` warns when
-  it makes a certificate. Certificates issued with it stop being read once
-  it changes: get the number before any is in use. How to request it and
-  what to change then: `docs/oid.md`.
 
 ## Kept: the behaviour to carry over
 

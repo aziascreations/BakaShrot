@@ -168,6 +168,7 @@ the same ids with different messages, undetected.
 |---|---|
 | TLS, versions, welcome | 10 s (the server); the client's connect too |
 | Silence between requests | 5 min, then the server closes |
+| A packet sent (an answer, an attachment's part, to a peer too) | 30 s (the server), then it closes: a client that stopped reading doesn't hold a connection |
 | An answer | 30 s (the client) |
 | An attachment's next part | 30 s (the server), then it closes |
 

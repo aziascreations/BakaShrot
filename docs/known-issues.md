@@ -55,12 +55,6 @@ network**, not exposed to the internet. So:
 From a read of the source on 2026-11-15: no test shows any of these yet.
 Reproduce one before fixing it, and move it up (or drop it) once known.
 
-- **The server's writes have no timeout.** The 5 min of silence only
-  covers reads (`connection.rs`, `serve`): a client that stops reading
-  in the middle of an answer (an attachment's parts, `get_attachment`)
-  holds its task and its read connection's turn for as long as TCP
-  keeps the connection. Fix: a timeout around `send`, as `PART_TIMEOUT`
-  does for reads.
 - **`sync_interval` over 5 min.** The server dialed closes the idle link
   (`IDLE_TIMEOUT`), so every check-in fails once ("closed the link",
   warned), then the link is dialed again after `retry_delay`. Nothing
@@ -106,8 +100,12 @@ Reproduce one before fixing it, and move it up (or drop it) once known.
   refused ("no message id left", `insert_pushed`); it replicates on to
   the other servers. Nothing lowers a last id again. Part of "Peers
   are trusted" above, but one message is enough and a bug can do it.
-  Fix: refuse a batch that doesn't follow the last id here (also closes
-  the gaps), or one that jumps further than some bound.
+  Left as it is (the owner, 2026-11-16): no cheap check tells a bad id
+  from a real one. Ids jump for good reasons (retention, a server that
+  joins late), so "must follow the last id here" or a bound on the jump
+  refuses real messages or stops nothing; refusing ids past its own
+  for the nodes that push here breaks a node moving to another server
+  and back. Fix: messages signed by their node, as above.
 - **A pair refused for good is sent again at every check-in**, a whole
   batch each time (`push_to.rs`, `send_messages`: a refusal only
   leaves it for the next check-in): the database's topic and node

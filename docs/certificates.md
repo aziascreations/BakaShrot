@@ -28,10 +28,9 @@ is a CRL file from the CA, pushed to the servers.
   Names and roles follow the name rules (1-64 of `A-Z a-z 0-9 _ . -`, not
   only digits), 64 roles at most. Roles mean nothing to the certificates:
   the server's config says what each may do.
-- **Its OID is a placeholder** (`IDENTITY_OID`, `1.3.6.1.4.1.32473.1.1`,
-  under the PEN RFC 5612 reserves for documentation; `bakashrot-cert`
-  warns while it is): it goes under NibblePoker's own PEN before
-  certificates are issued for real. Why, how to request it, what to change:
+- **Its OID is `1.3.6.1.4.1.67681.1.1`** (`IDENTITY_OID`), under
+  NibblePoker's own PEN (67681), since 0.3.0. Certificates made before
+  (a placeholder OID) aren't read: issue them again. The branches:
   `oid.md`.
 - **The CN is the name too**, for people (`openssl x509 -text`, logs). Only
   the extension is trusted.
@@ -132,4 +131,3 @@ Unix. `revoke` only takes certificates the CA issued.
 - **`AllowedServerNames`** in a client's config and for the peers a
   server dials: the server names it accepts (any of the CA's servers
   without it).
-- NibblePoker's PEN, replacing the placeholder OID (`oid.md`).
