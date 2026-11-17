@@ -189,7 +189,8 @@ Also decided (2026-11-13):
   - **the old exports that don't fit any more are dropped**, not kept
     failing: the keys and node setters, the id-based ones, the default
     topic's `PushMessage()`;
-  - **one connection per process**, as before (handles maybe later);
+  - **one connection per process**, as before (replaced by handles
+    2026-11-17, below);
   - **`client.toml`** (server, ca, certificate, key, crl) replaces
     `client.ini`: Python's `Client.from_file()`, the tools at step 8.
 - **The tools** (2026-11-14), `docs/client.md`, "The tools": one
@@ -299,6 +300,13 @@ Also decided (2026-11-13):
   not for production. Worth another look if rustls-graviola lets a
   provider name its algorithms one by one, or ring gets ML-KEM.
 
+- **Several clients per process in the DLL** (2026-11-17, the owner;
+  old open item 10): `BakaShrot_CreateClient()` returns a handle, the
+  first argument of every other export (same names as before);
+  `BakaShrot_FreeClient()` frees it. No default client and no exports
+  without a handle ("keep something clean"): apps built for the old DLL
+  need updating. A bad handle fails (`InvalidArgument`).
+
 ## Proposed, to confirm
 
 - **A GUI explorer** (2026-11-16, set aside for later): likely **egui**
@@ -311,8 +319,7 @@ Also decided (2026-11-13):
 
 ## Open questions
 
-- **A handle-based DLL API** (several connections per process, old open item
-  10): later maybe, the owner's call (one connection per process for now).
+None right now.
 
 ## The old open items
 

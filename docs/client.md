@@ -5,7 +5,7 @@ What apps connect with, in layers:
 | Layer | Where | For |
 |---|---|---|
 | `bakashrot-client` | `crates/bakashrot-client` | Rust: blocking, one connection per `Client` |
-| The DLL | `crates/bakashrot-capi`: `bakashrot.dll`, `libbakashrot.so` | C and anything that loads a DLL: the `BakaShrot_*` exports, one connection per process |
+| The DLL | `crates/bakashrot-capi`: `bakashrot.dll`, `libbakashrot.so` | C and anything that loads a DLL: the `BakaShrot_*` exports, as many clients as needed |
 | C header | `bindings/c/bakashrot.h` | generated from the DLL (cbindgen) |
 | PureBasic | `bindings/purebasic/` | the prototypes and the error codes |
 | Python | `bindings/python/bakashrot.py` | `Client` over the DLL (ctypes), standard library only |
@@ -15,7 +15,7 @@ Decided in `../revamp.md`, "Decided" (2026-11-13). What goes over the
 wire: `protocol.md`; the server's side: `server.md`.
 
 **Status:** steps 7 to 9: connecting, pushes, messages, attachments,
-names, queries.
+names, queries, several clients.
 
 ## Who connects: certificates
 
@@ -42,8 +42,11 @@ crl = "ca.crl"               # optional; a file not there yet: none
 
 Its conventions:
 
-- **One connection per process.** Calls from several threads wait for each
-  other.
+- **Clients.** `BakaShrot_CreateClient()` makes one and returns its
+  handle, the first argument of every other export;
+  `BakaShrot_FreeClient(Client)` frees it. Each client has its own
+  connection, answers and errors, and different clients can be used from
+  different threads at once. A bad handle fails with `InvalidArgument`.
 - **`A` and `W` exports:** strings in and out as UTF-8 (`char*`) or UTF-16
   (`uint16_t*`, `wchar_t*` on Windows; PureBasic uses these),
   null-terminated. A null string is an empty one where that means
@@ -63,8 +66,11 @@ Its conventions:
   on the other; the C runtime linked statically on Windows (the release
   DLL imports system DLLs only).
 
+Every export but `CreateClient` takes the handle first (left out below).
+
 | Exports | What |
 |---|---|
+| `CreateClient()`, `FreeClient` | a new client's handle (0 if it failed); freed, 1 |
 | `SetCaCertificate`, `SetCertificate`, `SetPrivateKey`, `SetCrl` (`A`/`W`) | PEM text (starting with `-----BEGIN`), or the path of a file holding it; `SetCrl` null or empty for none. Before connecting (`AlreadyConnected`); a file that can't be read is `FileError` |
 | `Connect(Host, Port)` (`A`/`W`) | TLS with those; refused: `AuthRejected` (the server refused the certificate), `ServerNotVerified` (this client refused the server's), `NotAllowed` (none of its roles is the server's), `VersionMismatch` |
 | `IsConnected`, `Disconnect` | `IsConnected` notices a connection the server closed |
@@ -78,7 +84,7 @@ Its conventions:
 | `PushMessageWithFile(Topic, Data, FilePath)`, `PushMessageWithData(Topic, Data, *Data, Size)` (`A`/`W`) | the id, -1 on failure; the attachment 1 byte and up, as much as the server takes (`TooBig`); a file read twice (its SHA-256 first), one changed in between refused (`DataMismatch`) |
 | `SaveAttachment(Topic, Node, MessageId, FilePath)` (`A`/`W`) | its size, -1 on failure (`NotFound`, `NotReady`, `AttachmentMismatch`); a failed one leaves no file |
 | `LoadAttachment(Topic, Node, MessageId)` (`A`/`W`), then `GetAttachmentData(*Buffer, Size)`, `FreeAttachmentData()` | into memory, for small ones; the getter returns the size, copies nothing if it doesn't fit |
-| `GetLastError`, `GetRefusalReason` (`A`/`W`) | why the last call failed |
+| `GetLastError`, `GetRefusalReason` (`A`/`W`) | why the client's last call failed |
 
 The header has each one's comment. Every name starts with `BakaShrot_`.
 
@@ -92,6 +98,8 @@ attachment=None)` (the topic required; the attachment bytes or a path),
 `latest()`, `get_messages()`, `iter_messages()`, `follow()`,
 `get_attachment()` (bytes), `save_attachment()` (a file),
 `list_topics()` / `list_nodes()` (names), `query()` / `query_raw()`.
+Each `Client` has its own client in the DLL: several can be connected at
+once, from any threads.
 Errors: `RefusedError`, `ConnectionLostError`, `AuthError` (a certificate
 refused, either way, or no role allowed), `BakaShrotError`. The DLL is
 looked for next to the module, or `BAKASHROT_DLL`. The release has a
@@ -102,11 +110,11 @@ wheel with the library in it (`pip install bakashrot-*.whl`, nothing else:
 
 `bindings/purebasic/BakaShrot_Client_Prototypes.pbi` (with
 `BakaShrot_ErrorCodes.pbi`): `BakaShrot_LoadClient("bakashrot.dll")`, then
-the `W` exports without their suffix, `BakaShrot_*String()` helpers for the
-getters. Run directly, it's an example: `ClientExample <DllPath> <CaFile>
+the `W` exports without their suffix, the client first, and
+`BakaShrot_*String(Client)` helpers for the getters. Run directly, it's an example: `ClientExample <DllPath> <CaFile>
 <CertificateFile> <KeyFile> <Host> <Port>`, pushing a message and one
-with an attachment, reading both back (run by hand against a server;
-not in CI, which has no PureBasic).
+with an attachment, reading both back, then a second client at the same
+time (run by hand against a server; not in CI, which has no PureBasic).
 
 ## The tool
 
@@ -152,12 +160,20 @@ bakashrot list nodes --json                    {"kind":"node","names":["kitchen"
 
 `crates/bakashrot-capi/tests/`, each against a server on a free port:
 
-- `exports.rs`: the exports as C calls them: certificates from files and
+- `exports.rs`, `exports`: the exports as C calls them, on one client: certificates from files and
   PEM, the `W` strings (and some `A`), the buffers (the size, too small,
   unaligned), selecting messages, attachments (from a file and memory,
   saved and loaded, the buffer, refused ones), every refusal and the
   client's own errors, closing, another identity.
-- `python.rs`: runs `bindings/python/check_bakashrot.py` on the DLL; skipped, saying so, without Python 3.11+.
+- `exports.rs`, `clients`: two clients at once, each with its own answers
+  and errors; bad and freed handles; 4 threads on 4 clients; a client
+  freed while another thread uses it.
+- `python.rs`: runs `bindings/python/check_bakashrot.py` on the DLL (two
+  `Client`s at once, too); skipped, saying so, without Python 3.11+.
+- PureBasic, by hand (no PureBasic in CI): run
+  `BakaShrot_Client_Prototypes.pbi` directly, `ClientExample <DllPath>
+  <CaFile> <CertificateFile> <KeyFile> <Host> <Port>`. Passed 2026-11-17
+  with PureBasic 5.73 LTS and 6.41 (C backend), x64.
 - `header.rs`: `bindings/c/bakashrot.h` matches the exports (rewritten
   when it doesn't: check it in).
 

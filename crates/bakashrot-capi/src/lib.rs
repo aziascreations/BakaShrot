@@ -1,27 +1,29 @@
-//! BakaShrot's C DLL (`bakashrot.dll`, `libbakashrot.so`): the old
+//! BakaShrot's C DLL (`bakashrot.dll`, `libbakashrot.so`): the
 //! `BakaShrot_*` exports over [`bakashrot_client`], for C, PureBasic,
 //! Python (ctypes) and anything that loads a DLL. `docs/client.md`
 //! has the whole API; `bindings/c/bakashrot.h` is generated from this file.
 //!
 //! The conventions:
 //!
-//! - **One connection per process:** set the certificates, connect, send
-//!   requests, one at a time (calls from several threads wait for each
-//!   other).
+//! - **Clients:** `BakaShrot_CreateClient()` makes one; its handle is the
+//!   first argument of every other export. Each has its own connection,
+//!   answers and errors; different clients can be used from different
+//!   threads at once.
 //! - **`A` and `W` exports:** strings in and out as UTF-8 (`char*`) or
 //!   UTF-16 (`uint16_t*`, `wchar_t*` on Windows), null-terminated.
 //! - **Strings out** are copied into the caller's buffer of `BufferSize`
 //!   bytes: the getter returns the bytes needed, terminator included, and
 //!   copies nothing if they don't fit (a null buffer asks for the size).
 //! - **Failures:** 0 (or -1 where a count or an id is returned), then
-//!   `BakaShrot_GetLastError()` gives the code (1-99 a server's refusal, the
-//!   connection still open; 100 and up the client's own) and
+//!   `BakaShrot_GetLastError(Client)` gives the code (1-99 a server's
+//!   refusal, the connection still open; 100 and up the client's own) and
 //!   `BakaShrot_GetRefusalReason()` why, in words. After `ConnectionLost`
 //!   or `ProtocolError` the connection is closed: connect again.
 //! - **Safety:** pointers are null or valid for what's said, strings
-//!   terminated, buffers writable for their size. A panic inside is caught
-//!   and reported as `Internal`; nothing allocated here is freed by the
-//!   caller, or the other way.
+//!   terminated, buffers writable for their size. A bad handle fails
+//!   (`InvalidArgument`). A panic inside is caught and reported as
+//!   `Internal`; nothing allocated here is freed by the caller, or the
+//!   other way.
 
 #![allow(unsafe_code, non_snake_case, clippy::missing_safety_doc)]
 
@@ -30,20 +32,24 @@ mod text;
 use bakashrot_client::{Client, Error, Settings};
 use bakashrot_proto::ErrorCode;
 use bakashrot_proto::packets::{MessageEntry, NameKind};
+use std::collections::BTreeMap;
 use std::ffi::{c_char, c_void};
 use std::fs::File;
 use std::io::Cursor;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use text::{Text, Utf8, Utf16};
 
 type Result<T> = std::result::Result<T, Error>;
 
-/// Everything the DLL holds: its one connection, its settings, the last
-/// answers.
-static STATE: Mutex<State> = Mutex::new(State::new());
+/// The next handle, and the clients by handle. A call holds its client's
+/// `Arc`, so a client freed during a call goes when the call ends.
+static CLIENTS: Mutex<(i64, BTreeMap<i64, Shared>)> = Mutex::new((1, BTreeMap::new()));
 
+type Shared = Arc<Mutex<State>>;
+
+/// A client: its settings, its connection, the last answers.
 struct State {
     ca: Option<String>,
     certificate: Option<String>,
@@ -124,15 +130,22 @@ impl State {
     }
 }
 
-fn state() -> MutexGuard<'static, State> {
-    STATE.lock().unwrap_or_else(PoisonError::into_inner)
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Runs a call that can fail: the last error reset, then set if it fails
-/// (or panics), `failed` returned then.
-fn call<T>(failed: T, run: impl FnOnce(&mut State) -> Result<T>) -> T {
+fn find(client: i64) -> Option<Shared> {
+    lock(&CLIENTS).1.get(&client).cloned()
+}
+
+/// Runs a call that can fail on a client: its last error reset, then set
+/// if it fails (or panics). `failed` then, or for a bad handle.
+fn call<T>(client: i64, failed: T, run: impl FnOnce(&mut State) -> Result<T>) -> T {
+    let Some(shared) = find(client) else {
+        return failed;
+    };
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        let mut state = state();
+        let mut state = lock(&shared);
         state.last_error = 0;
         state.reason.clear();
         let outcome = run(&mut state);
@@ -142,20 +155,29 @@ fn call<T>(failed: T, run: impl FnOnce(&mut State) -> Result<T>) -> T {
         Ok(Ok(value)) => value,
         Ok(Err(())) => failed,
         Err(_) => {
-            state().fail(Error::new(ErrorCode::Internal, "the DLL panicked"));
+            lock(&shared).fail(Error::new(ErrorCode::Internal, "the DLL panicked"));
             failed
         }
     }
 }
 
-/// Runs a getter: the last error stays as it is.
-fn get<T>(default: T, read: impl FnOnce(&State) -> T) -> T {
-    catch_unwind(AssertUnwindSafe(|| read(&state()))).unwrap_or(default)
+/// Runs a getter on a client, its last error unchanged. `default` for a
+/// bad handle.
+fn get<T>(client: i64, default: T, read: impl FnOnce(&mut State) -> T) -> T {
+    let Some(shared) = find(client) else {
+        return default;
+    };
+    catch_unwind(AssertUnwindSafe(|| read(&mut lock(&shared)))).unwrap_or(default)
 }
 
-/// Copies a string of the state into the caller's buffer.
-unsafe fn get_text<T: Text>(buffer: *mut T::Unit, size: isize, text: fn(&State) -> &str) -> isize {
-    get(0, |state| unsafe {
+/// Copies a string of a client's state into the caller's buffer.
+unsafe fn get_text<T: Text>(
+    client: i64,
+    buffer: *mut T::Unit,
+    size: isize,
+    text: fn(&State) -> &str,
+) -> isize {
+    get(client, 0, |state| unsafe {
         text::copy::<T>(text(state), buffer, size)
     })
 }
@@ -172,29 +194,71 @@ fn bool_result(ok: bool) -> isize {
     isize::from(ok)
 }
 
+// --- Clients -----------------------------------------------------------------
+
+/// Makes a client: its handle (1 and up, never reused), 0 if it failed.
+#[unsafe(no_mangle)]
+pub extern "C" fn BakaShrot_CreateClient() -> i64 {
+    let made = catch_unwind(|| {
+        let (next, clients) = &mut *lock(&CLIENTS);
+        clients.insert(*next, Arc::new(Mutex::new(State::new())));
+        *next += 1;
+        *next - 1
+    });
+    made.unwrap_or(0)
+}
+
+/// Frees a client and closes its connection (once a call on it in another
+/// thread ends): 1, or 0 if it wasn't one.
+#[unsafe(no_mangle)]
+pub extern "C" fn BakaShrot_FreeClient(client: i64) -> isize {
+    let freed = catch_unwind(|| lock(&CLIENTS).1.remove(&client).is_some());
+    bool_result(freed.unwrap_or(false))
+}
+
 // --- Errors ------------------------------------------------------------------
 
-/// Why the last call failed: a protocol error code (1-99 a server's
-/// refusal, the connection still open; 100 and up the client's own), 0 if
-/// it succeeded. Getters don't change it.
+/// Why the client's last call failed: a protocol error code (1-99 a
+/// server's refusal, the connection still open; 100 and up the client's
+/// own), 0 if it succeeded. Getters don't change it. `InvalidArgument` for
+/// a bad handle.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_GetLastError() -> i32 {
-    get(ErrorCode::Internal.code() as i32, |state| {
+pub extern "C" fn BakaShrot_GetLastError(client: i64) -> i32 {
+    get(client, ErrorCode::InvalidArgument.code() as i32, |state| {
         state.last_error as i32
     })
 }
 
-/// Why the last call failed, in words: the server's reason for a refusal,
-/// the client's otherwise. Empty if it succeeded.
+/// The client's reason, or why its handle is bad.
+unsafe fn refusal_reason<T: Text>(client: i64, buffer: *mut T::Unit, size: isize) -> isize {
+    match find(client) {
+        Some(_) => unsafe { get_text::<T>(client, buffer, size, |state| &state.reason) },
+        None => {
+            let why = format!("no client {client}: never made, or freed");
+            unsafe { text::copy::<T>(&why, buffer, size) }
+        }
+    }
+}
+
+/// Why the client's last call failed, in words: the server's reason for a
+/// refusal, the client's otherwise. Empty if it succeeded.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetRefusalReasonA(buffer: *mut c_char, size: isize) -> isize {
-    unsafe { get_text::<Utf8>(buffer.cast(), size, |state| &state.reason) }
+pub unsafe extern "C" fn BakaShrot_GetRefusalReasonA(
+    client: i64,
+    buffer: *mut c_char,
+    size: isize,
+) -> isize {
+    unsafe { refusal_reason::<Utf8>(client, buffer.cast(), size) }
 }
 
 /// The same as `BakaShrot_GetRefusalReasonA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetRefusalReasonW(buffer: *mut u16, size: isize) -> isize {
-    unsafe { get_text::<Utf16>(buffer, size, |state| &state.reason) }
+pub unsafe extern "C" fn BakaShrot_GetRefusalReasonW(
+    client: i64,
+    buffer: *mut u16,
+    size: isize,
+) -> isize {
+    unsafe { refusal_reason::<Utf16>(client, buffer, size) }
 }
 
 // --- Settings ----------------------------------------------------------------
@@ -218,12 +282,13 @@ fn pem_or_file(value: Option<String>, what: &str, optional: bool) -> Result<Opti
 
 /// Sets one of the certificates' settings, before connecting.
 unsafe fn set<T: Text>(
+    client: i64,
     value: *const T::Unit,
     what: &str,
     optional: bool,
     slot: fn(&mut State) -> &mut Option<String>,
 ) -> isize {
-    call(0, |state| {
+    call(client, 0, |state| {
         if state.client.is_some() {
             return Err(Error::new(
                 ErrorCode::AlreadyConnected,
@@ -239,26 +304,43 @@ unsafe fn set<T: Text>(
 /// Sets the CA's certificate, which the server's must be issued by: PEM
 /// text, or the path of a file holding it. Before connecting.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_SetCaCertificateA(certificate: *const c_char) -> isize {
+pub unsafe extern "C" fn BakaShrot_SetCaCertificateA(
+    client: i64,
+    certificate: *const c_char,
+) -> isize {
     unsafe {
-        set::<Utf8>(certificate.cast(), "CA certificate", false, |state| {
-            &mut state.ca
-        })
+        set::<Utf8>(
+            client,
+            certificate.cast(),
+            "CA certificate",
+            false,
+            |state| &mut state.ca,
+        )
     }
 }
 
 /// The same as `BakaShrot_SetCaCertificateA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_SetCaCertificateW(certificate: *const u16) -> isize {
-    unsafe { set::<Utf16>(certificate, "CA certificate", false, |state| &mut state.ca) }
+pub unsafe extern "C" fn BakaShrot_SetCaCertificateW(
+    client: i64,
+    certificate: *const u16,
+) -> isize {
+    unsafe {
+        set::<Utf16>(client, certificate, "CA certificate", false, |state| {
+            &mut state.ca
+        })
+    }
 }
 
-/// Sets this client's certificate, which says its node and its roles: PEM
+/// Sets the client's certificate, which says its node and its roles: PEM
 /// text, or the path of a file holding it. Before connecting.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_SetCertificateA(certificate: *const c_char) -> isize {
+pub unsafe extern "C" fn BakaShrot_SetCertificateA(
+    client: i64,
+    certificate: *const c_char,
+) -> isize {
     unsafe {
-        set::<Utf8>(certificate.cast(), "certificate", false, |state| {
+        set::<Utf8>(client, certificate.cast(), "certificate", false, |state| {
             &mut state.certificate
         })
     }
@@ -266,45 +348,49 @@ pub unsafe extern "C" fn BakaShrot_SetCertificateA(certificate: *const c_char) -
 
 /// The same as `BakaShrot_SetCertificateA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_SetCertificateW(certificate: *const u16) -> isize {
+pub unsafe extern "C" fn BakaShrot_SetCertificateW(client: i64, certificate: *const u16) -> isize {
     unsafe {
-        set::<Utf16>(certificate, "certificate", false, |state| {
+        set::<Utf16>(client, certificate, "certificate", false, |state| {
             &mut state.certificate
         })
     }
 }
 
-/// Sets this client's private key, its certificate's: PEM text, or the path
+/// Sets the client's private key, its certificate's: PEM text, or the path
 /// of a file holding it. Before connecting.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_SetPrivateKeyA(key: *const c_char) -> isize {
-    unsafe { set::<Utf8>(key.cast(), "private key", false, |state| &mut state.key) }
+pub unsafe extern "C" fn BakaShrot_SetPrivateKeyA(client: i64, key: *const c_char) -> isize {
+    unsafe {
+        set::<Utf8>(client, key.cast(), "private key", false, |state| {
+            &mut state.key
+        })
+    }
 }
 
 /// The same as `BakaShrot_SetPrivateKeyA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_SetPrivateKeyW(key: *const u16) -> isize {
-    unsafe { set::<Utf16>(key, "private key", false, |state| &mut state.key) }
+pub unsafe extern "C" fn BakaShrot_SetPrivateKeyW(client: i64, key: *const u16) -> isize {
+    unsafe { set::<Utf16>(client, key, "private key", false, |state| &mut state.key) }
 }
 
 /// Sets the CA's CRL, optional: servers it revokes are refused. PEM text,
 /// or the path of a file holding it (one that isn't there is a
 /// `FileError`); null or empty for none. Before connecting.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_SetCrlA(crl: *const c_char) -> isize {
-    unsafe { set::<Utf8>(crl.cast(), "CRL", true, |state| &mut state.crl) }
+pub unsafe extern "C" fn BakaShrot_SetCrlA(client: i64, crl: *const c_char) -> isize {
+    unsafe { set::<Utf8>(client, crl.cast(), "CRL", true, |state| &mut state.crl) }
 }
 
 /// The same as `BakaShrot_SetCrlA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_SetCrlW(crl: *const u16) -> isize {
-    unsafe { set::<Utf16>(crl, "CRL", true, |state| &mut state.crl) }
+pub unsafe extern "C" fn BakaShrot_SetCrlW(client: i64, crl: *const u16) -> isize {
+    unsafe { set::<Utf16>(client, crl, "CRL", true, |state| &mut state.crl) }
 }
 
 // --- The connection ----------------------------------------------------------
 
-unsafe fn connect<T: Text>(host: *const T::Unit, port: i32) -> isize {
-    call(0, |state| {
+unsafe fn connect<T: Text>(client: i64, host: *const T::Unit, port: i32) -> isize {
+    call(client, 0, |state| {
         if state.client.is_some() {
             return Err(Error::new(
                 ErrorCode::AlreadyConnected,
@@ -349,44 +435,47 @@ unsafe fn connect<T: Text>(host: *const T::Unit, port: i32) -> isize {
 /// the server refused the certificate, `ServerNotVerified` this client
 /// refused the server's, `NotAllowed` none of its roles is the server's).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_ConnectA(host: *const c_char, port: i32) -> isize {
-    unsafe { connect::<Utf8>(host.cast(), port) }
+pub unsafe extern "C" fn BakaShrot_ConnectA(client: i64, host: *const c_char, port: i32) -> isize {
+    unsafe { connect::<Utf8>(client, host.cast(), port) }
 }
 
 /// The same as `BakaShrot_ConnectA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_ConnectW(host: *const u16, port: i32) -> isize {
-    unsafe { connect::<Utf16>(host, port) }
+pub unsafe extern "C" fn BakaShrot_ConnectW(client: i64, host: *const u16, port: i32) -> isize {
+    unsafe { connect::<Utf16>(client, host, port) }
 }
 
 /// 1 while connected: notices when the server closed the connection
 /// (forgotten then: connect again).
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_IsConnected() -> isize {
-    let open = catch_unwind(AssertUnwindSafe(|| {
-        let mut state = state();
+pub extern "C" fn BakaShrot_IsConnected(client: i64) -> isize {
+    get(client, 0, |state| {
         let open = state.client.as_ref().is_some_and(Client::is_open);
         if !open {
             state.client = None;
         }
-        open
-    }));
-    bool_result(open.unwrap_or(false))
+        bool_result(open)
+    })
 }
 
 /// Closes the connection: 0 if there was none. The settings stay.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_Disconnect() -> isize {
-    let closed = catch_unwind(AssertUnwindSafe(|| state().client.take().is_some()));
-    bool_result(closed.unwrap_or(false))
+pub extern "C" fn BakaShrot_Disconnect(client: i64) -> isize {
+    get(client, 0, |state| {
+        bool_result(state.client.take().is_some())
+    })
 }
 
 /// The node this client is, as the server said when connecting: its
 /// certificate's name. Empty when not connected.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetNodeA(buffer: *mut c_char, size: isize) -> isize {
+pub unsafe extern "C" fn BakaShrot_GetNodeA(
+    client: i64,
+    buffer: *mut c_char,
+    size: isize,
+) -> isize {
     unsafe {
-        get_text::<Utf8>(buffer.cast(), size, |state| {
+        get_text::<Utf8>(client, buffer.cast(), size, |state| {
             state.client.as_ref().map_or("", Client::node)
         })
     }
@@ -394,9 +483,9 @@ pub unsafe extern "C" fn BakaShrot_GetNodeA(buffer: *mut c_char, size: isize) ->
 
 /// The same as `BakaShrot_GetNodeA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetNodeW(buffer: *mut u16, size: isize) -> isize {
+pub unsafe extern "C" fn BakaShrot_GetNodeW(client: i64, buffer: *mut u16, size: isize) -> isize {
     unsafe {
-        get_text::<Utf16>(buffer, size, |state| {
+        get_text::<Utf16>(client, buffer, size, |state| {
             state.client.as_ref().map_or("", Client::node)
         })
     }
@@ -415,8 +504,8 @@ unsafe fn topic_and_data<T: Text>(
     Ok((topic, data))
 }
 
-unsafe fn push_to<T: Text>(topic: *const T::Unit, data: *const T::Unit) -> i64 {
-    call(-1, |state| {
+unsafe fn push_to<T: Text>(client: i64, topic: *const T::Unit, data: *const T::Unit) -> i64 {
+    call(client, -1, |state| {
         let (topic, data) = unsafe { topic_and_data::<T>(topic, data)? };
         let id = state.client()?.push(&topic, &data)?;
         Ok(id as i64)
@@ -428,16 +517,21 @@ unsafe fn push_to<T: Text>(topic: *const T::Unit, data: *const T::Unit) -> i64 {
 /// (`ConnectionLost`) may have been stored all the same.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_PushMessageToA(
+    client: i64,
     topic: *const c_char,
     data: *const c_char,
 ) -> i64 {
-    unsafe { push_to::<Utf8>(topic.cast(), data.cast()) }
+    unsafe { push_to::<Utf8>(client, topic.cast(), data.cast()) }
 }
 
 /// The same as `BakaShrot_PushMessageToA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_PushMessageToW(topic: *const u16, data: *const u16) -> i64 {
-    unsafe { push_to::<Utf16>(topic, data) }
+pub unsafe extern "C" fn BakaShrot_PushMessageToW(
+    client: i64,
+    topic: *const u16,
+    data: *const u16,
+) -> i64 {
+    unsafe { push_to::<Utf16>(client, topic, data) }
 }
 
 // --- Reading -----------------------------------------------------------------
@@ -452,8 +546,8 @@ unsafe fn topic_and_node<T: Text>(
     Ok((topic, node))
 }
 
-unsafe fn latest_of<T: Text>(topic: *const T::Unit, node: *const T::Unit) -> isize {
-    call(0, |state| {
+unsafe fn latest_of<T: Text>(client: i64, topic: *const T::Unit, node: *const T::Unit) -> isize {
+    call(client, 0, |state| {
         let (topic, node) = unsafe { topic_and_node::<T>(topic, node)? };
         state.clear_messages(&topic, &node);
         let answer = state.client()?.get_messages(&topic, &node, None, 1)?;
@@ -472,28 +566,31 @@ unsafe fn latest_of<T: Text>(topic: *const T::Unit, node: *const T::Unit) -> isi
 /// `BakaShrot_GetMessage*()` getters. `NotFound` if there's none yet.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_GetLatestMessageOfA(
+    client: i64,
     topic: *const c_char,
     node: *const c_char,
 ) -> isize {
-    unsafe { latest_of::<Utf8>(topic.cast(), node.cast()) }
+    unsafe { latest_of::<Utf8>(client, topic.cast(), node.cast()) }
 }
 
 /// The same as `BakaShrot_GetLatestMessageOfA`, in UTF-16.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_GetLatestMessageOfW(
+    client: i64,
     topic: *const u16,
     node: *const u16,
 ) -> isize {
-    unsafe { latest_of::<Utf16>(topic, node) }
+    unsafe { latest_of::<Utf16>(client, topic, node) }
 }
 
 unsafe fn messages<T: Text>(
+    client: i64,
     topic: *const T::Unit,
     node: *const T::Unit,
     after: i64,
     limit: i32,
 ) -> i32 {
-    call(-1, |state| {
+    call(client, -1, |state| {
         let (topic, node) = unsafe { topic_and_node::<T>(topic, node)? };
         state.clear_messages(&topic, &node);
         let after =
@@ -515,36 +612,38 @@ unsafe fn messages<T: Text>(
 /// `BakaShrot_HasMoreMessages()` says whether more follow the last one.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_GetMessagesA(
+    client: i64,
     topic: *const c_char,
     node: *const c_char,
     after: i64,
     limit: i32,
 ) -> i32 {
-    unsafe { messages::<Utf8>(topic.cast(), node.cast(), after, limit) }
+    unsafe { messages::<Utf8>(client, topic.cast(), node.cast(), after, limit) }
 }
 
 /// The same as `BakaShrot_GetMessagesA`, in UTF-16.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_GetMessagesW(
+    client: i64,
     topic: *const u16,
     node: *const u16,
     after: i64,
     limit: i32,
 ) -> i32 {
-    unsafe { messages::<Utf16>(topic, node, after, limit) }
+    unsafe { messages::<Utf16>(client, topic, node, after, limit) }
 }
 
 /// How many messages the last `GetMessages` or `GetLatestMessageOf` got.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_GetMessageCount() -> i32 {
-    get(0, |state| state.messages.len() as i32)
+pub extern "C" fn BakaShrot_GetMessageCount(client: i64) -> i32 {
+    get(client, 0, |state| state.messages.len() as i32)
 }
 
 /// Selects the message at `index` (0 to the count - 1) for the getters: 0
 /// if there's none there (`InvalidArgument`), the selection unchanged.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_SelectMessage(index: i32) -> isize {
-    call(0, |state| {
+pub extern "C" fn BakaShrot_SelectMessage(client: i64, index: i32) -> isize {
+    call(client, 0, |state| {
         let index = usize::try_from(index)
             .ok()
             .filter(|index| *index < state.messages.len())
@@ -557,14 +656,14 @@ pub extern "C" fn BakaShrot_SelectMessage(index: i32) -> isize {
 /// 1 if more messages follow the last one the last `GetMessages` got: ask
 /// again after its id.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_HasMoreMessages() -> isize {
-    get(0, |state| bool_result(state.more))
+pub extern "C" fn BakaShrot_HasMoreMessages(client: i64) -> isize {
+    get(client, 0, |state| bool_result(state.more))
 }
 
 /// The selected message's id, 0 if none.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_GetMessageId() -> i64 {
-    get(0, |state| {
+pub extern "C" fn BakaShrot_GetMessageId(client: i64) -> i64 {
+    get(client, 0, |state| {
         state.message().map_or(0, |message| message.id as i64)
     })
 }
@@ -572,8 +671,8 @@ pub extern "C" fn BakaShrot_GetMessageId() -> i64 {
 /// When the selected message was pushed, by the server it was pushed to:
 /// milliseconds since 1970-01-01 UTC, 0 if none.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_GetMessagePushedAt() -> i64 {
-    get(0, |state| {
+pub extern "C" fn BakaShrot_GetMessagePushedAt(client: i64) -> i64 {
+    get(client, 0, |state| {
         state
             .message()
             .map_or(0, |message| message.pushed_at as i64)
@@ -582,8 +681,8 @@ pub extern "C" fn BakaShrot_GetMessagePushedAt() -> i64 {
 
 /// The selected message's attachment's size, 0 without one.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_GetMessageAttachmentSize() -> i64 {
-    get(0, |state| {
+pub extern "C" fn BakaShrot_GetMessageAttachmentSize(client: i64) -> i64 {
+    get(client, 0, |state| {
         state
             .message()
             .and_then(|message| message.attachment.as_ref())
@@ -594,8 +693,8 @@ pub extern "C" fn BakaShrot_GetMessageAttachmentSize() -> i64 {
 /// 1 if the selected message's attachment is all on this server (a
 /// replicated one may still be on its way).
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_IsMessageAttachmentReady() -> isize {
-    get(0, |state| {
+pub extern "C" fn BakaShrot_IsMessageAttachmentReady(client: i64) -> isize {
+    get(client, 0, |state| {
         let attachment = state
             .message()
             .and_then(|message| message.attachment.as_ref());
@@ -605,9 +704,13 @@ pub extern "C" fn BakaShrot_IsMessageAttachmentReady() -> isize {
 
 /// The selected message's data, as pushed (JSON or not).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetMessageDataA(buffer: *mut c_char, size: isize) -> isize {
+pub unsafe extern "C" fn BakaShrot_GetMessageDataA(
+    client: i64,
+    buffer: *mut c_char,
+    size: isize,
+) -> isize {
     unsafe {
-        get_text::<Utf8>(buffer.cast(), size, |state| {
+        get_text::<Utf8>(client, buffer.cast(), size, |state| {
             state.message().map_or("", |message| &message.data)
         })
     }
@@ -615,9 +718,13 @@ pub unsafe extern "C" fn BakaShrot_GetMessageDataA(buffer: *mut c_char, size: is
 
 /// The same as `BakaShrot_GetMessageDataA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetMessageDataW(buffer: *mut u16, size: isize) -> isize {
+pub unsafe extern "C" fn BakaShrot_GetMessageDataW(
+    client: i64,
+    buffer: *mut u16,
+    size: isize,
+) -> isize {
     unsafe {
-        get_text::<Utf16>(buffer, size, |state| {
+        get_text::<Utf16>(client, buffer, size, |state| {
             state.message().map_or("", |message| &message.data)
         })
     }
@@ -625,32 +732,48 @@ pub unsafe extern "C" fn BakaShrot_GetMessageDataW(buffer: *mut u16, size: isize
 
 /// The topic the last `GetMessages` or `GetLatestMessageOf` asked for.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetMessageTopicA(buffer: *mut c_char, size: isize) -> isize {
-    unsafe { get_text::<Utf8>(buffer.cast(), size, |state| &state.topic) }
+pub unsafe extern "C" fn BakaShrot_GetMessageTopicA(
+    client: i64,
+    buffer: *mut c_char,
+    size: isize,
+) -> isize {
+    unsafe { get_text::<Utf8>(client, buffer.cast(), size, |state| &state.topic) }
 }
 
 /// The same as `BakaShrot_GetMessageTopicA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetMessageTopicW(buffer: *mut u16, size: isize) -> isize {
-    unsafe { get_text::<Utf16>(buffer, size, |state| &state.topic) }
+pub unsafe extern "C" fn BakaShrot_GetMessageTopicW(
+    client: i64,
+    buffer: *mut u16,
+    size: isize,
+) -> isize {
+    unsafe { get_text::<Utf16>(client, buffer, size, |state| &state.topic) }
 }
 
 /// The node the last `GetMessages` or `GetLatestMessageOf` asked for.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetMessageNodeA(buffer: *mut c_char, size: isize) -> isize {
-    unsafe { get_text::<Utf8>(buffer.cast(), size, |state| &state.node) }
+pub unsafe extern "C" fn BakaShrot_GetMessageNodeA(
+    client: i64,
+    buffer: *mut c_char,
+    size: isize,
+) -> isize {
+    unsafe { get_text::<Utf8>(client, buffer.cast(), size, |state| &state.node) }
 }
 
 /// The same as `BakaShrot_GetMessageNodeA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetMessageNodeW(buffer: *mut u16, size: isize) -> isize {
-    unsafe { get_text::<Utf16>(buffer, size, |state| &state.node) }
+pub unsafe extern "C" fn BakaShrot_GetMessageNodeW(
+    client: i64,
+    buffer: *mut u16,
+    size: isize,
+) -> isize {
+    unsafe { get_text::<Utf16>(client, buffer, size, |state| &state.node) }
 }
 
 // --- Names -------------------------------------------------------------------
 
-fn list(kind: NameKind) -> i32 {
-    call(-1, |state| {
+fn list(client: i64, kind: NameKind) -> i32 {
+    call(client, -1, |state| {
         state.names.clear();
         let list = state.client()?.list_names(kind)?;
         let kind = match kind {
@@ -672,36 +795,44 @@ fn list(kind: NameKind) -> i32 {
 /// (every one if its roles have `list_topics` or `query`): how many, -1 on
 /// failure. Then `BakaShrot_GetNamesList()`.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_ListTopics() -> i32 {
-    list(NameKind::Topic)
+pub extern "C" fn BakaShrot_ListTopics(client: i64) -> i32 {
+    list(client, NameKind::Topic)
 }
 
 /// Lists the nodes with messages in the topics this client may read (every
 /// one if its roles have `list_nodes` or `query`): how many, -1 on failure. Then
 /// `BakaShrot_GetNamesList()`.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_ListNodes() -> i32 {
-    list(NameKind::Node)
+pub extern "C" fn BakaShrot_ListNodes(client: i64) -> i32 {
+    list(client, NameKind::Node)
 }
 
 /// The last list, as JSON:
 /// `{"kind":"topic","truncated":false,"names":["logs",...]}`, `truncated`
 /// if some didn't fit.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetNamesListA(buffer: *mut c_char, size: isize) -> isize {
-    unsafe { get_text::<Utf8>(buffer.cast(), size, |state| &state.names) }
+pub unsafe extern "C" fn BakaShrot_GetNamesListA(
+    client: i64,
+    buffer: *mut c_char,
+    size: isize,
+) -> isize {
+    unsafe { get_text::<Utf8>(client, buffer.cast(), size, |state| &state.names) }
 }
 
 /// The same as `BakaShrot_GetNamesListA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetNamesListW(buffer: *mut u16, size: isize) -> isize {
-    unsafe { get_text::<Utf16>(buffer, size, |state| &state.names) }
+pub unsafe extern "C" fn BakaShrot_GetNamesListW(
+    client: i64,
+    buffer: *mut u16,
+    size: isize,
+) -> isize {
+    unsafe { get_text::<Utf16>(client, buffer, size, |state| &state.names) }
 }
 
 // --- Queries -----------------------------------------------------------------
 
-unsafe fn query<T: Text>(sql: *const T::Unit) -> isize {
-    call(0, |state| {
+unsafe fn query<T: Text>(client: i64, sql: *const T::Unit) -> isize {
+    call(client, 0, |state| {
         state.query.clear();
         let sql = required(unsafe { text::read::<T>(sql, "query")? }, "query")?;
         state.query = state.client()?.query(&sql)?;
@@ -712,27 +843,35 @@ unsafe fn query<T: Text>(sql: *const T::Unit) -> isize {
 /// Runs read-only SQL on the server (one SELECT or WITH), if this client
 /// may query. Then `BakaShrot_GetQueryResult()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_QueryA(sql: *const c_char) -> isize {
-    unsafe { query::<Utf8>(sql.cast()) }
+pub unsafe extern "C" fn BakaShrot_QueryA(client: i64, sql: *const c_char) -> isize {
+    unsafe { query::<Utf8>(client, sql.cast()) }
 }
 
 /// The same as `BakaShrot_QueryA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_QueryW(sql: *const u16) -> isize {
-    unsafe { query::<Utf16>(sql) }
+pub unsafe extern "C" fn BakaShrot_QueryW(client: i64, sql: *const u16) -> isize {
+    unsafe { query::<Utf16>(client, sql) }
 }
 
 /// The last query's result, as JSON:
 /// `{"columns":[...],"rows":[[...],...]}`, every value a string or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetQueryResultA(buffer: *mut c_char, size: isize) -> isize {
-    unsafe { get_text::<Utf8>(buffer.cast(), size, |state| &state.query) }
+pub unsafe extern "C" fn BakaShrot_GetQueryResultA(
+    client: i64,
+    buffer: *mut c_char,
+    size: isize,
+) -> isize {
+    unsafe { get_text::<Utf8>(client, buffer.cast(), size, |state| &state.query) }
 }
 
 /// The same as `BakaShrot_GetQueryResultA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetQueryResultW(buffer: *mut u16, size: isize) -> isize {
-    unsafe { get_text::<Utf16>(buffer, size, |state| &state.query) }
+pub unsafe extern "C" fn BakaShrot_GetQueryResultW(
+    client: i64,
+    buffer: *mut u16,
+    size: isize,
+) -> isize {
+    unsafe { get_text::<Utf16>(client, buffer, size, |state| &state.query) }
 }
 
 // --- Attachments -------------------------------------------------------------
@@ -743,11 +882,12 @@ fn message_id(id: i64) -> Result<u64> {
 }
 
 unsafe fn push_with_file<T: Text>(
+    client: i64,
     topic: *const T::Unit,
     data: *const T::Unit,
     path: *const T::Unit,
 ) -> i64 {
-    call(-1, |state| {
+    call(client, -1, |state| {
         let (topic, data) = unsafe { topic_and_data::<T>(topic, data)? };
         let path = required(unsafe { text::read::<T>(path, "the file")? }, "file")?;
         let mut file = File::open(&path)
@@ -766,30 +906,33 @@ unsafe fn push_with_file<T: Text>(
 /// (`DataMismatch`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_PushMessageWithFileA(
+    client: i64,
     topic: *const c_char,
     data: *const c_char,
     file_path: *const c_char,
 ) -> i64 {
-    unsafe { push_with_file::<Utf8>(topic.cast(), data.cast(), file_path.cast()) }
+    unsafe { push_with_file::<Utf8>(client, topic.cast(), data.cast(), file_path.cast()) }
 }
 
 /// The same as `BakaShrot_PushMessageWithFileA`, in UTF-16.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_PushMessageWithFileW(
+    client: i64,
     topic: *const u16,
     data: *const u16,
     file_path: *const u16,
 ) -> i64 {
-    unsafe { push_with_file::<Utf16>(topic, data, file_path) }
+    unsafe { push_with_file::<Utf16>(client, topic, data, file_path) }
 }
 
 unsafe fn push_with_data<T: Text>(
+    client: i64,
     topic: *const T::Unit,
     data: *const T::Unit,
     attachment: *const c_void,
     size: i64,
 ) -> i64 {
-    call(-1, |state| {
+    call(client, -1, |state| {
         let (topic, data) = unsafe { topic_and_data::<T>(topic, data)? };
         if attachment.is_null() {
             return Err(invalid("no attachment (a null pointer)"));
@@ -810,32 +953,35 @@ unsafe fn push_with_data<T: Text>(
 /// `BakaShrot_PushMessageWithFileA` does.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_PushMessageWithDataA(
+    client: i64,
     topic: *const c_char,
     data: *const c_char,
     attachment: *const c_void,
     size: i64,
 ) -> i64 {
-    unsafe { push_with_data::<Utf8>(topic.cast(), data.cast(), attachment, size) }
+    unsafe { push_with_data::<Utf8>(client, topic.cast(), data.cast(), attachment, size) }
 }
 
 /// The same as `BakaShrot_PushMessageWithDataA`, in UTF-16.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_PushMessageWithDataW(
+    client: i64,
     topic: *const u16,
     data: *const u16,
     attachment: *const c_void,
     size: i64,
 ) -> i64 {
-    unsafe { push_with_data::<Utf16>(topic, data, attachment, size) }
+    unsafe { push_with_data::<Utf16>(client, topic, data, attachment, size) }
 }
 
 unsafe fn save<T: Text>(
+    client: i64,
     topic: *const T::Unit,
     node: *const T::Unit,
     id: i64,
     path: *const T::Unit,
 ) -> i64 {
-    call(-1, |state| {
+    call(client, -1, |state| {
         let (topic, node) = unsafe { topic_and_node::<T>(topic, node)? };
         let path = required(unsafe { text::read::<T>(path, "the file")? }, "file")?;
         let size =
@@ -853,27 +999,37 @@ unsafe fn save<T: Text>(
 /// failed one leaves no file.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_SaveAttachmentA(
+    client: i64,
     topic: *const c_char,
     node: *const c_char,
     message_id: i64,
     file_path: *const c_char,
 ) -> i64 {
-    unsafe { save::<Utf8>(topic.cast(), node.cast(), message_id, file_path.cast()) }
+    unsafe {
+        save::<Utf8>(
+            client,
+            topic.cast(),
+            node.cast(),
+            message_id,
+            file_path.cast(),
+        )
+    }
 }
 
 /// The same as `BakaShrot_SaveAttachmentA`, in UTF-16.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_SaveAttachmentW(
+    client: i64,
     topic: *const u16,
     node: *const u16,
     message_id: i64,
     file_path: *const u16,
 ) -> i64 {
-    unsafe { save::<Utf16>(topic, node, message_id, file_path) }
+    unsafe { save::<Utf16>(client, topic, node, message_id, file_path) }
 }
 
-unsafe fn load<T: Text>(topic: *const T::Unit, node: *const T::Unit, id: i64) -> i64 {
-    call(-1, |state| {
+unsafe fn load<T: Text>(client: i64, topic: *const T::Unit, node: *const T::Unit, id: i64) -> i64 {
+    call(client, -1, |state| {
         state.attachment = Vec::new();
         let (topic, node) = unsafe { topic_and_node::<T>(topic, node)? };
         let mut attachment = Vec::new();
@@ -891,29 +1047,35 @@ unsafe fn load<T: Text>(topic: *const T::Unit, node: *const T::Unit, id: i64) ->
 /// ones): its size, -1 on failure. Then `BakaShrot_GetAttachmentData()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_LoadAttachmentA(
+    client: i64,
     topic: *const c_char,
     node: *const c_char,
     message_id: i64,
 ) -> i64 {
-    unsafe { load::<Utf8>(topic.cast(), node.cast(), message_id) }
+    unsafe { load::<Utf8>(client, topic.cast(), node.cast(), message_id) }
 }
 
 /// The same as `BakaShrot_LoadAttachmentA`, in UTF-16.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_LoadAttachmentW(
+    client: i64,
     topic: *const u16,
     node: *const u16,
     message_id: i64,
 ) -> i64 {
-    unsafe { load::<Utf16>(topic, node, message_id) }
+    unsafe { load::<Utf16>(client, topic, node, message_id) }
 }
 
 /// Copies what the last `BakaShrot_LoadAttachment()` read into `Buffer`, if
 /// `BufferSize` is enough: returns its size (0 if none), copies nothing if
 /// it doesn't fit (a null `Buffer` asks for the size).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetAttachmentData(buffer: *mut c_void, buffer_size: i64) -> i64 {
-    get(0, |state| {
+pub unsafe extern "C" fn BakaShrot_GetAttachmentData(
+    client: i64,
+    buffer: *mut c_void,
+    buffer_size: i64,
+) -> i64 {
+    get(client, 0, |state| {
         let data = &state.attachment;
         if !buffer.is_null() && usize::try_from(buffer_size).is_ok_and(|size| size >= data.len()) {
             unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.cast(), data.len()) };
@@ -924,7 +1086,9 @@ pub unsafe extern "C" fn BakaShrot_GetAttachmentData(buffer: *mut c_void, buffer
 
 /// Frees what `BakaShrot_LoadAttachment()` read: 1.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_FreeAttachmentData() -> isize {
-    let freed = catch_unwind(AssertUnwindSafe(|| state().attachment = Vec::new()));
-    bool_result(freed.is_ok())
+pub extern "C" fn BakaShrot_FreeAttachmentData(client: i64) -> isize {
+    get(client, 0, |state| {
+        state.attachment = Vec::new();
+        1
+    })
 }

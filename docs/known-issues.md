@@ -42,9 +42,8 @@ network**, not exposed to the internet. So:
   server then needs every node's public key).
 - **Private keys sit in PEM files**, readable by whoever can read them: on
   trusted machines, file permissions are enough.
-- **One connection per process in the DLL** (`revamp.md`,
-  "Open questions"): a handle-based API for several. Polling rather than
-  pushed subscriptions; nothing reconnects by itself, on purpose.
+- **Polling rather than pushed subscriptions;** nothing reconnects by
+  itself, on purpose.
 - **At least once:** a push whose answer was lost (the server stopped
   between committing and answering) is stored twice if retried. A client
   that minds reads the latest message before retrying.

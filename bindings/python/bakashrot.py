@@ -37,9 +37,9 @@ numbers as the DLL's BakaShrot_GetLastError()):
 A push whose answer was lost (ConnectionLostError) may have been stored all
 the same: pushed again, it's stored twice. Delivery is at least once.
 
-The DLL holds a single connection per process: only one Client may be
-connected at a time. Calls are serialized with a lock, so a Client can be
-shared between threads, one request at a time.
+Each Client has its own client in the DLL, so several can be connected at
+once, from different threads. A Client's own calls are serialized with a
+lock: one can be shared between threads, one request at a time.
 
 The DLL is looked for, in order: the dll_path given, the BAKASHROT_DLL
 environment variable, next to this file, then in the current directory.
@@ -237,41 +237,44 @@ class _Dll:
         self.path = path
 
         I, L, Q, P, S = ctypes.c_ssize_t, ctypes.c_int32, ctypes.c_int64, ctypes.c_char_p, ctypes.c_void_p
+        H = Q  # a client's handle
         signatures = {
-            "BakaShrot_GetLastError": (L, []),
-            "BakaShrot_GetRefusalReasonA": (I, [S, I]),
-            "BakaShrot_SetCaCertificateA": (I, [P]),
-            "BakaShrot_SetCertificateA": (I, [P]),
-            "BakaShrot_SetPrivateKeyA": (I, [P]),
-            "BakaShrot_SetCrlA": (I, [P]),
-            "BakaShrot_ConnectA": (I, [P, L]),
-            "BakaShrot_IsConnected": (I, []),
-            "BakaShrot_Disconnect": (I, []),
-            "BakaShrot_GetNodeA": (I, [S, I]),
-            "BakaShrot_PushMessageToA": (Q, [P, P]),
-            "BakaShrot_GetLatestMessageOfA": (I, [P, P]),
-            "BakaShrot_GetMessagesA": (L, [P, P, Q, L]),
-            "BakaShrot_GetMessageCount": (L, []),
-            "BakaShrot_SelectMessage": (I, [L]),
-            "BakaShrot_HasMoreMessages": (I, []),
-            "BakaShrot_GetMessageId": (Q, []),
-            "BakaShrot_GetMessagePushedAt": (Q, []),
-            "BakaShrot_GetMessageAttachmentSize": (Q, []),
-            "BakaShrot_IsMessageAttachmentReady": (I, []),
-            "BakaShrot_GetMessageTopicA": (I, [S, I]),
-            "BakaShrot_GetMessageNodeA": (I, [S, I]),
-            "BakaShrot_GetMessageDataA": (I, [S, I]),
-            "BakaShrot_ListTopics": (L, []),
-            "BakaShrot_ListNodes": (L, []),
-            "BakaShrot_GetNamesListA": (I, [S, I]),
-            "BakaShrot_QueryA": (I, [P]),
-            "BakaShrot_GetQueryResultA": (I, [S, I]),
-            "BakaShrot_PushMessageWithFileA": (Q, [P, P, P]),
-            "BakaShrot_PushMessageWithDataA": (Q, [P, P, P, Q]),
-            "BakaShrot_SaveAttachmentA": (Q, [P, P, Q, P]),
-            "BakaShrot_LoadAttachmentA": (Q, [P, P, Q]),
-            "BakaShrot_GetAttachmentData": (Q, [S, Q]),
-            "BakaShrot_FreeAttachmentData": (I, []),
+            "BakaShrot_CreateClient": (Q, []),
+            "BakaShrot_FreeClient": (I, [H]),
+            "BakaShrot_GetLastError": (L, [H]),
+            "BakaShrot_GetRefusalReasonA": (I, [H, S, I]),
+            "BakaShrot_SetCaCertificateA": (I, [H, P]),
+            "BakaShrot_SetCertificateA": (I, [H, P]),
+            "BakaShrot_SetPrivateKeyA": (I, [H, P]),
+            "BakaShrot_SetCrlA": (I, [H, P]),
+            "BakaShrot_ConnectA": (I, [H, P, L]),
+            "BakaShrot_IsConnected": (I, [H]),
+            "BakaShrot_Disconnect": (I, [H]),
+            "BakaShrot_GetNodeA": (I, [H, S, I]),
+            "BakaShrot_PushMessageToA": (Q, [H, P, P]),
+            "BakaShrot_GetLatestMessageOfA": (I, [H, P, P]),
+            "BakaShrot_GetMessagesA": (L, [H, P, P, Q, L]),
+            "BakaShrot_GetMessageCount": (L, [H]),
+            "BakaShrot_SelectMessage": (I, [H, L]),
+            "BakaShrot_HasMoreMessages": (I, [H]),
+            "BakaShrot_GetMessageId": (Q, [H]),
+            "BakaShrot_GetMessagePushedAt": (Q, [H]),
+            "BakaShrot_GetMessageAttachmentSize": (Q, [H]),
+            "BakaShrot_IsMessageAttachmentReady": (I, [H]),
+            "BakaShrot_GetMessageTopicA": (I, [H, S, I]),
+            "BakaShrot_GetMessageNodeA": (I, [H, S, I]),
+            "BakaShrot_GetMessageDataA": (I, [H, S, I]),
+            "BakaShrot_ListTopics": (L, [H]),
+            "BakaShrot_ListNodes": (L, [H]),
+            "BakaShrot_GetNamesListA": (I, [H, S, I]),
+            "BakaShrot_QueryA": (I, [H, P]),
+            "BakaShrot_GetQueryResultA": (I, [H, S, I]),
+            "BakaShrot_PushMessageWithFileA": (Q, [H, P, P, P]),
+            "BakaShrot_PushMessageWithDataA": (Q, [H, P, P, P, Q]),
+            "BakaShrot_SaveAttachmentA": (Q, [H, P, P, Q, P]),
+            "BakaShrot_LoadAttachmentA": (Q, [H, P, P, Q]),
+            "BakaShrot_GetAttachmentData": (Q, [H, S, Q]),
+            "BakaShrot_FreeAttachmentData": (I, [H]),
         }
         for name, (restype, argtypes) in signatures.items():
             try:
@@ -280,15 +283,16 @@ class _Dll:
                 raise BakaShrotError(f"{path} has no {name}, is it an older build?", ErrorCode.INTERNAL) from error
             function.restype = restype
             function.argtypes = argtypes
+            # BakaShrot_PushMessageToA as PushMessageToA.
             setattr(self, name[len("BakaShrot_"):], function)
 
-    def string(self, getter) -> str:
-        """Calls a string getter: asks for the size, then copies (UTF-8)."""
-        size = getter(None, 0)
+    def string(self, getter, handle: int) -> str:
+        """Calls a client's string getter: asks for the size, then copies (UTF-8)."""
+        size = getter(handle, None, 0)
         if size <= 1:
             return ""
         buffer = ctypes.create_string_buffer(size)
-        getter(buffer, size)
+        getter(handle, buffer, size)
         return buffer.raw[: size - 1].decode("utf-8")
 
 
@@ -309,8 +313,6 @@ class Client:
     its private key, the CA's CRL (servers it revokes are refused).
     """
 
-    _connected_client: Optional["Client"] = None
-
     def __init__(self, server: str, ca: str, certificate: str, key: str, crl: Optional[str] = None,
                  dll_path: Optional[str] = None):
         self._dll = _Dll.get(dll_path)
@@ -321,6 +323,8 @@ class Client:
         self.key = os.fspath(key)
         self.crl = os.fspath(crl) if crl else None
         self.node = ""
+        # Its client in the DLL, from connect() to close().
+        self._handle: Optional[int] = None
 
     @classmethod
     def from_file(cls, path: Union[str, os.PathLike], dll_path: Optional[str] = None) -> "Client":
@@ -360,34 +364,44 @@ class Client:
     def connect(self) -> "Client":
         """Connects. Raises ConnectionLostError when the server can't be
         reached (CONNECT_FAILED), AuthError when a certificate is refused,
-        BakaShrotError on a bad setting (INVALID_ARGUMENT, FILE_ERROR) or
-        another Client holding the DLL's connection (ALREADY_CONNECTED)."""
+        BakaShrotError on a bad setting (INVALID_ARGUMENT, FILE_ERROR)."""
         with self._lock:
-            owner = Client._connected_client
-            if owner is not None and owner is not self and owner.connected:
-                raise BakaShrotError("The DLL holds one connection, another Client is connected", ErrorCode.ALREADY_CONNECTED)
             if self.connected:
                 return self
             dll = self._dll
+            if self._handle is None:
+                handle = dll.CreateClient()
+                if handle < 1:
+                    raise BakaShrotError("The DLL made no client", ErrorCode.INTERNAL)
+                self._handle = handle
+            handle = self._handle
             for setter, value in ((dll.SetCaCertificateA, self.ca), (dll.SetCertificateA, self.certificate),
                                   (dll.SetPrivateKeyA, self.key), (dll.SetCrlA, self.crl or "")):
-                if not setter(value.encode("utf-8")):
+                if not setter(handle, value.encode("utf-8")):
                     raise self._failed("Certificates")
-            if not dll.ConnectA(self.host.encode("utf-8"), self.port):
+            if not dll.ConnectA(handle, self.host.encode("utf-8"), self.port):
                 raise self._failed(f"Connect to {self.host}:{self.port}", connecting=True)
-            self.node = dll.string(dll.GetNodeA)
-            Client._connected_client = self
+            self.node = dll.string(dll.GetNodeA, handle)
             return self
 
     def close(self) -> None:
+        """Disconnects, and frees its client in the DLL. connect() again
+        reconnects."""
         with self._lock:
-            if Client._connected_client is self:
-                self._dll.Disconnect()
-                Client._connected_client = None
+            if self._handle is not None:
+                self._dll.FreeClient(self._handle)
+                self._handle = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 - the interpreter may be shutting down
+            pass
 
     @property
     def connected(self) -> bool:
-        return Client._connected_client is self and bool(self._dll.IsConnected())
+        handle = self._handle
+        return handle is not None and bool(self._dll.IsConnected(handle))
 
     def __enter__(self) -> "Client":
         return self.connect()
@@ -401,15 +415,13 @@ class Client:
 
     def _failed(self, what: str, connecting: bool = False) -> BakaShrotError:
         """The error for a failed call, by the DLL's BakaShrot_GetLastError()."""
-        code = _error_code(self._dll.GetLastError())
-        reason = self._dll.string(self._dll.GetRefusalReasonA)
+        code = _error_code(self._dll.GetLastError(self._handle))
+        reason = self._dll.string(self._dll.GetRefusalReasonA, self._handle)
         if connecting and code in (ErrorCode.AUTH_REJECTED, ErrorCode.SERVER_NOT_VERIFIED,
                                    ErrorCode.NOT_ALLOWED, ErrorCode.VERSION_MISMATCH):
             return AuthError(f"{what}: {reason}", code)
         if isinstance(code, int) and 1 <= int(code) <= 99:
             return RefusedError(reason, code)
-        if not self._dll.IsConnected() and Client._connected_client is self:
-            Client._connected_client = None
         name = code.name if isinstance(code, ErrorCode) else str(code)
         message = f"{what} ({name}): {reason or 'failed'}"
         if code in (ErrorCode.NOT_CONNECTED, ErrorCode.CONNECT_FAILED, ErrorCode.CONNECTION_LOST, ErrorCode.PROTOCOL_ERROR):
@@ -435,13 +447,13 @@ class Client:
         with self._lock:
             self._check_connected()
             if attachment is None:
-                message_id = self._dll.PushMessageToA(_name(topic), encoded)
+                message_id = self._dll.PushMessageToA(self._handle, _name(topic), encoded)
             elif isinstance(attachment, (bytes, bytearray, memoryview)):
                 raw = bytes(attachment)
-                message_id = self._dll.PushMessageWithDataA(_name(topic), encoded, raw, len(raw))
+                message_id = self._dll.PushMessageWithDataA(self._handle, _name(topic), encoded, raw, len(raw))
             else:
                 path = os.fspath(attachment).encode("utf-8")
-                message_id = self._dll.PushMessageWithFileA(_name(topic), encoded, path)
+                message_id = self._dll.PushMessageWithFileA(self._handle, _name(topic), encoded, path)
             if message_id < 1:
                 raise self._failed("Push")
             return message_id
@@ -452,15 +464,15 @@ class Client:
         (NOT_FOUND) or it isn't on this server yet (NOT_READY)."""
         with self._lock:
             self._check_connected()
-            size = self._dll.LoadAttachmentA(_name(topic), _name(node), int(message_id))
+            size = self._dll.LoadAttachmentA(self._handle, _name(topic), _name(node), int(message_id))
             if size < 0:
                 raise self._failed("Attachment")
             try:
                 buffer = ctypes.create_string_buffer(size)
-                self._dll.GetAttachmentData(buffer, size)
+                self._dll.GetAttachmentData(self._handle, buffer, size)
                 return buffer.raw[:size]
             finally:
-                self._dll.FreeAttachmentData()
+                self._dll.FreeAttachmentData(self._handle)
 
     def save_attachment(self, topic: str, node: str, message_id: int, path: Union[str, os.PathLike]) -> int:
         """Saves the attachment of a message as path (replaced), a part at a
@@ -468,23 +480,24 @@ class Client:
         leaves no file."""
         with self._lock:
             self._check_connected()
-            size = self._dll.SaveAttachmentA(_name(topic), _name(node), int(message_id),
+            size = self._dll.SaveAttachmentA(self._handle, _name(topic), _name(node), int(message_id),
                                              os.fspath(path).encode("utf-8"))
             if size < 0:
                 raise self._failed("Attachment")
             return size
 
     def _current(self) -> Message:
-        dll = self._dll
-        return Message(dll.GetMessageId(), dll.string(dll.GetMessageTopicA), dll.string(dll.GetMessageNodeA),
-                       dll.string(dll.GetMessageDataA), dll.GetMessagePushedAt(), dll.GetMessageAttachmentSize(),
-                       bool(dll.IsMessageAttachmentReady()))
+        dll, handle = self._dll, self._handle
+        return Message(dll.GetMessageId(handle), dll.string(dll.GetMessageTopicA, handle),
+                       dll.string(dll.GetMessageNodeA, handle), dll.string(dll.GetMessageDataA, handle),
+                       dll.GetMessagePushedAt(handle), dll.GetMessageAttachmentSize(handle),
+                       bool(dll.IsMessageAttachmentReady(handle)))
 
     def latest(self, topic: str, node: str) -> Optional[Message]:
         """The latest message of topic/node, None if there's none yet."""
         with self._lock:
             self._check_connected()
-            if not self._dll.GetLatestMessageOfA(_name(topic), _name(node)):
+            if not self._dll.GetLatestMessageOfA(self._handle, _name(topic), _name(node)):
                 error = self._failed("Latest message")
                 if isinstance(error, RefusedError) and error.code == ErrorCode.NOT_FOUND:
                     return None
@@ -503,14 +516,14 @@ class Client:
         with self._lock:
             self._check_connected()
             dll = self._dll
-            count = dll.GetMessagesA(_name(topic), _name(node), after, limit)
+            count = dll.GetMessagesA(self._handle, _name(topic), _name(node), after, limit)
             if count < 0:
                 raise self._failed("Get messages")
             messages = []
             for index in range(count):
-                dll.SelectMessage(index)
+                dll.SelectMessage(self._handle, index)
                 messages.append(self._current())
-            return MessagesPage(messages, bool(dll.HasMoreMessages()))
+            return MessagesPage(messages, bool(dll.HasMoreMessages(self._handle)))
 
     def iter_messages(self, topic: str, node: str, after: int = 0, batch: int = 1000) -> Iterator[Message]:
         """Every message of topic/node after `after`, asking for batch at a
@@ -554,9 +567,9 @@ class Client:
     def _list(self, function, what: str) -> NamesList:
         with self._lock:
             self._check_connected()
-            if function() < 0:
+            if function(self._handle) < 0:
                 raise self._failed(what)
-            parsed = json.loads(self._dll.string(self._dll.GetNamesListA))
+            parsed = json.loads(self._dll.string(self._dll.GetNamesListA, self._handle))
         return NamesList(parsed["kind"], parsed["names"], bool(parsed["truncated"]))
 
     def query_raw(self, sql: str) -> str:
@@ -568,9 +581,9 @@ class Client:
         query is refused: RefusedError "malformed JSON"."""
         with self._lock:
             self._check_connected()
-            if not self._dll.QueryA(sql.encode("utf-8")):
+            if not self._dll.QueryA(self._handle, sql.encode("utf-8")):
                 raise self._failed("Query")
-            return self._dll.string(self._dll.GetQueryResultA)
+            return self._dll.string(self._dll.GetQueryResultA, self._handle)
 
     def query(self, sql: str) -> list:
         """query_raw(), as a list of dicts, one per row, by column name."""

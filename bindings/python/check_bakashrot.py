@@ -140,8 +140,13 @@ with kitchen:
     check("A message over the limit: refused before sending", ok, detail)
     secret_id = kitchen.push({"s": 1}, "secret")
     check("Push to another allowed topic", secret_id == 1, secret_id)
-    ok, detail = raises(lambda: lounge.connect(), BakaShrotError, "one connection", ErrorCode.ALREADY_CONNECTED)
-    check("A second Client can't connect while one is", ok and not lounge.connected, detail)
+    with lounge:
+        page = lounge.get_messages("logs", "kitchen", after=0, limit=2)
+        check("A second Client connected at the same time: both work",
+              lounge.connected and lounge.node == "lounge" and [m.id for m in page] == [1, 2]
+              and kitchen.connected and kitchen.latest("secret", "kitchen").id == secret_id,
+              f"{lounge.node}, {[m.id for m in page]}")
+    check("Closing one leaves the other connected", kitchen.connected and not lounge.connected)
 
     topics = kitchen.list_topics()
     check("list_topics()", topics.kind == "topic" and topics.names == ["logs", "secret"] and not topics.truncated, topics)
@@ -210,6 +215,26 @@ with kitchen:
                         "missing.bin", ErrorCode.FILE_ERROR)
     check("A missing file: refused before sending", ok, detail)
     check("Still connected", kitchen.connected)
+
+    # --- Two Clients, two threads, at the same time --------------------------
+    other = Client.from_file(os.path.join(folder, "kitchen.toml"), dll_path).connect()
+    pushed = {}
+
+    def pusher(name, client):
+        pushed[name] = [client.push({"thread": name, "n": n}, "secret") for n in range(30)]
+
+    threads = [threading.Thread(target=pusher, args=("a", kitchen)), threading.Thread(target=pusher, args=("b", other))]
+    started = time.perf_counter()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    elapsed = time.perf_counter() - started
+    every = sorted(pushed.get("a", []) + pushed.get("b", []))
+    check("Two Clients pushing from two threads at once: every push stored, each id once",
+          len(every) == 60 and every == list(range(every[0], every[0] + 60)),
+          f"{len(every)} pushes in {elapsed * 1000:.0f} ms")
+    other.close()
 
 check("close(): disconnected", not kitchen.connected)
 ok, detail = raises(lambda: kitchen.push("x", "logs"), ConnectionLostError, code=ErrorCode.NOT_CONNECTED)
