@@ -1,11 +1,11 @@
 """Builds a BakaShrot release for this machine's platform (Windows or
 Linux, x64 or ARM64), checks it works, and archives it:
 
-    python release.py [--skip-test]
+    python release.py [--skip-test] [--hybrid-crt]
 
 Into target/dist/:
   bakashrot-<version>-<platform>/       the release:
-    bakashrot-server, bakashrot, bakashrot-cert    the programs
+    bakashrot-server, bakashrot                    the programs
     bakashrot.dll / libbakashrot.so                the client library (C)
     include/bakashrot.h                            its C header
     purebasic/*.pbi                                its PureBasic prototypes
@@ -17,16 +17,20 @@ Into target/dist/:
     LICENSE.txt, THIRD-PARTY.txt                   BakaShrot's (CC0), its dependencies'
   bakashrot-<version>-<platform>.zip (Windows) or .tar.gz (Linux)
 
-No keys or certificates in it: bakashrot-cert makes them.
+No keys or certificates in it: bakashrot cert makes them.
 
 The check (unless --skip-test), in the release folder's _test/ (exes run
 from temp folders get blocked by antivirus here), deleted after unless
-it failed: a CA and certificates by bakashrot-cert, the
+it failed: a CA and certificates by bakashrot cert, the
 server started on a free port with a throwaway database, then the tool
 pushing (and an attachment of 3 MB), reading back, listing, querying;
 Python through the library, then the wheel installed by pip and used with
 no path given; then the server stopped as a service manager would
 (SIGTERM, or Ctrl+Break on Windows), which must end cleanly.
+
+--hybrid-crt, on Windows: the C runtime's UCRT from Windows (10 and up)
+instead of linked in, about 180 KB less per program, still no Visual C++
+redistributable (.cargo/hybrid-crt.toml); README.txt says which.
 
 The version is the workspace's (Cargo.toml), which bakashrot.py's
 __version__ must match. Needs Python 3.11+ (tomllib) and cargo (rustup).
@@ -49,16 +53,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WINDOWS = sys.platform == "win32"
 EXE = ".exe" if WINDOWS else ""
 LIBRARY = "bakashrot.dll" if WINDOWS else "libbakashrot.so"
-PROGRAMS = ["bakashrot-server", "bakashrot", "bakashrot-cert"]
-CRATES = ["bakashrot-server", "bakashrot-tools", "bakashrot-capi"]
+# Each built with its profile (Cargo.toml), into target/<profile>/.
+PROGRAMS = {"bakashrot-server": "release", "bakashrot": "release-tools"}
+CRATES = {"bakashrot-server": "release", "bakashrot-capi": "release", "bakashrot-tools": "release-tools"}
 
 CLIENT_EXAMPLE = """\
 # What the bakashrot tool and Python's Client.from_file() read, to connect
 # to a server. Paths are relative to this file's folder. See
 # docs/client.md.
 server = "10.0.0.2:7000"     # host:port, [an IPv6 address]:port
-ca = "ca.crt"                # the CA's certificate (bakashrot-cert ca)
-certificate = "kitchen.crt"  # this node's (bakashrot-cert issue --name kitchen ...)
+ca = "ca.crt"                # the CA's certificate (bakashrot cert ca)
+certificate = "kitchen.crt"  # this node's (bakashrot cert issue --name kitchen ...)
 key = "kitchen.key"
 # crl = "ca.crl"             # optional: certificates the CA revoked
 """
@@ -162,13 +167,17 @@ def third_party():
     return "\n".join(lines) + "\n"
 
 
-def readme(version, name):
+def readme(version, name, hybrid):
     built = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     rustc = run(["rustc", "--version"]).strip()
+    crt = ""
+    if WINDOWS:
+        crt = ("\nThe C runtime: Windows' UCRT (Windows 10 and up), VCRuntime linked in."
+               if hybrid else "\nThe C runtime: linked in, nothing to install.")
     return f"""\
 BakaShrot {version} ({name})
 
-Built {built}, commit {commit()}, {rustc}.
+Built {built}, commit {commit()}, {rustc}.{crt}
 Licenses: BakaShrot is CC0 (LICENSE.txt); the crates built into it are
 listed in THIRD-PARTY.txt with their licenses.
 
@@ -177,11 +186,11 @@ from clients with certificates of your own CA, store them in SQLite, and
 replicate them between servers. docs/ has the details (config.md,
 certificates.md, server.md, client.md, protocol.md).
 
-Certificates (bakashrot-cert{EXE}; docs/certificates.md):
-  bakashrot-cert ca --name "Home CA"                    ca.crt, ca.key (keep ca.key safe)
-  bakashrot-cert issue --name server-1 --server         a server's
-  bakashrot-cert issue --name kitchen --role sensor     a client's: its node, its roles
-  bakashrot-cert revoke kitchen.crt                     ca.crl
+Certificates (bakashrot{EXE} cert, no server needed; docs/certificates.md):
+  bakashrot cert ca --name "Home CA"                    ca.crt, ca.key (keep ca.key safe)
+  bakashrot cert issue --name server-1 --server         a server's
+  bakashrot cert issue --name kitchen --role sensor     a client's: its node, its roles
+  bakashrot cert revoke kitchen.crt                     ca.crl
 
 The server (bakashrot-server{EXE} server.toml; docs/config.md, server.md):
   server.example.toml has every setting. It logs to the console
@@ -208,20 +217,25 @@ release: another version's connection is refused. Nothing from the old
 """
 
 
-def build():
-    print("Building")
-    command = ["cargo", "build", "--release", "--locked"]
-    for crate in CRATES:
-        command += ["-p", crate]
-    run(command)
-    return os.path.join(HERE, "target", "release")
+def build(hybrid):
+    """Each profile's crates at once; the folder of a profile's output."""
+    print("Building" + (" (the hybrid C runtime)" if hybrid else ""))
+    for profile in sorted(set(CRATES.values())):
+        command = ["cargo", "build", "--profile", profile, "--locked"]
+        if hybrid:
+            command += ["--config", os.path.join(".cargo", "hybrid-crt.toml")]
+        for crate, its in CRATES.items():
+            if its == profile:
+                command += ["-p", crate]
+        run(command)
+    return lambda profile: os.path.join(HERE, "target", profile)
 
 
-def package(built, version, name, out):
+def package(built, version, name, out, hybrid):
     print(f"Packaging {out}")
-    for program in PROGRAMS:
-        shutil.copy2(os.path.join(built, program + EXE), out)
-    shutil.copy2(os.path.join(built, LIBRARY), out)
+    for program, profile in PROGRAMS.items():
+        shutil.copy2(os.path.join(built(profile), program + EXE), out)
+    shutil.copy2(os.path.join(built(CRATES["bakashrot-capi"]), LIBRARY), out)
     bindings = os.path.join(HERE, "bindings")
     os.makedirs(os.path.join(out, "include"))
     shutil.copy2(os.path.join(bindings, "c", "bakashrot.h"), os.path.join(out, "include"))
@@ -234,7 +248,7 @@ def package(built, version, name, out):
     write(os.path.join(out, "client.example.toml"), CLIENT_EXAMPLE)
     shutil.copy2(os.path.join(HERE, "LICENSE"), os.path.join(out, "LICENSE.txt"))
     write(os.path.join(out, "THIRD-PARTY.txt"), third_party())
-    write(os.path.join(out, "README.txt"), readme(version, name))
+    write(os.path.join(out, "README.txt"), readme(version, name, hybrid))
     wheel = run([sys.executable, "-B", os.path.join(bindings, "python", "make_wheel.py"),
                  os.path.join(out, LIBRARY), os.path.join(out, "python"),
                  os.path.join(out, "LICENSE.txt"), os.path.join(out, "THIRD-PARTY.txt")]).strip()
@@ -264,9 +278,9 @@ def smoke_test(out, wheel):
         if not re.search(pattern, got, re.MULTILINE):
             fail(f"{what}: unexpected output:\n{got}")
 
-    tool("bakashrot-cert", "ca", "--name", "Release test CA")
-    tool("bakashrot-cert", "issue", "--name", "server-1", "--server")
-    tool("bakashrot-cert", "issue", "--name", "tester", "--role", "tester")
+    tool("bakashrot", "cert", "ca", "--name", "Release test CA")
+    tool("bakashrot", "cert", "issue", "--name", "server-1", "--server")
+    tool("bakashrot", "cert", "issue", "--name", "tester", "--role", "tester")
     port = free_port()
     write(os.path.join(test, "server.toml"), f"""\
 [server]
@@ -328,7 +342,7 @@ key = "tester.key"
         expect("query", tool("bakashrot", "query",
                              "SELECT message_data ->> '$.value' AS v FROM messages WHERE topic = 'releasetest' AND message_id = 1"),
                r'"rows":\[\["42"\]\]')
-        print("  The tools: pushed, an attachment too, read back, listed, queried: OK")
+        print("  The tool: certificates made, pushed, an attachment too, read back, listed, queried: OK")
 
         script = ("import sys; sys.path.insert(0, sys.argv[1]); import bakashrot\n"
                   "with bakashrot.Client.from_file('client.toml', sys.argv[2]) as c:\n"
@@ -382,7 +396,7 @@ def archive(out):
 
 def main():
     args = set(sys.argv[1:])
-    if args - {"--skip-test"}:
+    if args - {"--skip-test", "--hybrid-crt"}:
         sys.exit(__doc__)
     # rustup's folder isn't on every shell's PATH.
     os.environ["PATH"] = os.path.join(os.path.expanduser("~"), ".cargo", "bin") + os.pathsep + os.environ["PATH"]
@@ -398,7 +412,8 @@ def main():
             os.remove(old)
     os.makedirs(out)
     print(f"BakaShrot {release} for {name}, into {out}")
-    wheel = package(build(), release, name, out)
+    hybrid = "--hybrid-crt" in args
+    wheel = package(build(hybrid), release, name, out, hybrid)
     if "--skip-test" not in args:
         shutil.rmtree(smoke_test(out, wheel))
     print(f"Archive: {archive(out)}")

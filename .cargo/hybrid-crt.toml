@@ -1,0 +1,9 @@
+# The hybrid C runtime on Windows (MSVC), instead of the static one: the
+# UCRT from Windows (part of it since Windows 10, which Rust needs anyway),
+# VCRuntime still static. About 180 KB less per program, still no Visual
+# C++ redistributable; measured 2026-11-17. Not the default (../revamp.md,
+# "Decided" 2): build.ps1 -HybridCrt, release.ps1 -HybridCrt, or
+# `cargo build --config .cargo/hybrid-crt.toml`. Cargo adds these flags to
+# config.toml's (+crt-static stays). Switching rebuilds everything.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "link-arg=/NODEFAULTLIB:libucrt.lib", "-C", "link-arg=/DEFAULTLIB:ucrt.lib"]

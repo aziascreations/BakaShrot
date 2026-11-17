@@ -16,7 +16,7 @@ stored, a str that may or may not be JSON: parsing them is up to the app
             print(message.id, message.json())
 
 Who the client is comes from its certificate, issued by the CA the server
-trusts (bakashrot-cert): its name is its node, its roles say what it may
+trusts (bakashrot cert): its name is its node, its roles say what it may
 do. client.toml says where the server is and where the certificates are
 (docs/client.md):
 

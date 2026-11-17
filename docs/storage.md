@@ -159,6 +159,9 @@ SELECT * FROM messages WHERE topic = 'logs' AND node = 'kitchen'
 SELECT message_data ->> '$.temp' FROM messages WHERE topic = 'sensors' AND is_json = 1
 ```
 
+SQLite's functions are there, JSON's included; not `soundex()` nor the
+`dbstat` table (left out of the build, "The file").
+
 - **By topic, or topic and node:** ranges of the table, read in order (a
   test checks the plans).
 - **Filters on `pushed_at` or `message_id`** read the streams they're in,
@@ -182,7 +185,11 @@ SELECT message_data ->> '$.temp' FROM messages WHERE topic = 'sensors' AND is_js
   foreign keys: one writer keeps the tables consistent, `CHECK`s keep the
   values valid.
 - SQLite is compiled in (`rusqlite`'s `bundled`): the same version
-  everywhere, no system library.
+  everywhere, no system library. Without full-text search (FTS3, FTS5),
+  R-Tree, `dbstat`, STAT4, `soundex()`, extension loading and column
+  metadata, which libsqlite3-sys turns on and nothing here uses: 310 KB
+  less in the server (`LIBSQLITE3_FLAGS` in `../.cargo/config.toml`; a
+  test checks they're out). JSON is SQLite's own, always there.
 
 ## Measured
 

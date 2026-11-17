@@ -115,7 +115,7 @@ accept_nodes = ["*"]  # Accepts every foreign node's messages (Default)
 > list_topics = true
 > list_nodes = true
 > ```
-> Its certificate: `bakashrot-cert.exe issue --name node-admin --role admin`
+> Its certificate: `bakashrot.exe cert issue --name node-admin --role admin`
 
 
 ### Retention

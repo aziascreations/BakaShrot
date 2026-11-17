@@ -8,13 +8,13 @@ From the repository's root, on Windows (`powershell -ExecutionPolicy Bypass -Fil
 
 | Script | What it does |
 |---|---|
-| `build.ps1` | Builds everything, release mode, into `target\release\` |
+| `build.ps1` | Builds everything, release mode, into `target\release\` (the tool with the `release-tools` profile, copied there); `-HybridCrt` |
 | `test.ps1` | What CI runs: formatting, clippy (warnings are errors), the tests, the docs |
-| `release.ps1` | A release for this platform, smoke-tested (`release.py`, below); `-SkipTest` |
+| `release.ps1` | A release for this platform, smoke-tested (`release.py`, below); `-SkipTest`, `-HybridCrt` |
 | `clean.ps1` | Deletes `target\` (builds and releases) |
 | `bench.ps1` | The benchmarks, release mode: pushes, replication, storage (`docs/server.md`, "Measured"); `-Only`, `-Sync full` or `normal` |
 
-Elsewhere, the same with cargo: `cargo build --release`, `cargo test`, `python release.py`, `cargo clean`;
+Elsewhere, the same with cargo: `cargo build --release` (and `-p bakashrot-tools --profile release-tools`), `cargo test`, `python release.py`, `cargo clean`;
 the benchmarks are ignored tests (`cargo test --release -- --ignored`).
 Generated keys and certificates never go in git.
 
@@ -23,7 +23,7 @@ Generated keys and certificates never go in git.
 A Cargo workspace:
 
 ```
-Cargo.toml              the workspace: shared lints, release profile
+Cargo.toml              the workspace: shared lints, the release profiles (release-tools: the tool's)
 rust-toolchain.toml     the pinned toolchain (1.100.0)
 build.ps1, test.ps1, release.ps1, clean.ps1, bench.ps1
 release.py              a release for this platform: build, package, smoke test
@@ -37,23 +37,24 @@ crates/
   bakashrot-server/     the server: TLS, identities, requests, the writer thread (and its program)
   bakashrot-client/     the client library, Rust API, blocking
   bakashrot-capi/       the C DLL over bakashrot-client: the BakaShrot_* exports (bakashrot.dll)
-  bakashrot-tools/      the CLI tools: bakashrot (push, read, query, list), bakashrot-cert
+  bakashrot-tools/      the CLI tool: bakashrot (push, read, query, list; cert: the certificates)
 bindings/
   c/                    bakashrot.h, generated from bakashrot-capi
   purebasic/            the prototypes and error codes
   python/               bakashrot.py over the DLL, check_bakashrot.py, make_wheel.py
-.cargo/config.toml      the C runtime linked statically on Windows
+.cargo/config.toml      the C runtime linked statically on Windows, SQLite's options
+.cargo/hybrid-crt.toml  -HybridCrt: the UCRT from Windows instead (about 180 KB less per program)
 docker/                 the server's image: Dockerfile, compose.yml, test.sh
 ```
 
 Dependencies only point downward: `proto`, `pki`, `config` and `storage` don't open sockets and are tested
-on their own; `server` and `client` use them; the DLL and the tools only use `client`.
+on their own; `server` and `client` use them; the DLL and the tool only use `client`.
 
 
 ## Releases
 `python release.py` (or `release.ps1`) on Windows or Linux, x64 or ARM64, builds that platform's release into
 `target/dist/bakashrot-<version>-<platform>/` and its archive (`.zip`, `.tar.gz`):
-the server, `bakashrot`, `bakashrot-cert`, the client library with its C header and PureBasic prototypes,
+the server, `bakashrot` (the certificates too: `bakashrot cert`), the client library with its C header and PureBasic prototypes,
 `bakashrot.py` and a wheel with the library in it (`bindings/python/make_wheel.py`), the example configs,
 `docs/`, a `README.txt`, the licenses (`THIRD-PARTY.txt`: every crate built in, from `cargo metadata`).
 

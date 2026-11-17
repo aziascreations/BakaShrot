@@ -1,27 +1,16 @@
-//! `bakashrot-cert`: makes a CA, issues certificates, revokes them, shows
-//! them. Every file is PEM; keys are written once, never over an existing
-//! file. See `docs/certificates.md`.
+//! `bakashrot cert`: makes a CA, issues certificates, revokes them, shows
+//! them, with no server. Every file is PEM; keys are written once, never
+//! over an existing file. See `docs/certificates.md`.
 
 use bakashrot_pki::{CA_DAYS, CERTIFICATE_DAYS, Ca, Identity, Revocations, Usage, summarize};
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
-#[derive(Parser)]
-#[command(
-    name = "bakashrot-cert",
-    version,
-    about = "Issues and revokes BakaShrot's certificates"
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
+// `bakashrot cert`'s commands (its help is `Command::Cert`'s, in main.rs).
 #[derive(Subcommand)]
-enum Command {
+pub enum Command {
     /// Makes a new CA: ca.crt and ca.key in --out. Keep ca.key off the
     /// servers: whoever has it can make any identity.
     Ca {
@@ -85,17 +74,8 @@ enum Command {
     },
 }
 
-fn main() -> ExitCode {
-    match run(Cli::parse().command) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("bakashrot-cert: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn run(command: Command) -> Result<(), String> {
+/// Runs one of `bakashrot cert`'s commands.
+pub fn run(command: Command) -> Result<(), String> {
     match command {
         Command::Ca { name, days, out } => {
             let ca = Ca::create(&name, days).map_err(|e| e.to_string())?;

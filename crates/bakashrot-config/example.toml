@@ -11,7 +11,7 @@
 [server]
 listen = "0.0.0.0:7000"              # required: address and port
 
-# The certificates (bakashrot-cert), required. The node this server is,
+# The certificates (bakashrot cert), required. The node this server is,
 # for its peers, is its certificate's name.
 ca = "ca.crt"
 certificate = "server-1.crt"

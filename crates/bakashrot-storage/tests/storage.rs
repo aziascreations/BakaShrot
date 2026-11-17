@@ -687,6 +687,28 @@ fn queries() {
         json("SELECT count(*) FROM messages")["rows"],
         serde_json::json!([["3"]])
     );
+    // SQLite without what nothing here uses (LIBSQLITE3_FLAGS in
+    // .cargo/config.toml): not built in, nor loadable.
+    for option in [
+        "ENABLE_FTS3",
+        "ENABLE_FTS5",
+        "ENABLE_RTREE",
+        "ENABLE_DBSTAT_VTAB",
+        "ENABLE_STAT4",
+        "SOUNDEX",
+        "ENABLE_LOAD_EXTENSION",
+        "ENABLE_COLUMN_METADATA",
+    ] {
+        assert_eq!(
+            json(&format!("SELECT sqlite_compileoption_used('{option}')"))["rows"],
+            serde_json::json!([["0"]]),
+            "{option}"
+        );
+    }
+    assert!(matches!(
+        runner.run("SELECT * FROM dbstat"),
+        Err(Error::Query(_))
+    ));
     // A failing row fails it all, with SQLite's message.
     match runner.run("SELECT message_data ->> '$.t' FROM messages") {
         Err(Error::Query(why)) => assert!(why.contains("malformed JSON"), "{why}"),

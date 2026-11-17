@@ -2,7 +2,7 @@
 
 Started 2026-11-13: what it should change, what's decided, what's still
 open, and the plan. Every step of the plan is done (the workspace,
-`bakashrot-proto`, `bakashrot-pki` and `bakashrot-cert`,
+`bakashrot-proto`, `bakashrot-pki` and the certificate tool,
 `bakashrot-config`, `bakashrot-storage`, `bakashrot-server` and
 `bakashrot-client` answering every request, attachments included, the C
 DLL with its C, PureBasic and Python bindings, the `bakashrot` tool,
@@ -30,7 +30,12 @@ test runner, CI, Docker, `bench.ps1`), see "Plan".
      unloaded (`BakaShrot_UnloadClient()`) and Windows' loader lock is
      never in the way;
    - the C runtime linked statically on Windows (`+crt-static`), built
-     against an old glibc on Linux (manylinux);
+     against an old glibc on Linux (manylinux); a switch for the hybrid
+     one, not the default (2026-11-17): `build.ps1` / `release.ps1
+     -HybridCrt`, `.cargo/hybrid-crt.toml`, the UCRT from Windows (10
+     and up), VCRuntime still linked in, about 180 KB less per program,
+     still nothing to install (fully dynamic: 21 KB less again, but
+     `vcruntime140.dll`, the redistributable's);
    - `W` exports take UTF-16 everywhere (PureBasic's strings; `wchar_t` is
      32 bits on Linux);
    - the toolchain pinned (`rust-toolchain.toml`), a C header generated
@@ -112,7 +117,7 @@ Also decided (2026-11-13):
     config (warned in its log: a CRL deleted by mistake) and
     `client.toml` (the tool, Python's `from_file()`). A path given
     to the DLL's `SetCrl` or Python's `Client(crl=...)` is asked for
-    explicitly: missing, it's a `FileError`. `bakashrot-cert revoke`
+    explicitly: missing, it's a `FileError`. `bakashrot cert revoke`
     needs no file to start from (it writes the first one). A file
     that's there but can't be read or isn't the CA's is refused;
   - clients check it too when given one (`client_config()` takes the
@@ -120,7 +125,7 @@ Also decided (2026-11-13):
     block each other whichever end dials;
   - revoked by certificate, not by name: each certificate has its own key
     and serial number, so two servers of the same name each have theirs,
-    revoked one at a time (`bakashrot-cert issue --file`).
+    revoked one at a time (`bakashrot cert issue --file`).
 - **The server's config is TOML** (2026-11-13), `docs/config.md`:
   - `[server]`, `[retention]`, `[replication]`, `[roles.<name>]`; unknown
     keys refused; names only (no ids, pins or ranges);
@@ -190,7 +195,7 @@ Also decided (2026-11-13):
 - **The tools** (2026-11-14), `docs/client.md`, "The tools": one
   `bakashrot` program with subcommands (`push`, `latest`, `messages`,
   `query`, `list`) over `bakashrot-client`, `bakashrot-cert` kept apart
-  (the CA's key); `-c/--config`, `client.toml` by default; the old tools'
+  (the CA's key; folded in as `bakashrot cert` on 2026-11-17, below); `-c/--config`, `client.toml` by default; the old tools'
   output; messages and SQL inline, `@file` or `-` (standard input); exit
   codes 0, 1, and 2 for bad arguments.
 - **Attachments** (2026-11-14), `docs/server.md` and `client.md`:
@@ -270,6 +275,29 @@ Also decided (2026-11-13):
   manual runs only, a read-only token but where images are pushed (after
   they're built and checked), no token left on disk by checkout, actions
   pinned to commits, `--locked` builds.
+- **One tool, smaller** (2026-11-17), `docs/certificates.md`, "The
+  tool", and `docs/storage.md`, "The file": `bakashrot-cert` folded
+  into `bakashrot` as `bakashrot cert` (`ca`, `issue`, `revoke`, `show`,
+  the same options): aws-lc, the C runtime and clap once, 2.53 MB
+  instead of 2.85 + 1.73 MB on Windows.
+  The tool is built with its own profile, `release-tools` (`panic =
+  "abort"`, about 15% smaller); the DLL keeps `unwind` (it catches
+  panics), the server too (a panic loses one connection, not all).
+  clap without colours and "did you mean" suggestions (40 KB). SQLite
+  without what libsqlite3-sys turns on and nothing uses (FTS3, FTS5,
+  R-Tree, `dbstat`, STAT4, `soundex()`, extension loading, column
+  metadata; `LIBSQLITE3_FLAGS` in `.cargo/config.toml`): the server 4.68
+  to 4.37 MB. Weighed and left: UPX (antivirus), the C runtime as a DLL
+  (Decided 2), a nightly `build-std` or `trim-paths`, `opt-level = "z"`
+  (5% for slower code), SQLite's `OMIT_*` options (7 KB), a TLS setup
+  naming P-384 only (25 KB: aws-lc links its other algorithms anyway).
+  **aws-lc kept** (the owner, 2026-11-17), the others measured with the
+  same TLS setup: Graviola (rustls-graviola 0.4.0, X25519MLKEM768 too)
+  490 KB bigger, its P-256 and P-384 tables in it, and very new; ring
+  410 KB smaller per program but without ML-KEM, which protects what's
+  recorded today from a quantum computer later; RustCrypto's provider
+  not for production. Worth another look if rustls-graviola lets a
+  provider name its algorithms one by one, or ring gets ML-KEM.
 
 ## Proposed, to confirm
 

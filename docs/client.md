@@ -9,7 +9,7 @@ What apps connect with, in layers:
 | C header | `bindings/c/bakashrot.h` | generated from the DLL (cbindgen) |
 | PureBasic | `bindings/purebasic/` | the prototypes and the error codes |
 | Python | `bindings/python/bakashrot.py` | `Client` over the DLL (ctypes), standard library only |
-| The tools | `crates/bakashrot-tools`: `bakashrot` | the command line, over `bakashrot-client` |
+| The tool | `crates/bakashrot-tools`: `bakashrot` | the command line, over `bakashrot-client`; `bakashrot cert`, the certificates |
 
 Decided in `../revamp.md`, "Decided" (2026-11-13). What goes over the
 wire: `protocol.md`; the server's side: `server.md`.
@@ -20,14 +20,14 @@ names, queries.
 ## Who connects: certificates
 
 A client is its certificate, issued by the CA the servers trust
-(`certificates.md`, `bakashrot-cert issue`): its name is its node, its
+(`certificates.md`, `bakashrot cert issue`): its name is its node, its
 roles say what it may do on each server (`config.md`). It needs the CA's
 certificate (to check the server's), its own certificate and key, and the
 CA's CRL if there is one (servers it revokes are refused).
 
 ### `client.toml`
 
-What Python's `Client.from_file()` and the tools read. Paths are relative
+What Python's `Client.from_file()` and the tool read. Paths are relative
 to the file's folder.
 
 ```toml
@@ -108,13 +108,14 @@ getters. Run directly, it's an example: `ClientExample <DllPath> <CaFile>
 with an attachment, reading both back (run by hand against a server;
 not in CI, which has no PureBasic).
 
-## The tools
+## The tool
 
-`bakashrot`, one program to push, read, query and list (`bakashrot-cert`,
-for the CA, is apart: `certificates.md`). Each command connects with
-`-c <file>` (`client.toml` by default), does one thing and exits: 0, 1 on a
-failure (why on stderr: `Refused by the server (NotAllowed): ...`,
-`Failed to connect to ...`), 2 on bad arguments. `--help` on each.
+`bakashrot`, one program to push, read, query and list, and to make the
+certificates (`bakashrot cert`, no server needed: `certificates.md`).
+Each other command connects with `-c <file>` (`client.toml` by default),
+does one thing and exits: 0, 1 on a failure (why on stderr: `Refused by
+the server (NotAllowed): ...`, `Failed to connect to ...`), 2 on bad
+arguments. `--help` on each.
 
 ```text
 bakashrot push logs '{"t":21}'                 Pushed as message #42

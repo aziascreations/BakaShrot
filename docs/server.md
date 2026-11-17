@@ -50,12 +50,13 @@ Restart=on-failure
 
 `docker/Dockerfile` (its comments have the details), the image
 `ghcr.io/aziascreations/bakashrot-server` (amd64 and arm64, pushed by CI
-on a version tag): the server, with `bakashrot` and `bakashrot-cert`
-beside it, on `debian:trixie-slim`, as uid 10001.
+on a version tag): the server, with the `bakashrot` tool beside it
+(`bakashrot cert` for the certificates), on `debian:trixie-slim`, as
+uid 10001.
 
 - **The config** in `/etc/bakashrot`, read-only: `server.toml`, the
   certificates, the server's key (readable by uid 10001: `chown 10001`
-  it, `bakashrot-cert` writes keys for their owner only). `listen =
+  it, `bakashrot cert` writes keys for their owner only). `listen =
   "0.0.0.0:7000"`: 127.0.0.1 isn't reachable from outside.
 - **The database** in `/var/lib/bakashrot`, a volume: `database =
   "/var/lib/bakashrot/bakashrot.sqlite"`.
@@ -64,7 +65,8 @@ beside it, on `debian:trixie-slim`, as uid 10001.
   7000:7000 -v ./config:/etc/bakashrot:ro -v
   bakashrot-data:/var/lib/bakashrot <image>`. `docker stop` is SIGTERM:
   a clean stop. The logs: `docker logs`.
-- **The tools:** `docker run --rm <image> bakashrot-cert ...`.
+- **The tool:** `docker run --rm <image> bakashrot cert ...` (or
+  `bakashrot push ...`).
 - **Checked** by `docker/test.sh <image>` (CI runs it on both before
   pushing): certificates by the image's tool, its server, a push read
   back over a Docker network, `docker stop` ending it cleanly.

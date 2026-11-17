@@ -1,6 +1,9 @@
 //! `bakashrot`: pushes messages, reads them and their attachments, runs
 //! queries and lists names from the command line, connecting with a
-//! `client.toml`; see `docs/client.md`, "The tools".
+//! `client.toml`; see `docs/client.md`, "The tool". `bakashrot cert`
+//! issues the certificates (`cert.rs`, `docs/certificates.md`).
+
+mod cert;
 
 use bakashrot_client::{Client, Error, Settings};
 use bakashrot_proto::error::{code_name, is_refusal_code};
@@ -18,12 +21,12 @@ use std::time::Duration;
 #[command(
     name = "bakashrot",
     version,
-    about = "Pushes and reads BakaShrot's messages",
+    about = "Pushes and reads BakaShrot's messages, issues its certificates",
     after_help = "Exits with 0 on success, 1 on a failure, 2 on bad arguments."
 )]
 struct Cli {
     /// The client's settings: the server, the CA's certificate, this
-    /// client's certificate and key, the CRL.
+    /// client's certificate and key, the CRL (cert doesn't use them).
     #[arg(short, long, global = true, default_value = "client.toml")]
     config: PathBuf,
     #[command(subcommand)]
@@ -110,6 +113,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Makes a CA, issues certificates, revokes them, shows them; no
+    /// server needed (run it where the CA's key is).
+    Cert {
+        #[command(subcommand)]
+        command: cert::Command,
+    },
 }
 
 /// Where `messages` starts.
@@ -159,6 +168,7 @@ fn main() -> ExitCode {
 
 fn run(config: &Path, command: Command) -> Result<(), String> {
     match command {
+        Command::Cert { command } => cert::run(command)?,
         Command::Push {
             topic,
             message,
