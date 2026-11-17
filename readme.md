@@ -1,121 +1,69 @@
 # BakaShrot
-A message store with replication.
+A vibe-coded and opinionated message store built on SQLite, with replication between servers.
 
-Servers take messages (usually JSON) per topic and node from authenticated clients,
-store them in SQLite, and replicate them to other servers by topic and node name.
-
-> [!NOTE]
-> Meant as an internal tool on trusted machines and networks.
+BakaShort allows applications and scripts to push/read data and files and let them replicate over an entire mesh regardless of whether the links are up or reliable. \
+It also allows to sleep easy knowing each client is strongly authenticated by using certificates over public networks.
 
 
 ## Features
-* TLS 1.3 connections, both ends proving who they are with certificates from your own CA (`bakashrot-cert`)
-* Replication between servers, by topic and node names
-* Attachments, one per message, 1 GB by default
-* Per-topic retention
-* Read-only SQL queries on the stored messages
+
+* Cert-based authentication with TLS 1.3 connections
+  * Easy tools provided to manage it and CRL-based revocations.
+* Role-based scoping of push and reads baked into certificates.
+* Directional replication between servers, either complete or by topic and node names.
+* File replication, one per message, up to 1 GiB by default with resumable replication.
+* Per-topic and per-server retention of messages and files.
+  * Edge can be configured to minutes while internal can hold years independently.
+* Read-only SQL queries on stored JSON messages.
+* Every push flushed to disk before it's answered, or about twice the pushes with `synchronous = "normal"`
+* Supports Windows and Linux, both on x64 and ARM64.
 * Clients:
   * A C library (`bakashrot.dll`, `libbakashrot.so`), with a C header and PureBasic prototypes
   * A CLI tool to push, read, query and list
   * A Python module over the library, without dependencies, as a wheel with the library in it
 
-See [revamp.md](revamp.md) for what was decided, and the plan.
+
+## Limitations
+The main ones, all in [docs/known-issues.md](docs/known-issues.md) with what's left as it is and why:
+
+* No replication consensus.  *(See [Why not something else](#why-not-something-else))*
+* Peers are trusted with what they replicate, and clients only scope restrictions based on their role.
+* Only 1,048,575 topic and node pairs can exist per database.
+* Clients poll for new messages themselves.
 
 
-## Building
-Requires [rustup](https://rustup.rs) (it installs the pinned toolchain, [rust-toolchain.toml](rust-toolchain.toml),
-by itself; on Windows, Visual Studio's C++ tools for the linker) and Python 3.11+ for releases.
+## Quick Start
+All instructions to setup a BakaShrot network can be found in [guides/](guides/).
 
-From the repository's root, on Windows (`powershell -ExecutionPolicy Bypass -File <script>`):
-
-| Script | What it does |
-|---|---|
-| `build.ps1` | Builds everything, release mode, into `target\release\` |
-| `test.ps1` | What CI runs: formatting, clippy (warnings are errors), the tests, the docs |
-| `release.ps1` | A release for this platform, smoke-tested (`release.py`, below); `-SkipTest` |
-| `clean.ps1` | Deletes `target\` (builds and releases) |
-| `bench.ps1` | The benchmarks, release mode: pushes, replication, storage (`docs/server.md`, "Measured"); `-Only`, `-Sync full` or `normal` |
-
-Elsewhere, the same with cargo: `cargo build --release`, `cargo test`, `python release.py`, `cargo clean`;
-the benchmarks are ignored tests (`cargo test --release -- --ignored`).
-Generated keys and certificates never go in git.
+It should take you 5-10 minutes if you test without docker, and maybe 10-15 minutes if you use a dockerized server.
 
 
-## Layout
-A Cargo workspace:
+## Why not something else
 
-```
-Cargo.toml              the workspace: shared lints, release profile
-rust-toolchain.toml     the pinned toolchain (1.100.0)
-build.ps1, test.ps1, release.ps1, clean.ps1, bench.ps1
-release.py              a release for this platform: build, package, smoke test
-docs/                   designs across crates: protocol.md, certificates.md, oid.md, config.md,
-                        storage.md, server.md, client.md, known-issues.md, lab.md (a test lab, step by step)
-crates/
-  bakashrot-proto/      packets, frames, names, limits, error codes, shared by everything
-  bakashrot-pki/        certificates: issuing, identities, CRLs, the TLS setup
-  bakashrot-config/     the server's config (TOML): retention, replication, roles
-  bakashrot-storage/    SQLite, schema v9: the writer, reads, attachments, queries
-  bakashrot-server/     the server: TLS, identities, requests, the writer thread (and its program)
-  bakashrot-client/     the client library, Rust API, blocking
-  bakashrot-capi/       the C DLL over bakashrot-client: the BakaShrot_* exports (bakashrot.dll)
-  bakashrot-tools/      the CLI tools: bakashrot (push, read, query, list), bakashrot-cert
-bindings/
-  c/                    bakashrot.h, generated from bakashrot-capi
-  purebasic/            the prototypes and error codes
-  python/               bakashrot.py over the DLL, check_bakashrot.py, make_wheel.py
-.cargo/config.toml      the C runtime linked statically on Windows
-docker/                 the server's image: Dockerfile, compose.yml, test.sh
-```
+### Replicated SQL/SQLite DB
+Projects like [rqlite](https://github.com/rqlite/rqlite) and [dqlite](https://github.com/canonical/dqlite) could have been perfect for what BakaShrot tries to accomplish. \
+They require a leader, a constant S2S connection, and do not support split networks by design.
 
-Dependencies only point downward: `proto`, `pki`, `config` and `storage` don't open sockets and are tested
-on their own; `server` and `client` use them; the DLL and the tools only use `client`.
+In contrast, BakaShrot moves trust off the server mesh itself and assumes you properly set up each node with a unique name and cert to prevent conflicts.
 
+This prevents you from properly load-balancing, letting untrusted users push messages, and whatnot. \
+But you gain the ability to host a message-server network over unreliable links without losing a single bit of data.
 
-## Releases
-`python release.py` (or `release.ps1`) on Windows or Linux, x64 or ARM64, builds that platform's release into
-`target/dist/bakashrot-<version>-<platform>/` and its archive (`.zip`, `.tar.gz`):
-the server, `bakashrot`, `bakashrot-cert`, the client library with its C header and PureBasic prototypes,
-`bakashrot.py` and a wheel with the library in it (`bindings/python/make_wheel.py`), the example configs,
-`docs/`, a `README.txt`, the licenses (`THIRD-PARTY.txt`: every crate built in, from `cargo metadata`).
+### MQTT Brokers
+[Mosquitto](https://mosquitto.org) and other MQTT brokers handle the topic-based messaging in a near-perfect way, but they only deliver messages to whoever is subscribed at that moment, and have limited archival options. \
+BakaShrot keeps every message, and allows you to re-read them days or years later.
+<!-- And compared to mosquitto, you won't want to jump off a bridge while setting it up. -->
 
-Then it checks it, in the folder's `_test/`: a CA and certificates, the server on a free port,
-the tool pushing (an attachment too), reading back, listing and querying, Python through the library
-and the wheel installed by pip, the server stopped by SIGTERM (Ctrl+Break on Windows),
-which must end cleanly (`_test/` kept if not). `--skip-test` skips it.
+### Other message stores
+Projects like **Kafka, NATS JetStream** are a good alternative to BakaShrot if you have the infrastructure and resources to host them.
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on a version tag (`v*`) or by hand: `test.ps1`'s checks
-on Windows and Linux, then a release on each of Windows x64 and ARM64, Linux x64 and ARM64, each on its own
-kind of machine (so its smoke test runs there), its archive kept as the run's artifact. The Linux ones build
-in a manylinux 2.28 container, so they run with glibc 2.28 and later.
-The version is the workspace's (`Cargo.toml`), and `bindings/python/bakashrot.py`'s `__version__` must be the same.
-
-The server's Docker image: `docker build -f docker/Dockerfile -t bakashrot-server .`, or CI's for amd64
-and arm64, checked by `docker/test.sh`, then pushed to `ghcr.io/aziascreations/bakashrot-server` on a tag
-(`<version>`, and `latest` unless it's a pre-release: `v0.2.0-test2` doesn't move it). Running it: `docs/server.md`, "In Docker". The package was first pushed by hand, so the
-workflow may push to it only with the repository given write access in its settings on GitHub
-("Manage Actions access"), once; the package made public there too.
-
-Publishing:
-* **The wheel** to Gitea's registry, with twine 6.1+ (for the license metadata) and a token with `write:package`:
-  `twine upload --repository-url https://git.nibblepoker.lu/api/packages/aziascreations/pypi -u aziascreations <wheel>`
-* **On GitHub** (no Python registry), the archives and the wheels on a release:
-  `gh release create v<version> --repo aziascreations/BakaShrot --title <version> <files>`
-  (`gh release upload` for one that exists).
-
-
-## Conventions
-* LF line endings (`.gitattributes`; `.ps1` CRLF), rustfmt's defaults.
-* Every public item documented (`missing_docs`), no `unsafe` outside the C API crate.
-* A crate's root docs say what it does; designs that span crates go in `docs/`, updated with the code.
-* Use existing crates rather than reimplementing (MessagePack is `rmp-serde`).
-* Protocol changes update `docs/protocol.md`; error codes are never renumbered, packet ids never reused.
+However, I don't have heaps of RAM to piss away on running a JVM or other stuff. \
+And BakaShrot, while simpler in all other aspect, takes less than 50 MB to run and can share any 1-2$ VPS with other applications very easily.
 
 
 ## Cloning
 ```
 git clone https://github.com/aziascreations/BakaShrot.git
-git clone https://git.nibblepoker.lu/aziascreations/BakaShrot.git
 ```
 
 
