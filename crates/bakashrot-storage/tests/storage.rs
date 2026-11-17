@@ -85,10 +85,6 @@ fn refused_databases() {
     };
     refused("CREATE TABLE other (x);", "not a BakaShrot database");
     refused(
-        "CREATE TABLE data (x); CREATE TABLE node_heads (y);",
-        "made by the old server (schema v8)",
-    );
-    refused(
         "PRAGMA application_id = 1112754260; CREATE TABLE x (y);",
         "without its schema version",
     );
@@ -581,36 +577,6 @@ fn retention() {
 }
 
 #[test]
-fn vacuum() {
-    let (database, path) = open("vacuum");
-    let mut writer = database.writer().unwrap();
-    let big = "x".repeat(10_000);
-    writer
-        .batch(|b| {
-            for _ in 0..1000 {
-                b.push("logs", "kitchen", 1, &big)?;
-            }
-            Ok(())
-        })
-        .unwrap();
-    writer.vacuum().unwrap();
-    let full = std::fs::metadata(&path).unwrap().len();
-    writer
-        .batch(|b| b.delete_before("logs", u64::MAX, 10_000))
-        .unwrap();
-    writer.vacuum().unwrap();
-    let emptied = std::fs::metadata(&path).unwrap().len();
-    assert!(emptied * 10 < full, "{full} -> {emptied}");
-    // Still the same database: ids go on.
-    assert_eq!(
-        writer
-            .batch(|b| b.push("logs", "kitchen", 2, "{}"))
-            .unwrap(),
-        1001
-    );
-}
-
-#[test]
 fn limits() {
     let (database, path) = open("limits");
     let mut writer = database.writer().unwrap();
@@ -829,8 +795,7 @@ fn readers_while_writing() {
     assert_eq!(reader.last_id("logs", "garage").unwrap(), 2000);
 }
 
-/// The same workload as the old storage's benchmark
-/// (`OldSource\Build\Bench\StorageBenchOld.exe`), to compare them: pushes
+/// The storage alone, flat out (`docs/storage.md`, "The benchmark"): pushes
 /// over 100 topics x 5 nodes (an LCG picks them), 100 per batch, 200-byte
 /// JSON; 2000 latest-message reads, 500 reads of 1000 messages after the
 /// middle id, the file's size, retention of 10% of one topic. Not run by
@@ -838,7 +803,7 @@ fn readers_while_writing() {
 /// bakashrot-storage -- --ignored --nocapture`.
 #[test]
 #[ignore]
-fn compare_with_old() {
+fn storage_rate() {
     use std::time::Instant;
     let count: u64 = std::env::var("PUSHES").map_or(1_000_000, |n| n.parse().unwrap());
     let sync = std::env::var("SYNC").unwrap_or_else(|_| "normal".into());
@@ -847,7 +812,7 @@ fn compare_with_old() {
     } else {
         Synchronous::Normal
     };
-    let path = path("compare");
+    let path = path("rate");
     let database = Database::open(&path, synchronous).unwrap();
     let mut writer = database.writer().unwrap();
 
@@ -858,7 +823,7 @@ fn compare_with_old() {
     let nodes: Vec<String> = (0..5).map(|n| format!("node{n}")).collect();
 
     // Checkpoints every second on their own connection, as the server's
-    // (and the old server's) thread does.
+    // thread does.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let checkpoints = {
         let checkpointer = database.checkpointer().unwrap();
@@ -932,7 +897,7 @@ fn compare_with_old() {
     let retention = start.elapsed().as_secs_f64() * 1000.0;
 
     println!(
-        "new {sync}: {count} pushes in {pushing:.1} s = {:.0}/s | file {:.0} MB | latest {latest:.3} ms | 1000 after {after:.3} ms ({read} read) | retention {deleted} in {retention:.0} ms",
+        "{sync}: {count} pushes in {pushing:.1} s = {:.0}/s | file {:.0} MB | latest {latest:.3} ms | 1000 after {after:.3} ms ({read} read) | retention {deleted} in {retention:.0} ms",
         count as f64 / pushing,
         size as f64 / 1e6
     );

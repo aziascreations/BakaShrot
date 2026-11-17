@@ -28,6 +28,7 @@ use bakashrot_pki::{Revocations, SharedRevocations, summarize, tls};
 use bakashrot_proto::ErrorCode;
 use bakashrot_proto::packets::RequestRefused;
 use bakashrot_storage::{Database, QueryRunner, Reader};
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -66,12 +67,16 @@ struct Shared {
     readers: Mutex<Vec<Reader>>,
     /// Query connections not in use.
     queries: Mutex<Vec<QueryRunner>>,
+    /// The replicated attachments being received (topic, node, message
+    /// id): one peer at a time each (`accept_from.rs`).
+    receiving: Mutex<HashSet<(String, String, u64)>>,
 }
 
 impl Server {
     /// Reads the server's certificates and CRL, opens its database, starts
     /// its writer. Errors say which file and why.
     pub fn start(config: Config) -> Result<Server, String> {
+        check_clock(SystemTime::now())?;
         let server = &config.server;
         let ca = read(&server.ca)?;
         let certificate = read(&server.certificate)?;
@@ -107,6 +112,7 @@ impl Server {
                 pushes,
                 readers: Mutex::new(Vec::new()),
                 queries: Mutex::new(Vec::new()),
+                receiving: Mutex::new(HashSet::new()),
                 config,
             }),
         })
@@ -252,7 +258,7 @@ impl Shared {
 
 /// Checkpoints the WAL every second, on a thread and a connection of its
 /// own, so the writer doesn't do it in the middle of a commit (2.5 times
-/// the pushes: `docs/storage.md`, "Against the old storage").
+/// the pushes: `docs/storage.md`, "The benchmark").
 fn start_checkpoints(database: &Database) -> Result<(), String> {
     let checkpointer = database.checkpointer().map_err(|error| error.to_string())?;
     std::thread::Builder::new()
@@ -294,12 +300,26 @@ fn read(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// The CRL file's revocations; none without one (no file, or not set).
+/// The CRL file's revocations; none without one (not set, or no file:
+/// warned, a CRL deleted by mistake would revoke nothing silently).
 fn load_revocations(path: Option<&Path>, ca: &str) -> Result<Revocations, String> {
-    let Some(path) = path.filter(|path| path.exists()) else {
+    let Some(path) = path else {
         return Ok(Revocations::none());
     };
+    if !path.exists() {
+        warn!("{}: no such file, nothing revoked", path.display());
+        return Ok(Revocations::none());
+    }
     Revocations::load(&read(path)?, ca).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Refuses a clock before 1970: messages would be stamped `pushed_at` 0,
+/// which readers refuse.
+fn check_clock(now: SystemTime) -> Result<(), String> {
+    match now.duration_since(UNIX_EPOCH) {
+        Ok(_) => Ok(()),
+        Err(_) => Err("the system's clock is before 1970: set it right first".into()),
+    }
 }
 
 /// Now, in ms since 1970 UTC: when a message is pushed.
@@ -313,4 +333,18 @@ fn now() -> u64 {
 fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
     let metadata = std::fs::metadata(path).ok()?;
     Some((metadata.modified().ok()?, metadata.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clock_before_1970_is_refused() {
+        assert!(check_clock(UNIX_EPOCH).is_ok());
+        assert!(check_clock(SystemTime::now()).is_ok());
+        let before = UNIX_EPOCH - Duration::from_secs(1);
+        let error = check_clock(before).unwrap_err();
+        assert!(error.contains("before 1970"), "{error}");
+    }
 }

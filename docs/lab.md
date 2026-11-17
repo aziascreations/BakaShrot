@@ -6,8 +6,7 @@ machine, 2026-11-15, Windows): the outputs shown are what came back.
 
 Get a release (CI's artifacts, or `release.ps1` / `python release.py`):
 the programs, `bakashrot.dll` / `libbakashrot.so`, the wheel, the
-example configs. Certificates made before 0.3.0 had a placeholder
-identity OID (`oid.md`) and aren't read any more: issue them again.
+example configs.
 
 | Machine | What runs there | Files it gets |
 |---|---|---|

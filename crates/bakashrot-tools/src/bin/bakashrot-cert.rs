@@ -99,8 +99,12 @@ fn run(command: Command) -> Result<(), String> {
     match command {
         Command::Ca { name, days, out } => {
             let ca = Ca::create(&name, days).map_err(|e| e.to_string())?;
-            write_new(&out.join("ca.crt"), &ca.certificate, false)?;
-            write_new(&out.join("ca.key"), &ca.key, true)?;
+            write_pair(
+                &out.join("ca.crt"),
+                &ca.certificate,
+                &out.join("ca.key"),
+                &ca.key,
+            )?;
         }
         Command::Issue {
             name,
@@ -118,8 +122,12 @@ fn run(command: Command) -> Result<(), String> {
                 .issue(&identity, usage, days)
                 .map_err(|e| e.to_string())?;
             let file = file.unwrap_or(name);
-            write_new(&out.join(format!("{file}.crt")), &issued.certificate, false)?;
-            write_new(&out.join(format!("{file}.key")), &issued.key, true)?;
+            write_pair(
+                &out.join(format!("{file}.crt")),
+                &issued.certificate,
+                &out.join(format!("{file}.key")),
+                &issued.key,
+            )?;
         }
         Command::Revoke {
             certificates,
@@ -159,8 +167,28 @@ fn write_new(path: &Path, text: &str, private: bool) -> Result<(), String> {
         .open(path)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     file.write_all(text.as_bytes())
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    println!("Wrote {}", path.display());
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Writes a certificate and its key, both or neither: nothing is written
+/// when either is there already, the certificate is removed again when
+/// its key can't be written.
+fn write_pair(certificate: &Path, pem: &str, key: &Path, key_pem: &str) -> Result<(), String> {
+    for path in [certificate, key] {
+        if path.exists() {
+            return Err(format!(
+                "{}: already there, nothing written",
+                path.display()
+            ));
+        }
+    }
+    write_new(certificate, pem, false)?;
+    if let Err(error) = write_new(key, key_pem, true) {
+        let _ = fs::remove_file(certificate);
+        return Err(format!("{error}, nothing written"));
+    }
+    println!("Wrote {}", certificate.display());
+    println!("Wrote {}", key.display());
     Ok(())
 }
 

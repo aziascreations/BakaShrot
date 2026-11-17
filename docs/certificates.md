@@ -29,9 +29,7 @@ is a CRL file from the CA, pushed to the servers.
   only digits), 64 roles at most. Roles mean nothing to the certificates:
   the server's config says what each may do.
 - **Its OID is `1.3.6.1.4.1.67681.1.1`** (`IDENTITY_OID`), under
-  NibblePoker's own PEN (67681), since 0.3.0. Certificates made before
-  (a placeholder OID) aren't read: issue them again. The branches:
-  `oid.md`.
+  NibblePoker's own PEN (67681). The branches: `oid.md`.
 - **The CN is the name too**, for people (`openssl x509 -text`, logs). Only
   the extension is trusted.
 - **Clients' certificates** are for `clientAuth`. **Servers'** are for
@@ -77,9 +75,12 @@ connected, `peer_identity()` gives the other end's `Identity`.
   handshake, no new configuration needed. `Revocations::revokes()` tells
   the server which open connections to drop.
 - **Both ends check it:** `server_config()` and `client_config()` both take
-  the revocations (`Revocations::none()` without a CRL). A server dialing
-  its peer is the peer's client, with the same CRL: servers block each
-  other, whichever end dials.
+  the revocations (`Revocations::none()` without a CRL, or when the
+  server's config or `client.toml` names a CRL file that isn't there
+  yet: never blocking, the server warns in its log; a path given to
+  the DLL is a `FileError`). A server dialing its peer is the peer's
+  client, with the same CRL: servers block each other, whichever end
+  dials.
 - **Revoking is by certificate, not by name:** each certificate has its own
   key and its own serial number (made from that key), so two of the same
   name (two servers named alike, a new one before the old one goes) are
@@ -103,8 +104,10 @@ bakashrot-cert show kitchen.crt
 
 `--ca` (the folder of `ca.crt` / `ca.key`, `.` by default), `--out` (where
 to write), `--days`, `--file` (the files' name when it isn't the node's:
-another certificate of the same name, `--file server-1b`). Files are PEM. Nothing is ever written over an
-existing certificate or key; keys are readable by their owner only on
+another certificate of the same name, `--file server-1b`). Files are
+PEM. Nothing is ever written over an existing certificate or key, and a
+certificate and its key are written both or neither (one of them there
+already: nothing written); keys are readable by their owner only on
 Unix. `revoke` only takes certificates the CA issued.
 
 ## Tests

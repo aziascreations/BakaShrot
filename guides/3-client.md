@@ -20,4 +20,4 @@ key = "node-viewer.key"
 
 * `server`: the server's IP or hostname, and its `listen` port.
 * `bakashrot.exe` reads `client.toml` from the current folder, `-c viewer.toml` for another one.
-* Optional: `crl = "ca.crl"`, to refuse a revoked server.
+* Optional: `crl = "ca.crl"`, to refuse a revoked server (a file not there yet revokes nothing).

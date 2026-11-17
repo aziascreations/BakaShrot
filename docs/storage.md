@@ -5,9 +5,6 @@ The server's database: one SQLite file. The code is
 `crates/bakashrot-storage/src/schema_v9.sql`, made in one go. Decided in
 `../revamp.md`, "Decided" (2026-11-13).
 
-**Not compatible with v8:** a database of the old server isn't opened
-(refused at start, saying so); its data isn't carried over.
-
 ## In short
 
 - **By name outside, packed integers inside.** The rest of the code (the
@@ -17,7 +14,7 @@ The server's database: one SQLite file. The code is
   and unpacks keys; the `messages` view shows plain columns.
 - **One B-tree per kind of data:** messages, attachment parts. A push
   writes its message's row and nothing else (no index): about 2.3 times
-  the pushes of v8's layout, 30% less disk (see "Measured").
+  the pushes of a layout with an index, 30% less disk (see "Measured").
 - **One writer, many readers** (WAL). Writes go in batches, one
   transaction each: a group commit.
 
@@ -65,8 +62,8 @@ attachment_parts.key = attachment_id << 20 | part
   columns**: computed when read, never stored (a test checks the schema
   unpacks keys as the code does).
 
-Why not v8's three columns with an index? A second B-tree to write at every
-push, and reads going through the index then to the row. Measured below.
+Why no index? A second B-tree to write at every push, and reads going
+through the index then to the row. Measured below.
 
 ## Writing
 
@@ -85,7 +82,6 @@ together, one disk flush for all.
 | `damaged(id)` | a ready attachment found not matching its SHA-256: its parts dropped, asked for again (`replicating`) |
 | `delete_before(topic, cutoff, limit)` | retention |
 | `purge_attachments(max_parts)` | deleted messages' attachments |
-| `Writer::vacuum()` (outside a batch) | the file shrunk to what it holds: the old server's `vacuum` command |
 | `Checkpointer::checkpoint()` (its own connection) | the WAL copied into the database, every second, off the writer's way |
 
 **SHA-256s are the caller's to check:** the server hashes the parts as they
@@ -108,8 +104,7 @@ read while the writer writes. Answers are the protocol's own types:
 | `attachment(topic, node, id)`, `read_part(id, part)` | an attachment, its parts | the message's key; a part's key |
 
 A topic and node with no messages read as none, unless the node has none
-in any topic: `Error::UnknownName`, as the old server refused unknown
-nodes. A topic is never unknown: it's allowed or not, by the roles.
+in any topic: `Error::UnknownName`. A topic is never unknown: it's allowed or not, by the roles.
 
 ## Attachments
 
@@ -148,7 +143,7 @@ connection's next queries (found 2026-11-15). The result is
 `{"columns":[...],"rows":[[...]]}`, every value a string or null (blobs in
 hex), 10,000 rows and 16 MB at most (`TooBig`). A failing row fails it all,
 with SQLite's message: never a partial result. "malformed JSON" (a JSON
-function on a row that isn't) gets the old server's hint: add
+function on a row that isn't) gets a hint: add
 `is_json = 1` to the WHERE.
 
 The `messages` view, by name:
@@ -156,7 +151,7 @@ The `messages` view, by name:
 | Column | |
 |---|---|
 | `topic`, `node` | names |
-| `message_id`, `message_data`, `is_json`, `pushed_at`, `pushed_utc` | as in v8 |
+| `message_id`, `message_data`, `is_json`, `pushed_at`, `pushed_utc` | the message's |
 | `attachment_size`, `attachment_state` | NULL without one |
 
 ```sql
@@ -170,7 +165,7 @@ SELECT message_data ->> '$.temp' FROM messages WHERE topic = 'sensors' AND is_js
   whole: a millisecond or two for 10,000 messages per stream, growing with
   them (see "Measured"). If that gets slow, a time index is one migration
   away ("For later").
-- `browse` / `browse_messages`: v8's, for database tools (set `browse`'s
+- `browse` / `browse_messages`: for database tools (set `browse`'s
   one row, open the view); no dropdowns any more.
 
 ## The file
@@ -181,7 +176,7 @@ SELECT message_data ->> '$.temp' FROM messages WHERE topic = 'sensors' AND is_js
 - **Opening** (`Database::open`): an empty file is made a v9 database; a
   v9 one is opened; an older one is migrated, a version at a time, each
   step one transaction that also sets `schema_version` (none yet); a newer
-  one, the old server's, or another program's is refused, saying which.
+  one or another program's is refused, saying which.
 - Every connection: WAL, `synchronous` from the config (`full`: every
   commit flushed; `normal`: about once a second), a 5 s busy timeout. No
   foreign keys: one writer keeps the tables consistent, `CHECK`s keep the
@@ -195,74 +190,58 @@ Python's `sqlite3` (SQLite 3.50), 5,000,000 small JSON messages pushed to
 500 streams (100 topics x 5 nodes) at random, 100 per transaction, WAL,
 `synchronous = NORMAL`, 16 MB page cache:
 
-| | v9 (this) | v9 + a time index | the first draft (v8's layout) |
-|---|---|---|---|
-| Pushes/s | **23k** | 9-10k | 9k |
-| File | **330 MB** | 457 MB | 484 MB |
-| Latest 100 of a stream | 0.05 ms | 0.05 ms | 0.19 ms |
-| 1000 after an id | 0.53 ms | 0.53 ms | 3.04 ms |
-| Retention, 10% of a topic | 5.5 ms | 6.4 ms | 241 ms |
-| Query: a node's last hour | 1.65 ms | 0.90 ms | 3.29 ms |
-| Query: a topic's last hour | 8.4 ms | 4.7 ms | 16.0 ms |
+| | v9 (this) | v9 + a time index |
+|---|---|---|
+| Pushes/s | **23k** | 9-10k |
+| File | **330 MB** | 457 MB |
+| Latest 100 of a stream | 0.05 ms | 0.05 ms |
+| 1000 after an id | 0.53 ms | 0.53 ms |
+| Retention, 10% of a topic | 5.5 ms | 6.4 ms |
+| Query: a node's last hour | 1.65 ms | 0.90 ms |
+| Query: a topic's last hour | 8.4 ms | 4.7 ms |
 
 - A push dirties its stream's page: with pushes spread over many streams,
-  each costs about a page written to the WAL. Any index per stream (v8's,
-  a time index) doubles that, and a bigger cache doesn't help (it's writes,
+  each costs about a page written to the WAL. Any index per stream (a
+  time index) doubles that, and a bigger cache doesn't help (it's writes,
   not reads).
 - Bigger batches over fewer streams share pages: the server's group commit
   helps most when many pushes come at once.
 
-### Against the old storage (2026-11-13)
+### The benchmark (2026-11-13)
 
-The same workload on both, each storage layer alone (no network): pushes
-over 500 streams picked at random, 100 per transaction, 200-byte JSON;
-2000 latest-message reads; 500 reads of 1000 messages after a stream's
-middle id; retention of 10% of one topic. The new side is
-`compare_with_old` (`tests/storage.rs`, ignored by default:
+`storage_rate` (`tests/storage.rs`, ignored by default:
 `PUSHES=1000000 SYNC=normal cargo test --release -p bakashrot-storage --
---ignored --nocapture`). The old side calls `OldSource`'s writer
-(`BakaShrot_Writer_WriteJobs()`, its group commit, PureBasic 5.73, SQLite
-3.54.1 from `sqlite3.dll`), from a program built outside `OldSource`.
-Same machine, NVMe, one run each.
+--ignored --nocapture`, or `bench.ps1 -Only storage`): the storage layer
+alone (no network), pushes over 500 streams picked at random, 100 per
+transaction, 200-byte JSON; 2000 latest-message reads; 500 reads of 1000
+messages after a stream's middle id; retention of 10% of one topic. NVMe,
+one run each.
 
-| | Old, 1M | New, 1M | Old, 1M `full` | New, 1M `full` | Old, 5M | New, 5M |
-|---|---|---|---|---|---|---|
-| Pushes/s, first | **25,874** | 13,803 | **19,976** | 13,205 | **19,558** | 12,184 |
-| Pushes/s, step 5's writer | 25,874 | **37,332** | 19,976 | **29,952** | 19,558 | **29,363** |
-| File | 276 MB | 249 MB | 276 MB | 249 MB | 1,380 MB | 1,239 MB |
-| Latest message | 0.013 ms | 0.017 ms | 0.013 ms | 0.017 ms | 0.014 ms | 0.017 ms |
-| 1000 after an id | 4.26 ms | **0.43 ms** | 4.28 ms | **0.43 ms** | 4.32 ms | **0.45 ms** |
-| Retention, 10% of a topic | 20 ms | **7 ms** | 23 ms | **9 ms** | 98 ms | **8 ms** |
+| | 1M | 1M `full` | 5M |
+|---|---|---|---|
+| Pushes/s | 37,332 | 29,952 | 29,363 |
+| File | 249 MB | 249 MB | 1,239 MB |
+| Latest message | 0.017 ms | 0.017 ms | 0.017 ms |
+| 1000 after an id | 0.43 ms | 0.43 ms | 0.45 ms |
+| Retention, 10% of a topic | 7 ms | 9 ms | 8 ms |
 
-`normal` unless said. At first, the old writer pushed faster, from code the
-new one didn't have, not from the schema; step 5 brought two of them over
-(the second row, about 1.5 times the old):
-
-- **checkpoints off the push path:** `Database::checkpointer()`, every
-  second on its own connection (the server's thread), the writer only
-  checkpointing itself past 10,000 pages (`WRITER_CHECKPOINT_PAGES`,
-  SQLite's default is 1,000): 13.8k to 34.7k pushes/s;
-- **no savepoint around a push** (a failed one leaves at most its empty
-  stream): 37.3k;
-- **next ids in memory**, left out: an indexed read of the stream's row per
-  push, not where the time goes.
-
-The new layout reads ranges 10 times faster, deletes faster (and keeps
-doing so as the database grows), loses less push speed from 1M to 5M (-12%
-against -24%), and makes a file 10% smaller with 200-byte messages (30%
-with 45-byte ones: its saving is the indexes, a fixed cost per message).
+`normal` unless said. Most of the push speed is the writer's: checkpoints
+off the push path (`Database::checkpointer()`, every second on its own
+connection, the writer only checkpointing itself past 10,000 pages,
+`WRITER_CHECKPOINT_PAGES`), and no savepoint around a push (a failed one
+leaves at most its empty stream).
 
 ## Tests
 
 `crates/bakashrot-storage/tests/storage.rs`, on database files in
 `target/`: opening (made, reopened, an empty file), refused databases
-(another program's, v8, a newer version, no version), pushes and reads
+(another program's, a newer version, no version), pushes and reads
 (ids per stream, names without case, after/latest/limit/more, the 1 MiB
 cut), uploads (parts in order and of their size, incomplete refused, a
 failed operation not spoiling its batch, cancelled and left-over ones
 deleted), replication (own ids, kept ones, attachments to ask for, too big,
 started over, resumed), retention (limits, id order, heads kept, ids going
-on, attachments purged in batches), vacuum (the file shrinks, ids go on),
+on, attachments purged in batches),
 the limits (no stream, no id left, the highest key), queries (results, every write refused, failing rows, too
 big), the view's plans, and readers with two writers at once. In
 `src/lib.rs`: the keys, the schema unpacking them the same, the states.
@@ -276,16 +255,3 @@ big), the view's plans, and readers with two writers at once. In
   SQLite's interrupt.
 - **Attachments as files** next to the database instead of in it, if their
   size calls for it.
-
-## What changed from v8
-
-| v8 | v9 |
-|---|---|
-| `data(topic_id, node_id, message_id, ...)` + 3 indexes | `data(key, pushed_at, message_data)`, no index |
-| `topics`, `nodes` with ids and origins | names in `streams` |
-| `node_heads` | `streams.last_id` |
-| `attachments` + `blobs` (two sets of states), `blob_chunks` | `attachments` (five states), `attachment_parts` |
-| uploads waiting for their message, `UploadTimeout` | uploads inside their push |
-| `is_json` stored | computed when read |
-| no version in the file | `metadata` with `schema_version`; `application_id` |
-| foreign keys declared, not checked | none, `CHECK`s |

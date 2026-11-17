@@ -1,7 +1,6 @@
 //! `bakashrot`: pushes messages, reads them and their attachments, runs
 //! queries and lists names from the command line, connecting with a
-//! `client.toml`. The old `BakaShrot*` tools in one program; see
-//! `docs/client.md`, "The tools".
+//! `client.toml`; see `docs/client.md`, "The tools".
 
 use bakashrot_client::{Client, Error, Settings};
 use bakashrot_proto::error::{code_name, is_refusal_code};
@@ -316,9 +315,11 @@ fn connect(config: &Path) -> Result<Client, String> {
     let ca = pem("CA's certificate", &settings.ca)?;
     let certificate = pem("certificate", &settings.certificate)?;
     let key = pem("key", &settings.key)?;
+    // No CRL file yet: nothing revoked, as on the server.
     let crl = settings
         .crl
         .as_deref()
+        .filter(|path| folder.join(path).exists())
         .map(|path| pem("CRL", path))
         .transpose()?;
     let pems = Settings {

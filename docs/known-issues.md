@@ -1,8 +1,7 @@
 # Known issues and ideas
 
-What's still true of the PureBasic version's notes, for this one. That
-version was removed on 2026-11-15; it's in git history up to commit
-`68966a8` (`OldSource/Notes.md`, "Open items"; `OldSource/Design/`).
+What's known to be wrong or missing, what's left as it is and why, and
+ideas for later.
 
 ## Threat model
 
@@ -36,19 +35,27 @@ network**, not exposed to the internet. So:
 - **The attachments a server lacks:** it reports the 256 oldest at a
   time (`SyncState`). With several peers, ones none of them has can hold
   back newer ones.
-- **Peers are trusted with what they replicate** (old item 12): a server
+- **Peers are trusted with what they replicate:** a server
   in `accept_from` can send any message its roles accept, for any node.
   Messages carry no proof of who first wrote them. Fix: sign each message
   with its node's key when first stored, check it on replication (every
   server then needs every node's public key).
 - **Private keys sit in PEM files**, readable by whoever can read them: on
   trusted machines, file permissions are enough.
-- **One connection per process in the DLL** (old item 10, `revamp.md`,
+- **One connection per process in the DLL** (`revamp.md`,
   "Open questions"): a handle-based API for several. Polling rather than
   pushed subscriptions; nothing reconnects by itself, on purpose.
 - **At least once:** a push whose answer was lost (the server stopped
   between committing and answering) is stored twice if retried. A client
   that minds reads the latest message before retrying.
+- **1,048,575 topic and node pairs per database** (2^20 - 1,
+  `MAX_STREAMS`, `bakashrot-storage/src/lib.rs`), for all topics
+  together, and 2^43 - 1 message ids per pair (`MAX_MESSAGE_ID`): the
+  20 and 43 bits of a message's packed key (`storage.md`, "Keys"). Past
+  the first, a new pair is refused from anyone, pushed or replicated;
+  pairs aren't freed when their messages are deleted. Enough for now
+  (the owner, 2026-11-16). Raising it means another key layout, so a
+  new schema version.
 
 ## Found by reading the code, not reproduced
 
@@ -58,29 +65,22 @@ Reproduce one before fixing it, and move it up (or drop it) once known.
 - **`sync_interval` over 5 min.** The server dialed closes the idle link
   (`IDLE_TIMEOUT`), so every check-in fails once ("closed the link",
   warned), then the link is dialed again after `retry_delay`. Nothing
-  in the config caps `sync_interval`. Fix: cap it under the idle
-  timeout, or have an idle link ask its `SyncState` more often.
+  in the config caps `sync_interval`. Left as it is (the owner,
+  2026-11-16): replicating every 5 min or more isn't a real use, the
+  example config says to keep it under. Fix if needed: cap it under the
+  idle timeout, or have an idle link ask its `SyncState` more often.
 - **Resuming a big replicated attachment.** Before answering `Continue`,
   the receiver reads back and hashes every part it already has
   (`accept_from.rs`, `replicate_attachment`, `hash_parts`), while the
-  sender waits 30 s for that answer (`push_to.rs`, `ANSWER_TIMEOUT`). On
-  a slow disk, hundreds of parts may take longer: the link drops, and
-  the same happens at every retry. Fix: a longer wait for that answer,
+  sender waits 30 s for that answer (`push_to.rs`, `ANSWER_TIMEOUT`).
+  Past what the disk reads and hashes in 30 s (estimated: about 4 GB
+  on a hard disk, 15 GB on a SATA SSD, 30-60 GB on NVMe), the link
+  drops, and the same happens at every retry. Left as it is (the
+  owner, 2026-11-16): attachments over a few GB are excessive for this;
+  the example config says so by `max_attachment_size` (1 GiB by
+  default). Fix if needed: a wait scaled to the parts already received,
   or the hash's state kept with the attachment.
-- **Two peers sending the same attachment at once.** Both can be
-  answered `Continue` for the same `from_part` (the check and the first
-  part written aren't one step). Their parts then interleave in the
-  writer's queue: each part is stored once, from whichever came first,
-  and each sender has one refused (`InvalidRequest`). With few parts (4
-  or fewer in flight, `PARTS_IN_FLIGHT`), all of them can be stored
-  while both senders were refused: neither sends `FinishReplicated`,
-  and the attachment stays `replicating` with `received = size`, asked
-  for and refused at every check-in until a restart (`clean_up` starts
-  it over). Needs two parts at least and a narrow timing: servers that
-  take from two others having the same attachment. Fix: finish it
-  whenever the last part is stored, or one receiver at a time per
-  attachment.
-- **`SyncState` in one packet** (old item 9). Every head the peer may
+- **`SyncState` in one packet.** Every head the peer may
   send goes in one frame of 16 MiB at most: with very many topic and
   node pairs (hundreds of thousands) it doesn't fit, the packet can't
   be sent and replication stops. Fix: heads in several packets, or only
@@ -123,27 +123,22 @@ Reproduce one before fixing it, and move it up (or drop it) once known.
   `GetMessages` answers `UnknownName` for a node without messages
   anywhere and none for one with messages in another topic
   (`reader.rs`, `messages`). Fix: none in both cases.
-- **A CRL file that isn't there.** The server takes it as nothing
-  revoked (`load_revocations`, `bakashrot-server/src/lib.rs`), the
-  `bakashrot` tool refuses to start when `client.toml`'s `crl` names a
-  missing file. Either may be right (a server that starts before its
-  first CRL; a client that must not skip the check): choose one and
-  say it in the docs. A server whose CRL file was deleted by mistake
-  revokes nothing, silently.
 - **No limits per client.** Any number of connections (each a task and
   its buffers), any amount pushed: an allowed client can fill the disk
   or the server's memory. Fine for the threat model; first thing to
   add if it changes (a cap on connections, a quota per node).
-- **Small ones:** the client's connect timeout is per socket
-  operation, not for the whole connection; `bakashrot-cert ca` writes
-  `ca.crt` before failing when only `ca.key` is there already; a
-  server whose clock is before 1970 stamps `pushed_at` 0, which
-  readers refuse when decoding.
+- **A clock set before 1970 while running.** The server refuses to
+  start with one (`check_clock`, `bakashrot-server/src/lib.rs`), but
+  isn't checked again: set back that far afterwards, pushes are stamped
+  `pushed_at` 0 (`now()`), which readers refuse when decoding. Fix if
+  ever needed: refuse pushes (`ServerError`) while the clock is before
+  1970.
+- **A small one:** the client's connect timeout is per socket
+  operation, not for the whole connection.
 
 ## Ideas for later
 
-From the old benchmarks and suggestions (`OldSource/Design/Suggestions.md`),
-worth it only when a use calls for them:
+Worth it only when a use calls for them:
 
 - **Several pushes in flight per connection.** One request at a time
   (`protocol.md`, "Rules") caps a node at one push per round trip:

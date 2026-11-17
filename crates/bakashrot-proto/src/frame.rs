@@ -4,8 +4,8 @@
 //! waiting for the rest. An empty one is too (as a frame here, as a packet
 //! that doesn't decode with [`codec()`]).
 //!
-//! Over TLS, which takes care of the encryption: unlike protocol 6, frames
-//! carry packets as they are.
+//! Over TLS, which takes care of the encryption: frames carry packets as
+//! they are.
 //!
 //! Before any frame, right after TLS, each end sends its protocol version
 //! (4 bytes, little-endian) and reads the other's: [`write_version()`],

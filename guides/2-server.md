@@ -15,7 +15,7 @@ Create a blank one and all the following sections.
 
 ### Server's base config
 ```toml
-# All paths are relative to CWD unless they're absolute.
+# All paths are relative to this file's folder unless they're absolute.
 [server]
 listen = "0.0.0.0:7000"  # Used when binding.
 
@@ -24,7 +24,8 @@ certificate = "server-1.crt"
 key = "server-1.key"
 
 # The watched CA's CRL.
-# The CRL checks will be disabled if not given, the program will exit if given and non-existent.
+# Not given: no CRL checks. Given but not there yet: nothing revoked (a warning is logged),
+# and it's picked up once it appears.
 #crl = "ca.crl"
 
 database = "bakashrot.sqlite"
@@ -34,6 +35,11 @@ database = "bakashrot.sqlite"
 # second or so. ("off" isn't allowed.)
 synchronous = "full"
 
+# Replication cut partway through an attachment resumes once the peer has
+# read back and hashed what it already has, in 30 s at most: up to about
+# 4 GB received on a hard disk, 15 GB on a SATA SSD, 30-60 GB on NVMe
+# (estimates). Past that, resuming fails at every retry: keep attachments
+# well under it (more than a few GB is a lot for this anyway).
 max_attachment_size = "1G"    # bytes, or K M G T (1024-based); 0: none
 retention_interval = "1m"     # how often old messages are deleted
 ```
@@ -47,17 +53,19 @@ retention_interval = "1m"     # how often old messages are deleted
 push_to = []  # Servers we'll actively connect to.
               # Example: ["10.0.0.2:7000", "server-2.lan:7000"]
 
-accept_from = []  # Connecting servers must have these origins, otherwise we abort.µ
+accept_from = []  # Connecting servers must have these origins, otherwise we abort.
                   # Example: ["10.0.0.2", "server-2.lan"], or ["*"]
 
 retry_delay = "10s"
-sync_interval = "5s"
+sync_interval = "5s"  # keep it under 5 min: a link idle that long is closed
 batch_size = 1000     # messages per packet, 1-10000
 ```
 
 
 ### Roles section
 ```toml
+# A database holds 1,048,575 topic and node pairs at most, all topics together,
+# never freed: patterns like "*" in push_topics let clients make as many as they like.
 [roles.sensor]
 push_topics = ["sensors.*"]          # always as its own node (its name)
 read_topics = ["*"]
@@ -69,8 +77,8 @@ list_topics = false                  # true: lists every topic (query does too)
 list_nodes = false                   # true: lists every node (query does too)
 
 # Only relevant when replicating. 
-send_nodes = ["*"]    # Replicates all known topics (Default)
-accept_nodes = ["*"]  # Accepts al foreign topics (Default)
+send_nodes = ["*"]    # Replicates every node's messages (Default)
+accept_nodes = ["*"]  # Accepts every foreign node's messages (Default)
 ```
 
 #### Remarks:
@@ -86,7 +94,7 @@ accept_nodes = ["*"]  # Accepts al foreign topics (Default)
 
 > **Log Processor:**
 > ```toml
-> [roles.sensor]
+> [roles.log-processor]
 > push_topics = ["alerts.sensors.*"]
 > read_topics = ["sensors.*"]
 > ```

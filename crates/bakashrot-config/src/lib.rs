@@ -74,7 +74,7 @@ pub struct Server {
     pub certificate: PathBuf,
     /// The server's key.
     pub key: PathBuf,
-    /// The CA's CRL, watched; none: nothing revoked.
+    /// The CA's CRL, watched; none, or no such file: nothing revoked.
     #[serde(default)]
     pub crl: Option<PathBuf>,
     /// The SQLite database; `bakashrot.sqlite` by default.

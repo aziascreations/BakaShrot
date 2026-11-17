@@ -227,6 +227,15 @@ check("None of its roles allowed: AuthError, NOT_ALLOWED", ok, detail)
 missing = Client(f"{kitchen.host}:{kitchen.port}", os.path.join(folder, "missing.crt"), *pem[1:], dll_path=dll_path)
 ok, detail = raises(missing.connect, BakaShrotError, "missing.crt", ErrorCode.FILE_ERROR)
 check("A certificate file that isn't there: FILE_ERROR", ok, detail)
+missing = Client(f"{kitchen.host}:{kitchen.port}", *pem, crl=os.path.join(folder, "missing.crl"), dll_path=dll_path)
+ok, detail = raises(missing.connect, BakaShrotError, "missing.crl", ErrorCode.FILE_ERROR)
+check("A CRL file given that isn't there: FILE_ERROR", ok, detail)
+with open(os.path.join(folder, "kitchen.toml")) as settings:
+    no_crl_yet = settings.read() + '\ncrl = "missing.crl"\n'
+with open(os.path.join(folder, "no-crl-yet.toml"), "w") as settings:
+    settings.write(no_crl_yet)
+with Client.from_file(os.path.join(folder, "no-crl-yet.toml"), dll_path) as again:
+    check("A client.toml's CRL file not there yet: none, connected", again.connected, again.crl)
 with Client(f"{kitchen.host}:{kitchen.port}", *pem, dll_path=dll_path) as again:
     check("The same identity from PEM text: connected", again.connected and again.node == "kitchen", again.node)
 

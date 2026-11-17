@@ -1,15 +1,14 @@
 //! The error codes: what a server sends with each refusal (1-99, in a
 //! `RequestRefused`), and the client's own (100 and up, what the DLL's
-//! `BakaShrot_GetLastError()` returns). The same numbers as protocol 6
-//! (`OldSource/Client/BakaShrot_ErrorCodes.pbi`): never renumber one, only
-//! add new ones.
+//! `BakaShrot_GetLastError()` returns). Never renumber one, only add new
+//! ones; 6 is retired, never reuse it.
 //!
 //! What to do about each:
 //! - reconnect, then retry: `NotConnected`, `ConnectFailed`,
 //!   `ConnectionLost`, `ProtocolError` (the connection is closed);
 //! - retry later: `NotReady`, `ServerError`;
 //! - fix the configuration: `AuthRejected`, `ServerNotVerified`,
-//!   `NotAllowed`, `UnknownName`, `NoDefaultTopic`;
+//!   `NotAllowed`, `UnknownName`;
 //! - update one end: `VersionMismatch`;
 //! - fix the call: `InvalidArgument`, `InvalidRequest`, `TooBig`,
 //!   `QueryFailed`, `FileError`;
@@ -71,7 +70,6 @@ error_codes! {
     NotFound = 3, "No such message or attachment.";
     NotReady = 4, "The attachment isn't on this server yet (still being replicated).";
     TooBig = 5, "A message, attachment or query result over a limit, or an attachment bigger than this server keeps.";
-    NoDefaultTopic = 6, "Protocol 6's: a push without a topic and no default one. Protocol 7 pushes always name their topic: never sent, kept so the number isn't reused.";
     InvalidRequest = 7, "A request that doesn't fit: an attachment's parts not matching its size, a part that doesn't exist...";
     DataMismatch = 8, "An uploaded attachment that doesn't match its SHA-256: dropped.";
     QueryFailed = 9, "The SQL of a query failed (its error in the reason).";
@@ -131,14 +129,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_numbers_of_protocol_6() {
+    fn the_numbers_never_change() {
         let expected: &[(u32, &str)] = &[
             (1, "NotAllowed"),
             (2, "UnknownName"),
             (3, "NotFound"),
             (4, "NotReady"),
             (5, "TooBig"),
-            (6, "NoDefaultTopic"),
             (7, "InvalidRequest"),
             (8, "DataMismatch"),
             (9, "QueryFailed"),
@@ -164,6 +161,8 @@ mod tests {
             assert_eq!(known.is_refusal(), *code < 100);
             assert!(!known.description().is_empty());
         }
+        // Retired: never given to another code.
+        assert_eq!(ErrorCode::from_code(6), None);
     }
 
     #[test]

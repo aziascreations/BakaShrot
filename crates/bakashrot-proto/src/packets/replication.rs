@@ -1,8 +1,7 @@
 //! Replication, between servers: at each check-in a peer (P) asks the
 //! server (S) what it takes and has, then sends what it's missing,
-//! messages first, then attachments (`OldSource/Design/Packets.md`,
-//! "Replication"). Servers only ever send each other names: each has its
-//! own ids.
+//! messages first, then attachments. Servers only ever send each other
+//! names: each has its own ids.
 
 use super::rules;
 use super::{Attachment, Check, DecodeError};

@@ -34,16 +34,8 @@
 ; call, BakaShrot_GetLastError() tells why: the codes and what to do about
 ; each are in BakaShrot_ErrorCodes.pbi, next to this file (included below),
 ; BakaShrot_ErrorName() names them; BakaShrot_GetRefusalReasonString() says
-; why in words.
-;
-; Changed from the PureBasic DLL (protocol 6): certificates instead of keys
-; and a node (BakaShrot_SetCaCertificate(), _SetCertificate(),
-; _SetPrivateKey() now a PEM key, _SetCrl()); a push always names its topic
-; (BakaShrot_PushMessage() is gone); no ids (_GetLatestMessage(TopicId,
-; NodeId), _SetNodeId(), _GetMessageTopicId/NodeId(), _ResolveTopic/Node(),
-; _GetResolvedName() are gone); _GetNamesList() is
-; {"kind":"topic","names":[...],"truncated":false}. New: _GetNode().
-; Attachments: the same six as before, by names.
+; why in words. _GetNamesList() is
+; {"kind":"topic","names":[...],"truncated":false}.
 ; ============================================================================
 
 XIncludeFile "BakaShrot_ErrorCodes.pbi"

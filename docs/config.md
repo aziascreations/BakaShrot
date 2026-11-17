@@ -15,7 +15,7 @@ Decided in `../revamp.md`, "Decided".
 | `[replication]` | the servers it sends to and takes from, retry and sync pace, batch size |
 | `[roles.<name>]` | what certificates with that role may do |
 
-Unknown keys are refused, so a typo or a key of the old ini is caught.
+Unknown keys are refused, so a typo is caught.
 
 ## Who's who: certificates, then roles
 
@@ -100,27 +100,11 @@ file's order, else `"*"`'s line wherever it is; without any, it's kept
 forever. Ages count from when a message was first pushed, on whichever
 server; each server has its own.
 
-## What changed from the old ini
-
-| Old (`OldSource/Server/Config/schema.ini`) | Now |
-|---|---|
-| `PrivateKey`, `[BakaShrot] Node` | `ca`, `certificate`, `key`: the node is the certificate's name |
-| `[BakaShrot.Client.*]`: keys, `Node`, `Allow*` | `[roles.*]`, the node and roles from the certificate |
-| `[BakaShrot.Peer.*]`: `Host`, `Port`, `Node`, `PublicKey`, topic and node lists | `[replication] push_to` and `accept_from` (addresses), the lists in the peer's roles |
-| `ReplicatingTopics` | each peer role's `send_topics` / `accept_topics` |
-| topic and node ids, pins, ranges, `[BakaShrot.Nodes]` | names only: ids are the database's |
-| `DefaultTopic` | dropped: a push always names its topic |
-| `Host` + `Port` | `listen` |
-| seconds | durations (`"10s"`) |
-| `NetThreadPoolSize` | gone (tokio) |
-| `UploadTimeout` | gone: attachments are streamed in their push (protocol 7), nothing waits |
-| `FULL` / `NORMAL` | `"full"` / `"normal"`; `off` still refused |
-
 ## Tests
 
 `crates/bakashrot-config/tests/config.rs`: the example, the defaults,
 every setting, retention's order, permissions (several roles, none known,
 replication per role), the topic lists that are gone, paths from the config's
-folder, and the refusals, each with its line: TOML errors, unknown keys
-(the old ini's too), every value that's wrong, names twice (without case),
+folder, and the refusals, each with its line: TOML errors, unknown keys,
+every value that's wrong, names twice (without case),
 unquoted dotted names.

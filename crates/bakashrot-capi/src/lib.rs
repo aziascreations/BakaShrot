@@ -3,7 +3,7 @@
 //! Python (ctypes) and anything that loads a DLL. `docs/client.md`
 //! has the whole API; `bindings/c/bakashrot.h` is generated from this file.
 //!
-//! The conventions, the old DLL's:
+//! The conventions:
 //!
 //! - **One connection per process:** set the certificates, connect, send
 //!   requests, one at a time (calls from several threads wait for each
@@ -288,8 +288,8 @@ pub unsafe extern "C" fn BakaShrot_SetPrivateKeyW(key: *const u16) -> isize {
 }
 
 /// Sets the CA's CRL, optional: servers it revokes are refused. PEM text,
-/// or the path of a file holding it; null or empty for none. Before
-/// connecting.
+/// or the path of a file holding it (one that isn't there is a
+/// `FileError`); null or empty for none. Before connecting.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_SetCrlA(crl: *const c_char) -> isize {
     unsafe { set::<Utf8>(crl.cast(), "CRL", true, |state| &mut state.crl) }

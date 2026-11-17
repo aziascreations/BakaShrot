@@ -17,7 +17,7 @@
 ;
 ; What BakaShrot_GetLastError() returns after a failed call of the client DLL
 ; (bakashrot.dll), and the code a server sends with each refusal (protocol 7,
-; crates/bakashrot-proto/src/error.rs, the same numbers as protocol 6).
+; crates/bakashrot-proto/src/error.rs).
 ; The Python client has them in bakashrot.ErrorCode. Shipped next to
 ; BakaShrot_Client_Prototypes.pbi, which includes it.
 ;
@@ -58,8 +58,6 @@
 ; A message, attachment or query result over a limit, or an attachment
 ; bigger than this server keeps.
 #BakaShrot_Refused_TooBig         = 5
-; Protocol 6's (a push without a topic): never sent any more.
-#BakaShrot_Refused_NoDefaultTopic = 6
 ; A request that doesn't fit: an attachment's parts not matching its size,
 ; a part that doesn't exist...
 #BakaShrot_Refused_InvalidRequest = 7
@@ -117,7 +115,6 @@ Procedure.s BakaShrot_ErrorName(Code.l)
 		Case #BakaShrot_Refused_NotFound : ProcedureReturn "NotFound"
 		Case #BakaShrot_Refused_NotReady : ProcedureReturn "NotReady"
 		Case #BakaShrot_Refused_TooBig : ProcedureReturn "TooBig"
-		Case #BakaShrot_Refused_NoDefaultTopic : ProcedureReturn "NoDefaultTopic"
 		Case #BakaShrot_Refused_InvalidRequest : ProcedureReturn "InvalidRequest"
 		Case #BakaShrot_Refused_DataMismatch : ProcedureReturn "DataMismatch"
 		Case #BakaShrot_Refused_QueryFailed : ProcedureReturn "QueryFailed"

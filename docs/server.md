@@ -16,8 +16,9 @@ bakashrot-server server.toml
 ```
 
 The config (`config.md`) gives where to listen, the certificates, the CRL,
-the database, the topics and the roles. Decided 2026-11-14
-(`../revamp.md`, "Operations"):
+the database, the topics and the roles. A system clock before 1970
+is refused at start (messages are stamped with it, `pushed_at`).
+Decided 2026-11-14 (`../revamp.md`, "Operations"):
 
 - **Stopping:** SIGTERM or SIGINT on Linux; Ctrl+C, Ctrl+Break or its
   console closed on Windows. It stops taking connections and writes
@@ -25,10 +26,9 @@ the database, the topics and the roles. Decided 2026-11-14
   answered is stored, the ones after are refused (`ServerError`, "the
   server is stopping"), then it exits with 0. Nothing else to wait for:
   a client whose push wasn't answered pushes it again (at least once).
-- **No console commands** (the old `quit`, `restart`, `vacuum`, `names`,
-  `help`): it needs no console, a service manager runs it as is. `names`
-  is `bakashrot list`, `restart` a stop and a start. Maybe an admin
-  channel later.
+- **No console commands:** it needs no console, a service manager runs
+  it as is. Listing names is `bakashrot list`, restarting a stop and a
+  start. Maybe an admin channel later.
 - **Logs go to the console** (stdout, `tracing`), without colours when
   it isn't a terminal: redirect them, or let systemd or Docker keep
   them. `BAKASHROT_LOG` sets the level: `error`, `warn`, `info` (the
@@ -77,7 +77,7 @@ beside it, on `debian:trixie-slim`, as uid 10001.
 | Writes | one writer thread | a queue of every write (pushes, uploads and their parts, replicated messages and parts, retention's deletes); the thread writes whatever is queued in one transaction (group commit, 1000 at most): the busier, the bigger the groups |
 | Reads, queries | tokio's blocking threads | a pool of read connections and one of query connections (`query_only`), reused |
 | WAL checkpoints | one thread, every second | its own connection, off the writer's way (`storage.md`) |
-| The CRL file | a task, every 5 s | reloaded when its time or size changes; one that isn't the CA's is refused, the previous one stays |
+| The CRL file | a task, every 5 s | reloaded when its time or size changes; one that isn't the CA's is refused, the previous one stays; no file: nothing revoked, warned |
 | Retention | a task, at start then every `retention_interval` (1 min) | below |
 | Replication | a task per server of `push_to` | below: links kept up, a check-in every `sync_interval` (5 s) |
 
@@ -127,7 +127,7 @@ otherwise:
    part it needs. One it says doesn't match its SHA-256 is read back
    here: damaged (a disk, a bug), this server's copy is dropped and asked
    for again from its own peers (`replicating`, not served meanwhile),
-   instead of sent again at every check-in (the old open item 3).
+   instead of sent again at every check-in.
 
 **Receiving** (`accept_from.rs`): replication requests are answered only
 if the connection comes from `accept_from` (a hostname looked up at its
@@ -141,8 +141,15 @@ needs, the parts it had read back for the SHA-256; matching, it's ready,
 otherwise started over (`DataMismatch`). A stop between its last part
 and the check: started over at the next start.
 
-**One server per node** stays the config's rule, as in the old version
-(`known-issues.md`): a node pushing to two servers that replicate makes
+- **One peer at a time per attachment** (2026-11-16): another asking for
+  the same one meanwhile is refused (`NotReady`) and offers it again at
+  its next check-in. Two at once could both be refused a part while
+  every part got stored, the attachment left whole and never checked.
+- **Never taken unchecked:** one whole but not checked (finishing it
+  failed) is listed in `SyncState` from its first part and started over
+  when a peer asks for it, warned in the log.
+
+**One server per node** stays the config's rule (`known-issues.md`): a node pushing to two servers that replicate makes
 the same ids with different messages, undetected.
 
 ## A connection
@@ -238,6 +245,9 @@ server's, `ConnectionLost`, `ProtocolError`, `InvalidArgument`,
 
 ## Measured
 
+`bench.ps1` at the root runs these benchmarks (`-Only push,replication`,
+`-Sync full|normal`; the variables below from the environment).
+
 `push_rate` (`tests/end_to_end.rs`, ignored by default): a whole server on
 localhost, 10 clients each its own node (`CLIENTS`), one push at a time
 each, 200-byte JSON, 20,000 pushes per client.
@@ -252,8 +262,8 @@ each, 200-byte JSON, 20,000 pushes per client.
   a connection's revocation check stopped reading its certificate at
   every request (its serial is read once, at connect).
 - One client waits for each answer: a round trip and a commit per push.
-  Through Python and the DLL, about 10,700 pushes/s (the old module did
-  about 9,000), and 140,000 messages/s read.
+  Through Python and the DLL, about 10,700 pushes/s, and 140,000
+  messages/s read.
 - With `full`, every group commit waits for the disk's flush (about 1 ms
   here): 10 clients make groups of about 10. More clients, bigger groups.
 - **Attachments** (release, the tool, `normal`): 200 MB up in 1.3 s and
@@ -263,52 +273,47 @@ each, 200-byte JSON, 20,000 pushes per client.
   against 39,800-40,400), `full` the same (the disk's), attachments and
   tool commands the same. The programs and the DLL 25-31% smaller.
 
-### Against the old server (2026-11-14)
+### Through the DLL, Python and the tools (2026-11-14)
 
-The same work on the same machine, release builds, one server on
-localhost: the old one (`OldSource/Build/Bench/BenchServer.exe`, its DLL,
-`bakashrot.py` and tools) and this one. Pushes and reads through each one's
-Python module and DLL (10 clients: 10 processes, the same node), 200-byte
+Release builds, one server on localhost. Pushes and reads through
+Python and the DLL (10 clients: 10 processes, the same node), 200-byte
 JSON; the rest through the tools.
 
-| | Old, `full` | New, `full` | Old, `normal` | New, `normal` |
-|---|---|---|---|---|
-| One tool command, connecting included | 8 ms | 12 ms | 8 ms | 11 ms |
-| Pushes, 1 client | 1,945/s | 1,954/s | 9,386/s | 11,600-13,100/s |
-| Pushes, 10 clients | 9,006/s | 10,072/s | 25,419/s | 56,200-64,300/s |
-| Reads, Python | 76,466/s | 130,861/s | 77,526/s | 146,368/s |
-| The tool writing 120,000 messages to a file | | | 45.5 s | 0.14 s |
-| A 200 MB attachment up, the tool | 3.49 s | 1.15 s | 2.84 s | 1.15 s |
-| The same down | 1.57 s | 0.59 s | 1.62 s | 0.67 s |
+| | `full` | `normal` |
+|---|---|---|
+| One tool command, connecting included | 12 ms | 11 ms |
+| Pushes, 1 client | 1,954/s | 11,600-13,100/s |
+| Pushes, 10 clients | 10,072/s | 56,200-64,300/s |
+| Reads, Python | 130,861/s | 146,368/s |
+| The tool writing 120,000 messages to a file | | 0.14 s |
+| A 200 MB attachment up, the tool | 1.15 s | 1.15 s |
+| The same down | 0.59 s | 0.67 s |
 
-- **`full`, one client:** both wait for the disk's flush at every push.
+- **`full`, one client:** it waits for the disk's flush at every push.
 - **A command:** the TLS handshake's P-384 signatures and checks, both
-  ends, cost about 7 ms against the old handshake's X25519; aws-lc's CPU
-  Jitter Entropy seeding cost 25 ms more per process before it was turned
-  off (`certificates.md`, "TLS").
-- **The old tool's read** printed a line at a time to the console API.
+  ends, cost about 7 ms; aws-lc's CPU Jitter Entropy seeding cost 25 ms
+  more per process before it was turned off (`certificates.md`, "TLS").
 
-### Replication, against the old server (2026-11-14)
+### Replication (2026-11-14)
 
-`replication_rate` (`tests/end_to_end.rs`, ignored by default) against
-the old `Tests/Bench/Bench-Replication.ps1 -Parts Ramp -Ramp 10x0`: 4
+`replication_rate` (`tests/end_to_end.rs`, ignored by default): 4
 servers in a Y (a hub sending to 3 leaves, each sending to the hub), 10
 nodes pushing to each as fast as they're answered for 30 s, 200-byte
-JSON, the same machine. The old one's pushers are its PureBasic bench
-client, the new one's `bakashrot-client` threads in the test's process.
+JSON, the same machine, the pushers `bakashrot-client` threads in the
+test's process.
 
-| | Old, `full` | New, `full` | Old, `normal` | New, `normal` |
-|---|---|---|---|---|
-| Pushes, all 4 servers | 16,638/s | 16,000-16,300/s | 33,895/s | 35,300-37,500/s |
-| Slowest push | 134 ms | 50-57 ms | 854 ms | 420-510 ms |
-| Behind when the pushes stop (most of a server) | 9.0 s of pushes | 0 | 11.4 s | 0.3-0.9 s |
-| Until every server has everything | 8.8 s | 0.3 s | 14.8 s | 5.3-5.6 s |
+| | `full` | `normal` |
+|---|---|---|
+| Pushes, all 4 servers | 16,000-16,300/s | 35,300-37,500/s |
+| Slowest push | 50-57 ms | 420-510 ms |
+| Behind when the pushes stop (most of a server) | 0 | 0.3-0.9 s |
+| Until every server has everything | 0.3 s | 5.3-5.6 s |
 
 - **Keeping up:** a link checks in again at once after sending; before
-  it waited `sync_interval` after every check-in, as the old one did, and
+  it waited `sync_interval` after every check-in, and
   pushes went faster (19,300/s `full`, 40,200/s `normal`) while the
   leaves fell 7-9 s behind and took 10-20 s to catch up.
-- **`batch_size` 1000** (was 100, the old `PeerBatchSize`): `normal` went
+- **`batch_size` 1000** (was 100): `normal` went
   from 27,500-31,500/s to 35,300-37,500/s, and from 2-2.5 s to under 1 s
   behind. Batches stay about 1 MiB at most.
 - **The last few seconds** with `normal` are a link's `sync_interval`:
@@ -320,25 +325,21 @@ client, the new one's `bakashrot-client` threads in the test's process.
 each:
 
 - pushes and reads back (ids, data, times, another connection);
-- runs of messages (`OldSource/Tests/GetMessages-Test.ps1`, the server's
-  part): from the start, after an id, with a limit, `more`, the last ones,
+- runs of messages: from the start, after an id, with a limit, `more`, the last ones,
   nothing yet, unknown topics and nodes, names without case, data that
   isn't one line of JSON;
-- big messages (`BigMessages-Test.ps1`, one server's part): five of 600 KB
-  and one of the largest size, one per answer, read back whole; one byte
+- big messages: five of 600 KB and one of the largest size, one per answer, read back whole; one byte
   over refused; a query result over 16 MB refused;
 - names: topics by role, nodes;
-- attachments (`Attachments-Test.ps1`, one server's part): 100 KB, 5 MB +
-  123 bytes, exactly 2 MB, 1 byte, 1 MB, read back and saved; the
+- attachments: 100 KB, 5 MB + 123 bytes, exactly 2 MB, 1 byte, 1 MB, read back and saved; the
   messages saying theirs; none, or no such message, refused leaving no
   file; another reader, one not allowed; over the server's limit, 0 for
   none, empty; the parts stored;
-- attachment edges (`AttachmentEdges-Test.ps1`'s, through the client and
-  a raw connection): a source changed between its SHA-256 and its
+- attachment edges (through the client and a raw connection): a source changed between its SHA-256 and its
   sending, one failing half-way (the connection closed, the upload
   dropped), a part of the wrong size, a wrong SHA-256, reading from a
   part on, something else than a part (closed, dropped);
-- queries (`BigMessages-Test.ps1`'s): not allowed, results, a non-JSON row
+- queries: not allowed, results, a non-JSON row
   refused with the hint, errors, writes and two statements refused;
 - refusals keeping the connection (not allowed, unknown topic, a bad name
   the client catches);
@@ -351,12 +352,9 @@ each:
 - stopping cleanly: eight nodes pushing flat out, the server stopped
   under them: every push answered is there after a restart, the ones
   after refused as `ServerError`;
-- retention (`Retention-Test.ps1`'s local part): a topic's messages and
-  their attachment deleted past its age, another topic kept forever, ids
+- retention: a topic's messages and their attachment deleted past its age, another topic kept forever, ids
   going on, a younger message kept through a pass;
-- replication (`Names-Test.ps1`'s replication, `Restart-Test.ps1`,
-  `AttachmentEdges-Test.ps1`'s corruption): three servers of one CA, a
-  pushing to b and c. b gets every message by name with its id, time
+- replication: three servers of one CA, a pushing to b and c. b gets every message by name with its id, time
   and data, and the attachment; c, whose `accept_from` hasn't a, gets
   nothing; b's own pushes don't go to a. b stopped, a pushes meanwhile
   and its copy of an attachment gets damaged; b started again on its
@@ -368,8 +366,11 @@ each:
   first part going on from the second (the first read back for the
   SHA-256), one not matching refused and asked for from the start, a
   certificate whose roles take nothing refused;
+- two peers, one attachment (two raw connections): the second refused
+  while the first sends it (names in any case), the first finishing it;
+  one gone partway, the other going on from there; one whole but never
+  checked asked for from its first part and started over;
 - `replication_rate`, ignored by default: the benchmark above (`SYNC`,
   `NODES`, `SECONDS`, `BATCH`).
 
-The old tests' tool parts (`--follow`, the output) are the tools' tests
-(`client.md`).
+The tool's own (`--follow`, the output): `client.md`.

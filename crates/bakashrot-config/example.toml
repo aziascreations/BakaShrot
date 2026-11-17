@@ -25,6 +25,11 @@ database = "bakashrot.sqlite"
 # second or so. ("off" isn't allowed.)
 synchronous = "full"
 
+# Replication cut partway through an attachment resumes once the peer has
+# read back and hashed what it already has, in 30 s at most: up to about
+# 4 GB received on a hard disk, 15 GB on a SATA SSD, 30-60 GB on NVMe
+# (estimates). Past that, resuming fails at every retry: keep attachments
+# well under it (more than a few GB is a lot for this anyway).
 max_attachment_size = "1G"           # bytes, or K M G T (1024-based); 0: none
 retention_interval = "1m"            # how often old messages are deleted
 
@@ -42,14 +47,16 @@ logs = "30d"
 push_to = []                         # dialed and sent to: ["10.0.0.2:7000", "server-2.lan:7000"]
 accept_from = []                     # taken from: ["10.0.0.2", "server-2.lan"], or ["*"]
 retry_delay = "10s"
-sync_interval = "5s"
+sync_interval = "5s"                 # keep it under 5 min: a link idle that long is closed
 batch_size = 1000                    # messages per packet, 1-10000
 
 # What certificates with a role may do. A certificate gets everything its
 # roles allow; one without any role listed here is refused. Every key is
 # optional: an empty list allows nothing. The topics are only named here:
 # one exists from its first message, pushed (push_topics) or replicated
-# (accept_topics).
+# (accept_topics). A database holds 1,048,575 topic and node pairs at
+# most, all topics together, never freed: patterns like "*" in
+# push_topics let clients make as many as they like.
 [roles.sensor]
 push_topics = ["sensors.*"]          # always as its own node (its name)
 

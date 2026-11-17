@@ -5,9 +5,9 @@ What apps connect with, in layers:
 | Layer | Where | For |
 |---|---|---|
 | `bakashrot-client` | `crates/bakashrot-client` | Rust: blocking, one connection per `Client` |
-| The DLL | `crates/bakashrot-capi`: `bakashrot.dll`, `libbakashrot.so` | C and anything that loads a DLL: the old `BakaShrot_*` exports, one connection per process |
+| The DLL | `crates/bakashrot-capi`: `bakashrot.dll`, `libbakashrot.so` | C and anything that loads a DLL: the `BakaShrot_*` exports, one connection per process |
 | C header | `bindings/c/bakashrot.h` | generated from the DLL (cbindgen) |
-| PureBasic | `bindings/purebasic/` | the prototypes and the error codes, as the old DLL's |
+| PureBasic | `bindings/purebasic/` | the prototypes and the error codes |
 | Python | `bindings/python/bakashrot.py` | `Client` over the DLL (ctypes), standard library only |
 | The tools | `crates/bakashrot-tools`: `bakashrot` | the command line, over `bakashrot-client` |
 
@@ -35,12 +35,12 @@ server = "10.0.0.2:7000"     # host:port, [an IPv6 address]:port
 ca = "ca.crt"
 certificate = "kitchen.crt"
 key = "kitchen.key"
-crl = "ca.crl"               # optional
+crl = "ca.crl"               # optional; a file not there yet: none
 ```
 
 ## The DLL
 
-The old DLL's conventions, kept:
+Its conventions:
 
 - **One connection per process.** Calls from several threads wait for each
   other.
@@ -82,25 +82,9 @@ The old DLL's conventions, kept:
 
 The header has each one's comment. Every name starts with `BakaShrot_`.
 
-### Changed from the PureBasic DLL
-
-- **Connecting:** certificates instead of keys and a node:
-  `SetCaCertificate`, `SetCertificate`, `SetCrl` are new, `SetPrivateKey`
-  takes a PEM key; `SetPublicKey`, `SetServerPublicKey`, `SetNode`,
-  `SetNodeId` are gone. `GetNode` is new (the node comes from the
-  certificate).
-- **No default topic:** `PushMessage(Data)` is gone, `PushMessageTo` names
-  its topic.
-- **Attachments:** the same six, by names.
-- **No ids:** `GetLatestMessage(TopicId, NodeId)`, `GetMessageTopicId`,
-  `GetMessageNodeId`, `ResolveTopic`, `ResolveNode`, `GetResolvedName` are
-  gone; `GetNamesList` lists names.
-- **The file:** `bakashrot.dll` (`libbakashrot.so`), no libsodium next to
-  it.
-
 ## Python
 
-`bindings/python/bakashrot.py`, the old module adapted: `Client(server, ca,
+`bindings/python/bakashrot.py`: `Client(server, ca,
 certificate, key, crl=None)` (PEM text or paths) or
 `Client.from_file("client.toml")` (Python 3.11+, `tomllib`; the rest runs
 on 3.8), `client.node` once connected, `push(data, topic,
@@ -118,15 +102,15 @@ wheel with the library in it (`pip install bakashrot-*.whl`, nothing else:
 
 `bindings/purebasic/BakaShrot_Client_Prototypes.pbi` (with
 `BakaShrot_ErrorCodes.pbi`): `BakaShrot_LoadClient("bakashrot.dll")`, then
-the `W` exports under the old names, `BakaShrot_*String()` helpers for the
+the `W` exports without their suffix, `BakaShrot_*String()` helpers for the
 getters. Run directly, it's an example: `ClientExample <DllPath> <CaFile>
 <CertificateFile> <KeyFile> <Host> <Port>`, pushing a message and one
-with an attachment, reading both back (checked by hand with 5.73 against
-a server; not in CI, which has no PureBasic).
+with an attachment, reading both back (run by hand against a server;
+not in CI, which has no PureBasic).
 
 ## The tools
 
-`bakashrot`, the old `BakaShrot*` tools in one program (`bakashrot-cert`,
+`bakashrot`, one program to push, read, query and list (`bakashrot-cert`,
 for the CA, is apart: `certificates.md`). Each command connects with
 `-c <file>` (`client.toml` by default), does one thing and exits: 0, 1 on a
 failure (why on stderr: `Refused by the server (NotAllowed): ...`,
@@ -158,14 +142,10 @@ bakashrot list nodes --json                    {"kind":"node","names":["kitchen"
 - **Messages and SQL:** inline, `@file` or `-` (a UTF-8 BOM dropped).
   PowerShell before 7.3 drops the double quotes inside arguments: use a
   file there.
-- **Changed from the old tools:** one program; `-c` instead of the last
-  argument, `client.toml` instead of `client.ini`; `push` names its topic;
-  names only (no ids in the output, `ResolveIds` gone); errors on stderr;
-  `GetAttachment` is the `attachment` command.
 - **Speed** (release, a local server, 2026-11-14): a command takes about
-  11 ms, connecting included (the old tools 8 ms); `messages --limit 0`
+  11 ms, connecting included; `messages --limit 0`
   writes 200,000 messages to a file in 0.26 s (Python's `iter_messages()`:
-  1.5 s). Against the old ones: `server.md`, "Measured".
+  1.5 s). More: `server.md`, "Measured".
 
 ## Tests
 
@@ -176,12 +156,10 @@ bakashrot list nodes --json                    {"kind":"node","names":["kitchen"
   unaligned), selecting messages, attachments (from a file and memory,
   saved and loaded, the buffer, refused ones), every refusal and the
   client's own errors, closing, another identity.
-- `python.rs`: runs `bindings/python/check_bakashrot.py` (the old one,
-  ported: 52 checks) on the DLL; skipped, saying so, without Python 3.11+.
+- `python.rs`: runs `bindings/python/check_bakashrot.py` on the DLL; skipped, saying so, without Python 3.11+.
 - `header.rs`: `bindings/c/bakashrot.h` matches the exports (rewritten
   when it doesn't: check it in).
 
 `crates/bakashrot-tools/tests/bakashrot.rs` runs the tool against a server:
-the old GetMessages suite's checks (`--follow` too), the Names,
-BigMessages and Attachments suites' tool checks, queries, lists,
-`client.toml`.
+messages (`--follow` too), pushes and refusals, big messages,
+attachments, queries, lists, `client.toml`.

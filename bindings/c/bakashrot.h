@@ -70,8 +70,8 @@ ptrdiff_t BakaShrot_SetPrivateKeyW(const uint16_t *key);
 
 /**
  * Sets the CA's CRL, optional: servers it revokes are refused. PEM text,
- * or the path of a file holding it; null or empty for none. Before
- * connecting.
+ * or the path of a file holding it (one that isn't there is a
+ * `FileError`); null or empty for none. Before connecting.
  */
 ptrdiff_t BakaShrot_SetCrlA(const char *crl);
 
