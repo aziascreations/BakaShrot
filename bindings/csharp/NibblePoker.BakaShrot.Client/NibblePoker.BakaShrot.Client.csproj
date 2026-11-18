@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- net35: .NET Framework 2.0 and 3.x (it uses only mscorlib), 4.x too.
+       netstandard2.0: .NET Core 2.0 and up, .NET 5 and up.
+       Not BakaShrot.dll: that's the native library's name on Windows. -->
+  <PropertyGroup>
+    <TargetFrameworks>net35;netstandard2.0</TargetFrameworks>
+    <LangVersion>ISO-2</LangVersion>
+    <RootNamespace>NibblePoker.BakaShrot</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- The package. CI packs it with the version and the native libraries:
+       dotnet pack -p:Version=<version> -p:NativeDir=<folder>/, the folder
+       holding win-x64/, win-arm64/, linux-x64/, linux-arm64/, each with
+       that release's library and THIRD-PARTY.txt (.github/workflows/ci.yml). -->
+  <PropertyGroup>
+    <Version>0.3.0</Version>
+    <Authors>Herwin Bozet (NibblePoker)</Authors>
+    <Description>BakaShrot's client: a message store with replication. Over the client library, its Windows and Linux x64 and ARM64 builds included; .NET Framework 2.0 and up, .NET Core, .NET.</Description>
+    <PackageLicenseExpression>CC0-1.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/aziascreations/BakaShrot</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/aziascreations/BakaShrot</RepositoryUrl>
+    <PackageTags>bakashrot;messages;replication;sqlite</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(NativeDir)' != ''">
+    <!-- .NET Core and .NET pick theirs from runtimes/<rid>/native/. -->
+    <None Include="$(NativeDir)win-x64/bakashrot.dll" Pack="true" PackagePath="runtimes/win-x64/native/" />
+    <None Include="$(NativeDir)win-arm64/bakashrot.dll" Pack="true" PackagePath="runtimes/win-arm64/native/" />
+    <None Include="$(NativeDir)linux-x64/libbakashrot.so" Pack="true" PackagePath="runtimes/linux-x64/native/" />
+    <None Include="$(NativeDir)linux-arm64/libbakashrot.so" Pack="true" PackagePath="runtimes/linux-arm64/native/" />
+    <!-- The crates built into each. -->
+    <None Include="$(NativeDir)win-x64/THIRD-PARTY.txt" Pack="true" PackagePath="licenses/win-x64/" />
+    <None Include="$(NativeDir)win-arm64/THIRD-PARTY.txt" Pack="true" PackagePath="licenses/win-arm64/" />
+    <None Include="$(NativeDir)linux-x64/THIRD-PARTY.txt" Pack="true" PackagePath="licenses/linux-x64/" />
+    <None Include="$(NativeDir)linux-arm64/THIRD-PARTY.txt" Pack="true" PackagePath="licenses/linux-arm64/" />
+    <!-- .NET Framework doesn't: this copies it next to the app. -->
+    <None Include="NibblePoker.BakaShrot.Client.targets" Pack="true" PackagePath="build/net35/" />
+  </ItemGroup>
+
+</Project>

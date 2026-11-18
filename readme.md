@@ -21,6 +21,7 @@ It also allows to sleep easy knowing each client is strongly authenticated by us
   * A C library (`bakashrot.dll`, `libbakashrot.so`), with a C header and PureBasic prototypes
   * A CLI tool to push, read, query and list
   * A Python module over the library, without dependencies, as a wheel with the library in it
+  * A C# client over the library, one file without dependencies, for .NET Framework 2.0 and 3.x up to the latest .NET
 
 
 ## Limitations

@@ -5,7 +5,7 @@ open, and the plan. Every step of the plan is done (the workspace,
 `bakashrot-proto`, `bakashrot-pki` and the certificate tool,
 `bakashrot-config`, `bakashrot-storage`, `bakashrot-server` and
 `bakashrot-client` answering every request, attachments included, the C
-DLL with its C, PureBasic and Python bindings, the `bakashrot` tool,
+DLL with its C, PureBasic, Python and C# bindings, the `bakashrot` tool,
 retention, replication, operations and releases, then the finish: one
 test runner, CI, Docker, `bench.ps1`), see "Plan".
 
@@ -373,6 +373,7 @@ by hand.
 | 11 | Replication | Peer links, sync state, batches by name, wildcards, attachments, skipping on arrival | Three servers end to end, a restart; the corrupted-attachment fix | Decided 2026-11-14 | Done 2026-11-14 |
 | 12 | Operations | Signals and a clean stop, logs, release, wheel | Runs unattended, stops cleanly, the release's smoke test | Decided 2026-11-14 | Done 2026-11-14 |
 | 13 | Finish | One test runner (the Rust tests, decided 2026-11-15), end-to-end tests in CI, the bench, Docker | Push speed with 4 servers replicating (`docs/server.md`, "Measured") | | Done 2026-11-16 (`bench.ps1`) |
+| 14 | C# binding | `bindings/csharp`: `Client` over the `W` exports, C# 2 and .NET 2.0's library only (net35, netstandard2.0); the NuGet package `NibblePoker.BakaShrot.Client` with the four platforms' libraries, packed by CI after the releases (an artifact) | Its NUnit tests pass on net48 and net8.0 (by hand, not in `test.ps1`); the package loads the library on net8.0 and net48 | Asked by the owner 2026-11-18 (the name too) | Done 2026-11-18 |
 
 Each step ends with its tests passing and its docs updated (the crate's
 docs, `docs/`, this file's status), then a commit when the owner

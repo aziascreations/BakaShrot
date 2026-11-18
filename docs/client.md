@@ -9,6 +9,7 @@ What apps connect with, in layers:
 | C header | `bindings/c/bakashrot.h` | generated from the DLL (cbindgen) |
 | PureBasic | `bindings/purebasic/` | the prototypes and the error codes |
 | Python | `bindings/python/bakashrot.py` | `Client` over the DLL (ctypes), standard library only |
+| C# | `bindings/csharp/NibblePoker.BakaShrot.Client/` | `Client` over the DLL (P/Invoke), .NET Framework 2.0 and up, .NET Core, .NET; a NuGet package with every platform's library |
 | The tool | `crates/bakashrot-tools`: `bakashrot` | the command line, over `bakashrot-client`; `bakashrot cert`, the certificates |
 
 Decided in `../revamp.md`, "Decided" (2026-11-13). What goes over the
@@ -106,6 +107,51 @@ looked for next to the module, or `BAKASHROT_DLL`. The release has a
 wheel with the library in it (`pip install bakashrot-*.whl`, nothing else:
 `bindings/python/make_wheel.py`, `../README.md`, "Releases").
 
+## C#
+
+The NuGet package `NibblePoker.BakaShrot.Client` (namespace
+`NibblePoker.BakaShrot`), or `bindings/csharp/NibblePoker.BakaShrot.Client/BakaShrot.cs`,
+one file to copy into a project. C# 2 and .NET 2.0's class library only:
+built for `net35` (it references `mscorlib` 2.0 only, so .NET Framework
+2.0 and 3.x load it, 4.x too) and `netstandard2.0` (.NET Core 2.0 and up,
+.NET 5 and up). The assembly is `NibblePoker.BakaShrot.Client.dll`, not
+`BakaShrot.dll`, which is the library's name on Windows.
+
+The package has the library for Windows and Linux, x64 and ARM64, in
+`runtimes/<rid>/native/`: .NET Core and .NET take the machine's (or
+`dotnet publish -r`'s). .NET Framework ignores `runtimes/`: the package's
+`build/net35/NibblePoker.BakaShrot.Client.targets` copies `win-x64`'s next
+to the app, `win-arm64`'s when `PlatformTarget` is `ARM64`
+(`BakaShrotRuntime` to choose). CI packs it after the releases, from
+their libraries, and keeps it as the run's `bakashrot-nuget` artifact.
+
+```csharp
+using (Client client = new Client("10.0.0.2", 7000, "ca.crt", "kitchen.crt", "kitchen.key", null))
+{
+    client.Connect();
+    long id = client.Push("sensors", "{\"t\":21}");
+    foreach (Message message in client.IterMessages("sensors", client.Node, 0))
+        Console.WriteLine(message.Id + " " + message.Data);
+}
+```
+
+`new Client(host, port, ca, certificate, key, crl)` (PEM text or paths,
+`crl` null for none), `Connect()`, `Node`, `Connected`, `Push(topic,
+data[, byte[]])`, `PushFile(topic, data, path)`, `Latest()` (null if
+none), `GetMessages()` (a `MessagesPage`), `IterMessages()`, `Follow()`,
+`GetAttachment()` (bytes), `SaveAttachment()` (a file), `ListTopics()` /
+`ListNodes()` / `Query()` (the library's JSON, as a string: parsing it is
+the app's), `Close()` / `Dispose()`. The same exceptions as Python's:
+`RefusedException`, `ConnectionLostException`, `AuthException`,
+`BakaShrotException`, each with its `ErrorCode`. Strings go as UTF-16 (the
+`W` exports); one with a NUL is refused (`InvalidArgument`) rather than
+cut. Each `Client` has its own client in the DLL, its calls serialized:
+several at once, from any threads.
+
+The library is found the usual DllImport way: next to the app, then the
+PATH (`LD_LIBRARY_PATH` on Linux). It's 64-bit: the app must run as a
+64-bit process (no "Prefer 32-bit" on .NET Framework).
+
 ## PureBasic
 
 `bindings/purebasic/BakaShrot_Client_Prototypes.pbi` (with
@@ -174,6 +220,14 @@ bakashrot list nodes --json                    {"kind":"node","names":["kitchen"
   `BakaShrot_Client_Prototypes.pbi` directly, `ClientExample <DllPath>
   <CaFile> <CertificateFile> <KeyFile> <Host> <Port>`. Passed 2026-11-17
   with PureBasic 5.73 LTS and 6.41 (C backend), x64.
+- C#, by hand (not in `test.ps1`): `cargo build`, then `dotnet test
+  bindings/csharp/NibblePoker.BakaShrot.Client.Tests` (NUnit). Its `[SetUpFixture]`
+  makes the certificates with `target/debug`'s `bakashrot cert`
+  (`BAKASHROT_BIN` for another folder), starts `bakashrot-server` on a free
+  port in `target/csharp-tests/`, copies the library next to the tests.
+  On `net48` (the `net35` build) and `net8.0` (`netstandard2.0`), on Linux
+  `net8.0` only. Passed 2026-11-18 on both, and on `net11.0`
+  (`-p:TargetFrameworks=net11.0`).
 - `header.rs`: `bindings/c/bakashrot.h` matches the exports (rewritten
   when it doesn't: check it in).
 

@@ -1,6 +1,7 @@
 # On a version tag, or run by hand: the same checks as test.ps1 (Windows
 # and Linux), then a release for each platform (release.py), its archive
-# kept as the run's artifact, and the server's Docker image for amd64 and
+# kept as the run's artifact, the C# client's NuGet package with their four
+# libraries (an artifact too), and the server's Docker image for amd64 and
 # arm64, checked (docker/test.sh), pushed to ghcr.io on a tag only. Gitea
 # Actions runs this file too.
 #
@@ -110,6 +111,65 @@ jobs:
           path: |
             target/dist/*.zip
             target/dist/*.tar.gz
+          if-no-files-found: error
+
+  nuget:
+    # The C# client's NuGet package (docs/client.md, "C#"): the four
+    # releases' libraries in runtimes/<rid>/native/, packed on Linux
+    # (nothing in it is built for a platform), kept as the run's artifact.
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bakashrot-*
+          path: target/releases
+      # The .NET SDK, where the image has none (Gitea's runners).
+      - run: |
+          if ! command -v dotnet; then
+            curl --proto '=https' --tlsv1.2 -sSfLo dotnet-install.sh https://dot.net/v1/dotnet-install.sh
+            bash dotnet-install.sh --channel 8.0 --install-dir "$HOME/.dotnet"
+            rm dotnet-install.sh
+            echo "$HOME/.dotnet" >> "$GITHUB_PATH"
+          fi
+      - name: Pack
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          native="$PWD/target/nuget-native"
+          for platform in windows-x64 windows-arm64 linux-x64 linux-arm64; do
+            case "$platform" in windows-*) library=bakashrot.dll ;; *) library=libbakashrot.so ;; esac
+            rid="${platform/windows/win}"
+            archive=$(ls target/releases/bakashrot-$platform/bakashrot-$version-$platform.*)
+            mkdir -p target/unpacked "$native/$rid"
+            case "$archive" in *.zip) unzip -q "$archive" -d target/unpacked ;; *) tar -xzf "$archive" -C target/unpacked ;; esac
+            cp "target/unpacked/bakashrot-$version-$platform/$library" \
+               "target/unpacked/bakashrot-$version-$platform/THIRD-PARTY.txt" "$native/$rid/"
+          done
+          dotnet pack bindings/csharp/NibblePoker.BakaShrot.Client -c Release \
+            -p:Version="$version" -p:NativeDir="$native/" -o target/nuget
+          # Each library in it, or the package is wrong.
+          listing=$(unzip -l target/nuget/NibblePoker.BakaShrot.Client.$version.nupkg)
+          for file in runtimes/win-x64/native/bakashrot.dll runtimes/win-arm64/native/bakashrot.dll \
+                      runtimes/linux-x64/native/libbakashrot.so runtimes/linux-arm64/native/libbakashrot.so \
+                      build/net35/NibblePoker.BakaShrot.Client.targets lib/net35/NibblePoker.BakaShrot.Client.dll \
+                      lib/netstandard2.0/NibblePoker.BakaShrot.Client.dll; do
+            grep -q " $file\$" <<< "$listing" || { echo "Not in the package: $file"; exit 1; }
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bakashrot-nuget
+          path: target/nuget/*.nupkg
           if-no-files-found: error
 
   docker:

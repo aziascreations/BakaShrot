@@ -14,6 +14,10 @@
 # Python
 __pycache__/
 
+# C#
+bindings/csharp/*/bin/
+bindings/csharp/*/obj/
+
 # Rust
 target/
 

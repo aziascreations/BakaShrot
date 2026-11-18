@@ -42,6 +42,7 @@ bindings/
   c/                    bakashrot.h, generated from bakashrot-capi
   purebasic/            the prototypes and error codes
   python/               bakashrot.py over the DLL, check_bakashrot.py, make_wheel.py
+  csharp/               NibblePoker.BakaShrot.Client/: BakaShrot.cs over the DLL (net35, netstandard2.0), the NuGet package; its .Tests/ (NUnit)
 .cargo/config.toml      the C runtime linked statically on Windows, SQLite's options
 .cargo/hybrid-crt.toml  -HybridCrt: the UCRT from Windows instead (about 180 KB less per program)
 docker/                 the server's image: Dockerfile, compose.yml, test.sh
@@ -55,7 +56,7 @@ on their own; `server` and `client` use them; the DLL and the tool only use `cli
 `python release.py` (or `release.ps1`) on Windows or Linux, x64 or ARM64, builds that platform's release into
 `target/dist/bakashrot-<version>-<platform>/` and its archive (`.zip`, `.tar.gz`):
 the server, `bakashrot` (the certificates too: `bakashrot cert`), the client library with its C header and PureBasic prototypes,
-`bakashrot.py` and a wheel with the library in it (`bindings/python/make_wheel.py`), the example configs,
+`bakashrot.py` and a wheel with the library in it (`bindings/python/make_wheel.py`), `BakaShrot.cs`, the example configs,
 `docs/`, a `README.txt`, the licenses (`THIRD-PARTY.txt`: every crate built in, from `cargo metadata`).
 
 Then it checks it, in the folder's `_test/`: a CA and certificates, the server on a free port,
@@ -65,7 +66,9 @@ which must end cleanly (`_test/` kept if not). `--skip-test` skips it.
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on a version tag (`v*`) or by hand: `test.ps1`'s checks
 on Windows and Linux, then a release on each of Windows x64 and ARM64, Linux x64 and ARM64, each on its own
-kind of machine (so its smoke test runs there), its archive kept as the run's artifact. The Linux ones build
+kind of machine (so its smoke test runs there), its archive kept as the run's artifact; then the C# client's
+NuGet package, `NibblePoker.BakaShrot.Client`, packed from the four releases' libraries
+(`runtimes/<rid>/native/`) and kept as the `bakashrot-nuget` artifact. The Linux ones build
 in a manylinux 2.28 container, so they run with glibc 2.28 and later.
 The version is the workspace's (`Cargo.toml`), and `bindings/python/bakashrot.py`'s `__version__` must be the same.
 

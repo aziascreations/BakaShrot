@@ -11,6 +11,7 @@ Into target/dist/:
     purebasic/*.pbi                                its PureBasic prototypes
     python/bakashrot.py                            the Python client, over it
     python/bakashrot-<version>-*.whl               the same with the library in it
+    csharp/BakaShrot.cs                            the C# client, over it
     server.example.toml, client.example.toml       the configs, documented
     docs/                                          docs/
     README.txt                                     what's where, how to start
@@ -208,7 +209,9 @@ docs/client.md), --help on each command:
 
 The client library ({LIBRARY}): the BakaShrot_* exports, include/bakashrot.h
 for C, purebasic/ for PureBasic, python/bakashrot.py for Python (no
-dependencies; it looks for the library next to itself or in BAKASHROT_DLL).
+dependencies; it looks for the library next to itself or in BAKASHROT_DLL),
+csharp/BakaShrot.cs for C# (.NET Framework 2.0 and up, .NET Core and .NET;
+the library next to the app, which runs 64-bit).
 Or: pip install python/bakashrot-*.whl, the library inside.
 
 Compatibility: protocol 7. Servers and clients must come from the same
@@ -242,6 +245,8 @@ def package(built, version, name, out, hybrid):
     shutil.copytree(os.path.join(bindings, "purebasic"), os.path.join(out, "purebasic"))
     os.makedirs(os.path.join(out, "python"))
     shutil.copy2(os.path.join(bindings, "python", "bakashrot.py"), os.path.join(out, "python"))
+    os.makedirs(os.path.join(out, "csharp"))
+    shutil.copy2(os.path.join(bindings, "csharp", "NibblePoker.BakaShrot.Client", "BakaShrot.cs"), os.path.join(out, "csharp"))
     shutil.copytree(os.path.join(HERE, "docs"), os.path.join(out, "docs"))
     shutil.copy2(os.path.join(HERE, "crates", "bakashrot-config", "example.toml"),
                  os.path.join(out, "server.example.toml"))
