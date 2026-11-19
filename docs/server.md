@@ -7,7 +7,7 @@ the wire: `protocol.md`.
 
 **Status:** steps 5, 6, 9, 10, 11 and 12: connecting, pushes and their
 attachments, messages, attachments, names, queries, retention,
-replication, stopping cleanly. Every request of protocol 7 is answered.
+replication, stopping cleanly. Every request of protocol 8 is answered.
 
 ## Running
 
@@ -77,7 +77,7 @@ uid 10001.
 |---|---|---|
 | Connections | tokio, a task each | TLS (`tokio-rustls`, `bakashrot-pki`'s settings), the versions, the identity, then requests one at a time |
 | Writes | one writer thread | a queue of every write (pushes, uploads and their parts, replicated messages and parts, retention's deletes); the thread writes whatever is queued in one transaction (group commit, 1000 at most): the busier, the bigger the groups |
-| Reads, queries | tokio's blocking threads | a pool of read connections and one of query connections (`query_only`), reused |
+| Reads, queries | tokio's blocking threads | a pool of read connections and one of query connections (the file opened read-only, `query_only`), reused |
 | WAL checkpoints | one thread, every second | its own connection, off the writer's way (`storage.md`) |
 | The CRL file | a task, every 5 s | reloaded when its time or size changes; one that isn't the CA's is refused, the previous one stays; no file: nothing revoked, warned |
 | Retention | a task, at start then every `retention_interval` (1 min) | below |
@@ -213,6 +213,15 @@ the same ids with different messages, undetected.
   replicated), those the roles may push to or read (every one with
   `list_topics` or `query`); nodes are those with messages in the
   topics the roles may read (every one with `list_nodes` or `query`). `truncated` past 65,536.
+  The filters (`topics`, `nodes`: a name or a pattern each) keep the
+  topics or nodes of the topic and node pairs they match, out of
+  `reader.heads()`: the topics a node pushed to, the nodes that pushed to
+  a topic (a pair counts once it had messages, retention's deletions
+  included). A pair's topic must be one the roles may see when the
+  answer is topics or `topics` filters it; its node, when the answer is
+  nodes or `nodes` filters it (`connection.rs`, `list_names`). So a
+  node filter doesn't tell a client which nodes pushed to a topic it may
+  only push to.
 - **`Query`:** the roles must allow it (`NotAllowed`); read-only SQL,
   refused with SQLite's message (`QueryFailed`, with a hint to add
   `is_json = 1` on "malformed JSON"), over 10,000 rows or 16 MB
@@ -226,8 +235,8 @@ the same ids with different messages, undetected.
 
 `Client::connect(address, settings)` (`host:port`, the CA's certificate,
 the client's certificate and key, the CRL if any), then `push(topic,
-data)`, `get_messages(topic, node, after, limit)`, `list_names(kind)`,
-`query(sql)`. Blocking, no runtime. The DLL and the bindings over it:
+data)`, `get_messages(topic, node, after, limit)`, `list_names(kind,
+topics, nodes)`, `query(sql)`. Blocking, no runtime. The DLL and the bindings over it:
 `client.md`.
 
 Attachments: `push_with_attachment(topic, data, source)`, the source any
@@ -332,7 +341,7 @@ each:
   isn't one line of JSON;
 - big messages: five of 600 KB and one of the largest size, one per answer, read back whole; one byte
   over refused; a query result over 16 MB refused;
-- names: topics by role, nodes;
+- names: topics by role, nodes, filtered by names and patterns;
 - attachments: 100 KB, 5 MB + 123 bytes, exactly 2 MB, 1 byte, 1 MB, read back and saved; the
   messages saying theirs; none, or no such message, refused leaving no
   file; another reader, one not allowed; over the server's limit, 0 for

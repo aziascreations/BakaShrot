@@ -164,19 +164,23 @@ accept_nodes = ["garage"]
     assert!(both.can_read("Logs"));
     assert!(!both.can_read("sensors.garage"));
     assert!(!both.can_query());
-    assert!(!both.lists_every_topic() && !both.lists_every_node());
+    // Listing: the topics it may push to or read, the nodes of those it reads.
+    assert!(both.may_list_topic("sensors.garage") && both.may_list_topic("logs"));
+    assert!(!both.may_list_topic("other"));
+    assert!(both.may_list_nodes_of("logs") && !both.may_list_nodes_of("sensors.garage"));
     let admin = config.permissions(&["admin"]).unwrap();
     assert!(admin.can_query());
-    // A query reads them all anyway.
-    assert!(admin.lists_every_topic() && admin.lists_every_node());
+    // A query reads them all anyway; reading messages is still read_topics.
+    assert!(admin.may_list_topic("other") && admin.may_list_nodes_of("other"));
+    assert!(!admin.can_read("logs"));
     let listing = Config::parse(&with(
         "[roles.a]\nlist_topics = true\n[roles.b]\nlist_nodes = true\n",
     ))
     .unwrap();
     let a = listing.permissions(&["a"]).unwrap();
-    assert!(a.lists_every_topic() && !a.lists_every_node() && !a.can_query());
+    assert!(a.may_list_topic("other") && !a.may_list_nodes_of("other") && !a.can_query());
     let b = listing.permissions(&["b", "a"]).unwrap();
-    assert!(b.lists_every_topic() && b.lists_every_node());
+    assert!(b.may_list_topic("other") && b.may_list_nodes_of("other"));
 
     // Replication: each role's topics with that role's nodes, not mixed.
     let peer = config.permissions(&["peer", "backup"]).unwrap();
@@ -337,6 +341,10 @@ fn refusals() {
         (
             &with("[roles.r]\naccept_nodes = [\"x\", \"X\"]\n"),
             "'X' is given twice",
+        ),
+        (
+            &with("[roles.r]\nlist_topics = 1\n"),
+            "invalid type: integer",
         ),
         (&with("[roles.r]\nquery = 1\n"), "invalid type: integer"),
         (&with("[roles.site.reader]\n"), "unknown field `reader`"),

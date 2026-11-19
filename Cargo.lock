@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "bakashrot-capi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bakashrot-client",
  "bakashrot-config",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "bakashrot-client"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aws-lc-rs",
  "bakashrot-pki",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "bakashrot-config"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bakashrot-proto",
  "indexmap",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "bakashrot-pki"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bakashrot-proto",
  "rcgen",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "bakashrot-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "rmp-serde",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "bakashrot-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aws-lc-rs",
  "bakashrot-client",
@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "bakashrot-storage"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bakashrot-config",
  "bakashrot-proto",
@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "bakashrot-tools"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bakashrot-client",
  "bakashrot-config",

@@ -1,4 +1,4 @@
-//! Every packet of protocol 7.
+//! Every packet of protocol 8.
 //!
 //! A packet is a MessagePack array of two: its type, then its fields as an
 //! array, `[type, [field, field, ...]]`. Structs inside are arrays of their
@@ -296,6 +296,15 @@ pub(crate) mod rules {
     /// A topic or node name.
     pub fn name(value: &str, field: &'static str) -> Result<(), DecodeError> {
         require(names::is_valid_name(value), field, "must be a name")
+    }
+
+    /// A topic or node name, or a pattern.
+    pub fn name_or_pattern(value: &str, field: &'static str) -> Result<(), DecodeError> {
+        require(
+            names::is_valid_name_or_pattern(value),
+            field,
+            "must be a name or a pattern",
+        )
     }
 
     /// A message id: 1 and up.

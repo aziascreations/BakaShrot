@@ -133,9 +133,11 @@ afterwards, `purge_attachments(max_parts)` a batch at a time.
 
 ## The query surface
 
-Clients' `Query` runs on `Database::query_runner()`, read-only three ways:
-the connection is `query_only`, the statement must be one SQLite says only
-reads, and one statement only (more is refused, not ignored). PRAGMAs are
+Clients' `Query` runs on `Database::query_runner()`, read-only four ways:
+the file is opened read-only (`SQLITE_OPEN_READONLY`, 2026-11-19: the
+handle itself can't write), the connection is `query_only`, the statement
+must be one SQLite says only reads, and one statement only (more is
+refused, not ignored). PRAGMAs are
 refused as they're prepared ("not authorized", SQLite's authorizer), the
 `pragma_*` table functions too: some take effect at that point, and
 `PRAGMA query_only = 0`, though refused, turned `query_only` off for the

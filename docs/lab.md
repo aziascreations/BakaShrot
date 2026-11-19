@@ -163,7 +163,7 @@ certificate is refused, at its next connection or request:
 Failed to connect to server-2.lab:7000 (AuthRejected): the server refused this client's certificate (CertificateRevoked)
 ```
 
-**Python.** `pip install bakashrot-0.3.0-py3-none-<platform>.whl` (from the
+**Python.** `pip install bakashrot-0.4.0-py3-none-<platform>.whl` (from the
 release's `python/`), then, next to lab-py's `client.toml` (it may push and
 read: `sensor` and `dashboard`):
 

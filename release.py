@@ -214,7 +214,7 @@ csharp/BakaShrot.cs for C# (.NET Framework 2.0 and up, .NET Core and .NET;
 the library next to the app, which runs 64-bit).
 Or: pip install python/bakashrot-*.whl, the library inside.
 
-Compatibility: protocol 7. Servers and clients must come from the same
+Compatibility: protocol 8. Servers and clients must come from the same
 release: another version's connection is refused. Nothing from the old
 (PureBasic) BakaShrot is read: not its configs, keys or databases.
 """

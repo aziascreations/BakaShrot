@@ -152,6 +152,14 @@ with kitchen:
     check("list_topics()", topics.kind == "topic" and topics.names == ["logs", "secret"] and not topics.truncated, topics)
     nodes = kitchen.list_nodes()
     check("list_nodes()", nodes.kind == "node" and nodes.names == ["kitchen"], nodes)
+    topics = kitchen.list_topics(node="KITCHEN")
+    check("list_topics(node=...): the topics it pushed to", topics.names == ["logs", "secret"], topics)
+    nodes = kitchen.list_nodes(topic="s*")
+    check("list_nodes(topic=pattern): the nodes that pushed to those", nodes.names == ["kitchen"], nodes)
+    check("list_topics(node=...) of a node without messages: none", kitchen.list_topics(node="nobody").names == [])
+    ok, detail = raises(lambda: kitchen.list_nodes(topic="a b"), BakaShrotError, "isn't a topic name or pattern",
+                        ErrorCode.INVALID_ARGUMENT)
+    check("list_nodes(topic=...) neither a name nor a pattern: INVALID_ARGUMENT", ok, detail)
 
     # --- follow() ------------------------------------------------------------
     followed = []

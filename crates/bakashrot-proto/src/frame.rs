@@ -169,11 +169,11 @@ mod tests {
     fn versions() {
         let mut stream = Vec::new();
         write_version(&mut stream).unwrap();
-        assert_eq!(stream, [7, 0, 0, 0]);
+        assert_eq!(stream, [8, 0, 0, 0]);
         let bytes = read_version(&mut &stream[..]).unwrap();
         assert_eq!(check_version(bytes), Ok(()));
-        assert_eq!(check_version([6, 0, 0, 0]), Err(6));
-        assert_eq!(check_version([8, 0, 0, 0]), Err(8));
+        assert_eq!(check_version([7, 0, 0, 0]), Err(7));
+        assert_eq!(check_version([9, 0, 0, 0]), Err(9));
         assert!(read_version(&mut &[7u8, 0][..]).is_err());
     }
 

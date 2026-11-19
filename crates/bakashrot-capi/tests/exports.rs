@@ -242,23 +242,45 @@ fn exports() {
 
         // Names, queries.
         // Topics: those with messages (nothing in `secret` yet).
-        assert_eq!(BakaShrot_ListTopics(client), 1);
+        let null = std::ptr::null();
+        assert_eq!(BakaShrot_ListNamesW(client, 1, null, null), 1);
         assert_eq!(
-            get_w(client, BakaShrot_GetNamesListW),
+            get_w(client, BakaShrot_GetNamesListAsJsonW),
             r#"{"kind":"topic","names":["logs"],"truncated":false}"#
         );
-        assert_eq!(BakaShrot_ListNodes(client), 1);
+        assert_eq!(BakaShrot_ListNamesW(client, 2, null, null), 1);
+        // Filtered: the topics a node pushed to, the nodes of a topic.
+        assert_eq!(
+            BakaShrot_ListNamesW(client, 1, null, w("KITCHEN").as_ptr()),
+            1
+        );
+        assert_eq!(
+            BakaShrot_ListNamesA(client, 2, a("l*").as_ptr(), null.cast()),
+            1
+        );
+        assert_eq!(
+            get_w(client, BakaShrot_GetNamesListAsJsonW),
+            r#"{"kind":"node","names":["kitchen"],"truncated":false}"#
+        );
+        assert_eq!(
+            BakaShrot_ListNamesW(client, 1, null, w("nobody").as_ptr()),
+            0
+        );
+        assert_eq!(BakaShrot_ListNamesW(client, 3, null, null), -1);
+        assert_eq!(error(client).0, code(ErrorCode::InvalidArgument));
+        assert_eq!(BakaShrot_ListNamesW(client, 1, w("a b").as_ptr(), null), -1);
+        assert_eq!(error(client).0, code(ErrorCode::InvalidArgument));
         assert_eq!(
             BakaShrot_QueryW(client, w("SELECT COUNT(*) AS n FROM data").as_ptr()),
             1
         );
         assert_eq!(
-            get_w(client, BakaShrot_GetQueryResultW),
+            get_w(client, BakaShrot_GetQueryResultAsJsonW),
             r#"{"columns":["n"],"rows":[["3"]]}"#
         );
         assert_eq!(BakaShrot_QueryW(client, w("SELECT nope").as_ptr()), 0);
         assert_eq!(error(client).0, code(ErrorCode::QueryFailed));
-        assert_eq!(get_w(client, BakaShrot_GetQueryResultW), "");
+        assert_eq!(get_w(client, BakaShrot_GetQueryResultAsJsonW), "");
 
         // Attachments: from a file or memory, saved or loaded back.
         let (logs, kitchen) = (w("logs"), w("kitchen"));
@@ -563,4 +585,121 @@ fn clients() {
     let (reads, failed) = reader.join().unwrap();
     assert!(reads >= 1);
     assert_eq!(failed, code(ErrorCode::InvalidArgument));
+}
+
+/// An enumeration's string at an index: asks for the size, then copies.
+fn get_at(
+    enumeration: i64,
+    index: i32,
+    getter: unsafe extern "C" fn(i64, i32, *mut u16, isize) -> isize,
+) -> String {
+    let size = unsafe { getter(enumeration, index, std::ptr::null_mut(), 0) };
+    if size == 0 {
+        return String::new();
+    }
+    let mut buffer = vec![0u16; size as usize / 2];
+    unsafe { getter(enumeration, index, buffer.as_mut_ptr(), size) };
+    String::from_utf16(&buffer[..buffer.len() - 1]).unwrap()
+}
+
+/// Every name of an enumeration, `NextName` until it says no more.
+fn names_of(enumeration: i64) -> Vec<String> {
+    let mut names = Vec::new();
+    while BakaShrot_NextName(enumeration) == 1 {
+        names.push(get_w(enumeration, BakaShrot_GetEnumNameW));
+    }
+    names
+}
+
+#[test]
+fn enumerations() {
+    let running = common::Running::start("enumerations");
+    running.issue("kitchen", &["home"]);
+    let client = connected(&running, "kitchen");
+    let null = std::ptr::null();
+    unsafe {
+        for (topic, data) in [("logs", "{}"), ("secret", "{}"), ("logs", "{}")] {
+            assert!(BakaShrot_PushMessageToW(client, w(topic).as_ptr(), w(data).as_ptr()) > 0);
+        }
+
+        // Names: before the first at first, then each, then no more.
+        let topics = BakaShrot_EnumerateNamesW(client, 1, null, w("kitchen").as_ptr());
+        assert!(topics > client, "numbered with the clients");
+        assert_eq!(BakaShrot_GetNameCount(topics), 2);
+        assert_eq!(BakaShrot_IsNamesListTruncated(topics), 0);
+        assert_eq!(
+            get_w(topics, BakaShrot_GetEnumNameW),
+            "",
+            "before the first"
+        );
+        assert_eq!(names_of(topics), ["logs", "secret"]);
+        assert_eq!(BakaShrot_NextName(topics), 0, "still none");
+        assert_eq!(get_w(topics, BakaShrot_GetEnumNameW), "");
+        // Several at once, each its own; the client's calls don't change them.
+        let nodes = BakaShrot_EnumerateNamesA(client, 2, a("s*").as_ptr(), null.cast());
+        let none = BakaShrot_EnumerateNamesW(client, 2, w("nothing").as_ptr(), null);
+        assert_eq!(BakaShrot_ListNamesW(client, 1, null, null), 2);
+        assert_eq!(names_of(nodes), ["kitchen"]);
+        assert_eq!(BakaShrot_GetNameCount(none), 0);
+        assert_eq!(BakaShrot_NextName(none), 0);
+        // A failure: 0, the client's error.
+        assert_eq!(BakaShrot_EnumerateNamesW(client, 3, null, null), 0);
+        assert_eq!(error(client).0, code(ErrorCode::InvalidArgument));
+
+        // Queries: columns, rows, nulls.
+        let sql = w(
+            "SELECT topic, CASE WHEN message_id = 1 THEN NULL ELSE message_id END AS id \
+             FROM messages ORDER BY topic, message_id",
+        );
+        let query = BakaShrot_EnumerateQueryW(client, sql.as_ptr());
+        assert!(query > 0, "{:?}", error(client));
+        assert_eq!(BakaShrot_GetQueryColumnCount(query), 2);
+        assert_eq!(get_at(query, 0, BakaShrot_GetQueryColumnNameW), "topic");
+        assert_eq!(get_at(query, 1, BakaShrot_GetQueryColumnNameW), "id");
+        assert_eq!(get_at(query, 2, BakaShrot_GetQueryColumnNameW), "");
+        assert_eq!(BakaShrot_IsQueryValueNull(query, 0), -1, "no row yet");
+        let mut rows = Vec::new();
+        while BakaShrot_NextQueryRow(query) == 1 {
+            let id = match BakaShrot_IsQueryValueNull(query, 1) {
+                1 => None,
+                0 => Some(get_at(query, 1, BakaShrot_GetQueryValueW)),
+                other => panic!("{other}"),
+            };
+            rows.push((get_at(query, 0, BakaShrot_GetQueryValueW), id));
+        }
+        let row = |topic: &str, id: Option<&str>| (topic.to_owned(), id.map(str::to_owned));
+        assert_eq!(
+            rows,
+            [
+                row("logs", None),
+                row("logs", Some("2")),
+                row("secret", None)
+            ]
+        );
+        assert_eq!(BakaShrot_IsQueryValueNull(query, 0), -1, "past the last");
+        assert_eq!(
+            BakaShrot_EnumerateQueryW(client, w("SELECT nope").as_ptr()),
+            0
+        );
+        assert_eq!(error(client).0, code(ErrorCode::QueryFailed));
+
+        // Of the other kind, a client's, made up: refused, never a crash.
+        assert_eq!(BakaShrot_NextName(query), -1);
+        assert_eq!(BakaShrot_NextQueryRow(nodes), -1);
+        assert_eq!(BakaShrot_GetQueryColumnCount(nodes), -1);
+        assert_eq!(BakaShrot_NextName(client), -1);
+        assert_eq!(BakaShrot_NextName(99_999), -1);
+        assert_eq!(get_w(99_999, BakaShrot_GetEnumNameW), "");
+        assert_eq!(BakaShrot_CloseEnum(client), 0, "a client isn't one");
+        assert_eq!(BakaShrot_FreeClient(topics), 0, "nor the other way");
+
+        // Closed: refused after. Its client freed: all of its closed.
+        assert_eq!(BakaShrot_CloseEnum(topics), 1);
+        assert_eq!(BakaShrot_CloseEnum(topics), 0);
+        assert_eq!(BakaShrot_GetNameCount(topics), -1);
+        assert_eq!(BakaShrot_FreeClient(client), 1);
+        for enumeration in [nodes, none, query] {
+            assert_eq!(BakaShrot_CloseEnum(enumeration), 0, "{enumeration}");
+        }
+    }
 }

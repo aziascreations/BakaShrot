@@ -49,7 +49,7 @@ that browses a server: reading a topic is still `read_topics`. `query`
 gives both, it reads everything anyway.
 
 No `AllowRead` / `AllowWrite`: a list that's empty allows nothing. No
-default topic: a push always names its topic (protocol 7 has none).
+default topic: a push always names its topic (protocol 8 has none).
 
 **The roles are the only lists of topics** (decided 2026-11-16): no
 `[server] topics`, no `[replication] replicated_topics`, both refused as

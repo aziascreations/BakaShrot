@@ -58,7 +58,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional, Union
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "Client", "Message", "MessagesPage", "NamesList",
@@ -264,11 +264,10 @@ class _Dll:
             "BakaShrot_GetMessageTopicA": (I, [H, S, I]),
             "BakaShrot_GetMessageNodeA": (I, [H, S, I]),
             "BakaShrot_GetMessageDataA": (I, [H, S, I]),
-            "BakaShrot_ListTopics": (L, [H]),
-            "BakaShrot_ListNodes": (L, [H]),
-            "BakaShrot_GetNamesListA": (I, [H, S, I]),
+            "BakaShrot_ListNamesA": (L, [H, L, P, P]),
+            "BakaShrot_GetNamesListAsJsonA": (I, [H, S, I]),
             "BakaShrot_QueryA": (I, [H, P]),
-            "BakaShrot_GetQueryResultA": (I, [H, S, I]),
+            "BakaShrot_GetQueryResultAsJsonA": (I, [H, S, I]),
             "BakaShrot_PushMessageWithFileA": (Q, [H, P, P, P]),
             "BakaShrot_PushMessageWithDataA": (Q, [H, P, P, P, Q]),
             "BakaShrot_SaveAttachmentA": (Q, [H, P, P, Q, P]),
@@ -556,20 +555,25 @@ class Client:
             if not page.more:
                 time.sleep(interval)
 
-    def list_topics(self) -> NamesList:
-        """The topics with messages that the client may push to or read (every one with list_topics or query)."""
-        return self._list(self._dll.ListTopics, "List topics")
+    def list_topics(self, topic: Optional[str] = None, node: Optional[str] = None) -> NamesList:
+        """The topics with messages that the client may push to or read (every one with list_topics or query).
+        topic and node, each a name or a pattern ("sensors.*"), keep those of the topic/node pairs they
+        match: list_topics(node="kitchen") is the topics kitchen pushed to."""
+        return self._list(1, topic, node, "List topics")
 
-    def list_nodes(self) -> NamesList:
-        """The nodes with messages in the topics the client may read (every one with list_nodes or query)."""
-        return self._list(self._dll.ListNodes, "List nodes")
+    def list_nodes(self, topic: Optional[str] = None, node: Optional[str] = None) -> NamesList:
+        """The nodes with messages in the topics the client may read (every one with list_nodes or query).
+        topic and node as list_topics() takes them: list_nodes(topic="logs") is the nodes that pushed to logs."""
+        return self._list(2, topic, node, "List nodes")
 
-    def _list(self, function, what: str) -> NamesList:
+    def _list(self, kind: int, topic: Optional[str], node: Optional[str], what: str) -> NamesList:
+        topic = None if topic is None else _name(topic)
+        node = None if node is None else _name(node)
         with self._lock:
             self._check_connected()
-            if function(self._handle) < 0:
+            if self._dll.ListNamesA(self._handle, kind, topic, node) < 0:
                 raise self._failed(what)
-            parsed = json.loads(self._dll.string(self._dll.GetNamesListA, self._handle))
+            parsed = json.loads(self._dll.string(self._dll.GetNamesListAsJsonA, self._handle))
         return NamesList(parsed["kind"], parsed["names"], bool(parsed["truncated"]))
 
     def query_raw(self, sql: str) -> str:
@@ -583,7 +587,7 @@ class Client:
             self._check_connected()
             if not self._dll.QueryA(self._handle, sql.encode("utf-8")):
                 raise self._failed("Query")
-            return self._dll.string(self._dll.GetQueryResultA, self._handle)
+            return self._dll.string(self._dll.GetQueryResultAsJsonA, self._handle)
 
     def query(self, sql: str) -> list:
         """query_raw(), as a list of dicts, one per row, by column name."""

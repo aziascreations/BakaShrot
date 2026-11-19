@@ -9,6 +9,11 @@
 //!   first argument of every other export. Each has its own connection,
 //!   answers and errors; different clients can be used from different
 //!   threads at once.
+//! - **Enumerations** (`BakaShrot_EnumerateNames()`, `EnumerateQuery()`):
+//!   an answer kept whole, read with `Next...()` (before the first item
+//!   at first) and its getters, closed with `BakaShrot_CloseEnum()` or
+//!   with their client by `BakaShrot_FreeClient()`. Their handles are
+//!   numbered with the clients', so one is never the other's.
 //! - **`A` and `W` exports:** strings in and out as UTF-8 (`char*`) or
 //!   UTF-16 (`uint16_t*`, `wchar_t*` on Windows), null-terminated.
 //! - **Strings out** are copied into the caller's buffer of `BufferSize`
@@ -27,11 +32,13 @@
 
 #![allow(unsafe_code, non_snake_case, clippy::missing_safety_doc)]
 
+mod enumerations;
+pub use enumerations::*;
 mod text;
 
 use bakashrot_client::{Client, Error, Settings};
 use bakashrot_proto::ErrorCode;
-use bakashrot_proto::packets::{MessageEntry, NameKind};
+use bakashrot_proto::packets::{MessageEntry, NameKind, NamesList};
 use std::collections::BTreeMap;
 use std::ffi::{c_char, c_void};
 use std::fs::File;
@@ -43,9 +50,28 @@ use text::{Text, Utf8, Utf16};
 
 type Result<T> = std::result::Result<T, Error>;
 
-/// The next handle, and the clients by handle. A call holds its client's
+/// The clients and enumerations by handle. A call holds its client's
 /// `Arc`, so a client freed during a call goes when the call ends.
-static CLIENTS: Mutex<(i64, BTreeMap<i64, Shared>)> = Mutex::new((1, BTreeMap::new()));
+static HANDLES: Mutex<Handles> = Mutex::new(Handles {
+    next: 1,
+    clients: BTreeMap::new(),
+    enumerations: BTreeMap::new(),
+});
+
+struct Handles {
+    /// The next handle, of a client or an enumeration: never reused.
+    next: i64,
+    clients: BTreeMap<i64, Shared>,
+    /// Freed with their client. Only ever copied from, under this lock.
+    enumerations: BTreeMap<i64, enumerations::Enumeration>,
+}
+
+impl Handles {
+    fn take(&mut self) -> i64 {
+        self.next += 1;
+        self.next - 1
+    }
+}
 
 type Shared = Arc<Mutex<State>>;
 
@@ -66,7 +92,7 @@ struct State {
     messages: Vec<MessageEntry>,
     selected: usize,
     more: bool,
-    /// The last `ListTopics` / `ListNodes`, as JSON.
+    /// The last `ListNames`, as JSON.
     names: String,
     /// The last `Query`'s result.
     query: String,
@@ -135,7 +161,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn find(client: i64) -> Option<Shared> {
-    lock(&CLIENTS).1.get(&client).cloned()
+    lock(&HANDLES).clients.get(&client).cloned()
 }
 
 /// Runs a call that can fail on a client: its last error reset, then set
@@ -186,8 +212,22 @@ fn invalid(why: impl Into<String>) -> Error {
     Error::new(ErrorCode::InvalidArgument, why)
 }
 
-fn required(value: Option<String>, what: &str) -> Result<String> {
-    value.ok_or_else(|| invalid(format!("no {what} (a null pointer)")))
+/// A string argument that must be there: `InvalidArgument` for a null
+/// pointer.
+unsafe fn required<T: Text>(pointer: *const T::Unit, what: &str) -> Result<String> {
+    unsafe { text::read::<T>(pointer, what)? }
+        .ok_or_else(|| invalid(format!("no {what} (a null pointer)")))
+}
+
+/// Settings change only before connecting.
+fn not_connected(state: &State) -> Result<()> {
+    match state.client {
+        Some(_) => Err(Error::new(
+            ErrorCode::AlreadyConnected,
+            "already connected: disconnect first",
+        )),
+        None => Ok(()),
+    }
 }
 
 fn bool_result(ok: bool) -> isize {
@@ -200,19 +240,27 @@ fn bool_result(ok: bool) -> isize {
 #[unsafe(no_mangle)]
 pub extern "C" fn BakaShrot_CreateClient() -> i64 {
     let made = catch_unwind(|| {
-        let (next, clients) = &mut *lock(&CLIENTS);
-        clients.insert(*next, Arc::new(Mutex::new(State::new())));
-        *next += 1;
-        *next - 1
+        let handles = &mut *lock(&HANDLES);
+        let client = handles.take();
+        handles
+            .clients
+            .insert(client, Arc::new(Mutex::new(State::new())));
+        client
     });
     made.unwrap_or(0)
 }
 
 /// Frees a client and closes its connection (once a call on it in another
-/// thread ends): 1, or 0 if it wasn't one.
+/// thread ends), its enumerations closed too: 1, or 0 if it wasn't one.
 #[unsafe(no_mangle)]
 pub extern "C" fn BakaShrot_FreeClient(client: i64) -> isize {
-    let freed = catch_unwind(|| lock(&CLIENTS).1.remove(&client).is_some());
+    let freed = catch_unwind(|| {
+        let handles = &mut *lock(&HANDLES);
+        handles
+            .enumerations
+            .retain(|_, enumeration| enumeration.client != client);
+        handles.clients.remove(&client).is_some()
+    });
     bool_result(freed.unwrap_or(false))
 }
 
@@ -289,12 +337,7 @@ unsafe fn set<T: Text>(
     slot: fn(&mut State) -> &mut Option<String>,
 ) -> isize {
     call(client, 0, |state| {
-        if state.client.is_some() {
-            return Err(Error::new(
-                ErrorCode::AlreadyConnected,
-                "already connected: disconnect first",
-            ));
-        }
+        not_connected(state)?;
         let value = unsafe { text::read::<T>(value, what)? };
         *slot(state) = pem_or_file(value, what, optional)?;
         Ok(1)
@@ -391,13 +434,8 @@ pub unsafe extern "C" fn BakaShrot_SetCrlW(client: i64, crl: *const u16) -> isiz
 
 unsafe fn connect<T: Text>(client: i64, host: *const T::Unit, port: i32) -> isize {
     call(client, 0, |state| {
-        if state.client.is_some() {
-            return Err(Error::new(
-                ErrorCode::AlreadyConnected,
-                "already connected: disconnect first",
-            ));
-        }
-        let host = required(unsafe { text::read::<T>(host, "host")? }, "host")?;
+        not_connected(state)?;
+        let host = unsafe { required::<T>(host, "host")? };
         let port = u16::try_from(port)
             .ok()
             .filter(|port| *port != 0)
@@ -466,6 +504,10 @@ pub extern "C" fn BakaShrot_Disconnect(client: i64) -> isize {
     })
 }
 
+fn node(state: &State) -> &str {
+    state.client.as_ref().map_or("", Client::node)
+}
+
 /// The node this client is, as the server said when connecting: its
 /// certificate's name. Empty when not connected.
 #[unsafe(no_mangle)]
@@ -474,21 +516,13 @@ pub unsafe extern "C" fn BakaShrot_GetNodeA(
     buffer: *mut c_char,
     size: isize,
 ) -> isize {
-    unsafe {
-        get_text::<Utf8>(client, buffer.cast(), size, |state| {
-            state.client.as_ref().map_or("", Client::node)
-        })
-    }
+    unsafe { get_text::<Utf8>(client, buffer.cast(), size, node) }
 }
 
 /// The same as `BakaShrot_GetNodeA`, in UTF-16.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_GetNodeW(client: i64, buffer: *mut u16, size: isize) -> isize {
-    unsafe {
-        get_text::<Utf16>(client, buffer, size, |state| {
-            state.client.as_ref().map_or("", Client::node)
-        })
-    }
+    unsafe { get_text::<Utf16>(client, buffer, size, node) }
 }
 
 // --- Pushing -----------------------------------------------------------------
@@ -499,7 +533,7 @@ unsafe fn topic_and_data<T: Text>(
     topic: *const T::Unit,
     data: *const T::Unit,
 ) -> Result<(String, String)> {
-    let topic = required(unsafe { text::read::<T>(topic, "topic")? }, "topic")?;
+    let topic = unsafe { required::<T>(topic, "topic")? };
     let data = unsafe { text::read::<T>(data, "the message")? }.unwrap_or_default();
     Ok((topic, data))
 }
@@ -541,8 +575,8 @@ unsafe fn topic_and_node<T: Text>(
     topic: *const T::Unit,
     node: *const T::Unit,
 ) -> Result<(String, String)> {
-    let topic = required(unsafe { text::read::<T>(topic, "topic")? }, "topic")?;
-    let node = required(unsafe { text::read::<T>(node, "node")? }, "node")?;
+    let topic = unsafe { required::<T>(topic, "topic")? };
+    let node = unsafe { required::<T>(node, "node")? };
     Ok((topic, node))
 }
 
@@ -772,11 +806,35 @@ pub unsafe extern "C" fn BakaShrot_GetMessageNodeW(
 
 // --- Names -------------------------------------------------------------------
 
-fn list(client: i64, kind: NameKind) -> i32 {
+/// Asks for a list of names: `kind` 1 topics, 2 nodes, as on the wire;
+/// the filters null for any.
+unsafe fn fetch_names<T: Text>(
+    state: &mut State,
+    kind: i32,
+    topics: *const T::Unit,
+    nodes: *const T::Unit,
+) -> Result<NamesList> {
+    let kind = u8::try_from(kind)
+        .ok()
+        .and_then(|kind| NameKind::try_from(kind).ok())
+        .ok_or_else(|| invalid(format!("a kind of {kind}: 1 (topics) or 2 (nodes)")))?;
+    let topics = unsafe { text::read::<T>(topics, "topics")? };
+    let nodes = unsafe { text::read::<T>(nodes, "nodes")? };
+    state
+        .client()?
+        .list_names(kind, topics.as_deref(), nodes.as_deref())
+}
+
+unsafe fn list<T: Text>(
+    client: i64,
+    kind: i32,
+    topics: *const T::Unit,
+    nodes: *const T::Unit,
+) -> i32 {
     call(client, -1, |state| {
         state.names.clear();
-        let list = state.client()?.list_names(kind)?;
-        let kind = match kind {
+        let list = unsafe { fetch_names::<T>(state, kind, topics, nodes)? };
+        let kind = match list.kind {
             NameKind::Topic => "topic",
             NameKind::Node => "node",
         };
@@ -791,27 +849,42 @@ fn list(client: i64, kind: NameKind) -> i32 {
     })
 }
 
-/// Lists the topics with messages that this client may push to or read
-/// (every one if its roles have `list_topics` or `query`): how many, -1 on
-/// failure. Then `BakaShrot_GetNamesList()`.
+/// Lists topics (`kind` 1) or nodes (`kind` 2): the topics with messages
+/// that this client may push to or read (every one if its roles have
+/// `list_topics` or `query`), the nodes with messages in the topics it may
+/// read (every one with `list_nodes` or `query`). Only those of the topic
+/// and node pairs that `topics` and `nodes` match: each a name or a
+/// pattern (`sensors.*`), null for any. Every topic: 1, null, null; the
+/// topics a node pushed to: 1, null, the node; the nodes that pushed to a
+/// topic: 2, the topic, null. How many, -1 on failure. Then
+/// `BakaShrot_GetNamesListAsJson()`, or `BakaShrot_EnumerateNames()`
+/// instead.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_ListTopics(client: i64) -> i32 {
-    list(client, NameKind::Topic)
+pub unsafe extern "C" fn BakaShrot_ListNamesA(
+    client: i64,
+    kind: i32,
+    topics: *const c_char,
+    nodes: *const c_char,
+) -> i32 {
+    unsafe { list::<Utf8>(client, kind, topics.cast(), nodes.cast()) }
 }
 
-/// Lists the nodes with messages in the topics this client may read (every
-/// one if its roles have `list_nodes` or `query`): how many, -1 on failure. Then
-/// `BakaShrot_GetNamesList()`.
+/// The same as `BakaShrot_ListNamesA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub extern "C" fn BakaShrot_ListNodes(client: i64) -> i32 {
-    list(client, NameKind::Node)
+pub unsafe extern "C" fn BakaShrot_ListNamesW(
+    client: i64,
+    kind: i32,
+    topics: *const u16,
+    nodes: *const u16,
+) -> i32 {
+    unsafe { list::<Utf16>(client, kind, topics, nodes) }
 }
 
 /// The last list, as JSON:
 /// `{"kind":"topic","truncated":false,"names":["logs",...]}`, `truncated`
 /// if some didn't fit.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetNamesListA(
+pub unsafe extern "C" fn BakaShrot_GetNamesListAsJsonA(
     client: i64,
     buffer: *mut c_char,
     size: isize,
@@ -819,9 +892,9 @@ pub unsafe extern "C" fn BakaShrot_GetNamesListA(
     unsafe { get_text::<Utf8>(client, buffer.cast(), size, |state| &state.names) }
 }
 
-/// The same as `BakaShrot_GetNamesListA`, in UTF-16.
+/// The same as `BakaShrot_GetNamesListAsJsonA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetNamesListW(
+pub unsafe extern "C" fn BakaShrot_GetNamesListAsJsonW(
     client: i64,
     buffer: *mut u16,
     size: isize,
@@ -831,17 +904,23 @@ pub unsafe extern "C" fn BakaShrot_GetNamesListW(
 
 // --- Queries -----------------------------------------------------------------
 
+/// Runs a query: the server's JSON.
+unsafe fn fetch_query<T: Text>(state: &mut State, sql: *const T::Unit) -> Result<String> {
+    let sql = unsafe { required::<T>(sql, "query")? };
+    state.client()?.query(&sql)
+}
+
 unsafe fn query<T: Text>(client: i64, sql: *const T::Unit) -> isize {
     call(client, 0, |state| {
         state.query.clear();
-        let sql = required(unsafe { text::read::<T>(sql, "query")? }, "query")?;
-        state.query = state.client()?.query(&sql)?;
+        state.query = unsafe { fetch_query::<T>(state, sql)? };
         Ok(1)
     })
 }
 
 /// Runs read-only SQL on the server (one SELECT or WITH), if this client
-/// may query. Then `BakaShrot_GetQueryResult()`.
+/// may query. Then `BakaShrot_GetQueryResultAsJson()`, or
+/// `BakaShrot_EnumerateQuery()` instead.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn BakaShrot_QueryA(client: i64, sql: *const c_char) -> isize {
     unsafe { query::<Utf8>(client, sql.cast()) }
@@ -856,7 +935,7 @@ pub unsafe extern "C" fn BakaShrot_QueryW(client: i64, sql: *const u16) -> isize
 /// The last query's result, as JSON:
 /// `{"columns":[...],"rows":[[...],...]}`, every value a string or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetQueryResultA(
+pub unsafe extern "C" fn BakaShrot_GetQueryResultAsJsonA(
     client: i64,
     buffer: *mut c_char,
     size: isize,
@@ -864,9 +943,9 @@ pub unsafe extern "C" fn BakaShrot_GetQueryResultA(
     unsafe { get_text::<Utf8>(client, buffer.cast(), size, |state| &state.query) }
 }
 
-/// The same as `BakaShrot_GetQueryResultA`, in UTF-16.
+/// The same as `BakaShrot_GetQueryResultAsJsonA`, in UTF-16.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BakaShrot_GetQueryResultW(
+pub unsafe extern "C" fn BakaShrot_GetQueryResultAsJsonW(
     client: i64,
     buffer: *mut u16,
     size: isize,
@@ -889,7 +968,7 @@ unsafe fn push_with_file<T: Text>(
 ) -> i64 {
     call(client, -1, |state| {
         let (topic, data) = unsafe { topic_and_data::<T>(topic, data)? };
-        let path = required(unsafe { text::read::<T>(path, "the file")? }, "file")?;
+        let path = unsafe { required::<T>(path, "file")? };
         let mut file = File::open(&path)
             .map_err(|error| Error::new(ErrorCode::FileError, format!("{path}: {error}")))?;
         let id = state
@@ -983,7 +1062,7 @@ unsafe fn save<T: Text>(
 ) -> i64 {
     call(client, -1, |state| {
         let (topic, node) = unsafe { topic_and_node::<T>(topic, node)? };
-        let path = required(unsafe { text::read::<T>(path, "the file")? }, "file")?;
+        let path = unsafe { required::<T>(path, "file")? };
         let size =
             state
                 .client()?

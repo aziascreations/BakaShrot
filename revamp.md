@@ -157,6 +157,37 @@ Also decided (2026-11-13):
     both): the topics it may push to or read, the nodes of the topics
     it may read (every node until then). Names only, reading is still
     `read_topics`.
+  - **Filtered lists** (2026-11-19, protocol 8): `ListNames` takes
+    `topics` and `nodes`, a name or a pattern each (nil for any), and
+    answers the topics or nodes of the topic and node pairs they match:
+    the topics a node pushed to, the nodes that pushed to a topic. Out
+    of the pairs the database has (`reader.heads()`), so replicated
+    messages count, and so do pairs whose messages retention deleted:
+    no new storage query. The same permissions as the lists, applied to
+    what the answer reveals: a pair's topic must be one the roles may
+    see when the answer is topics or `topics` filters it, its node when
+    the answer is nodes or `nodes` filters it. Without filters, the
+    lists as they were. In the DLL one export, `BakaShrot_ListNames`
+    (`kind`, `topics`, `nodes`); `ListTopics` and `ListNodes` went with
+    the enumerations (`ListNames(1 or 2, null, null)`).
+  - **The DLL's lists without JSON** (2026-11-19): the JSON getters are
+    `GetNamesListAsJson` and `GetQueryResultAsJson`; beside them,
+    enumerations like Win32's `FindFirstFile` / `FindNextFile` /
+    `FindClose`: `EnumerateNames` / `EnumerateQuery` keep a whole answer,
+    `NextName` / `NextQueryRow` move to the next item (before the first
+    at first), getters read it, `CloseEnum` closes it. They don't outlive
+    their client (`FreeClient` closes them); their handles are numbered
+    with the clients'. The query result is parsed in the DLL, the
+    protocol unchanged. Python keeps the JSON; C# has both (`List...()`
+    / `Query()` the JSON, `Enumerate...()` an `IEnumerable` over the
+    enumerations, `QueryRow`s for a query).
+  - **Queries stay** (2026-11-19): removing them (the `query` permission,
+    the packets, the runner, every binding) was done and undone the same
+    day, the owner's second thoughts; a filtered "field equals value"
+    request instead was weighed and not wanted. A fifth guard against
+    writes, asked by the owner: the query connection opens the file
+    read-only (`SQLITE_OPEN_READONLY`), beside `query_only`, the
+    read-only statement check, one statement only and no PRAGMAs.
 - **Schema v9, not compatible with v8** (2026-11-13): old databases aren't
   opened, their data isn't carried over (the real-life tests start empty).
   `docs/storage.md`:
@@ -247,7 +278,8 @@ Also decided (2026-11-13):
   - **the Python wheel has the library in it**, for a simple install;
   - **version 0.2.0**; **0.3.0** on 2026-11-16 (the identity OID under
     NibblePoker's PEN, the roles as the only lists of topics,
-    `list_topics` / `list_nodes`).
+    `list_topics` / `list_nodes`); **0.4.0** on 2026-11-19 (protocol 8:
+    filtered lists; the DLL's enumerations; the C# binding).
 - **The PureBasic version removed** (2026-11-15): `OldSource/` deleted,
   kept in git history (up to `68966a8`). What of its notes and designs
   still holds went to `docs/known-issues.md`; the rest was already
@@ -374,6 +406,8 @@ by hand.
 | 12 | Operations | Signals and a clean stop, logs, release, wheel | Runs unattended, stops cleanly, the release's smoke test | Decided 2026-11-14 | Done 2026-11-14 |
 | 13 | Finish | One test runner (the Rust tests, decided 2026-11-15), end-to-end tests in CI, the bench, Docker | Push speed with 4 servers replicating (`docs/server.md`, "Measured") | | Done 2026-11-16 (`bench.ps1`) |
 | 14 | C# binding | `bindings/csharp`: `Client` over the `W` exports, C# 2 and .NET 2.0's library only (net35, netstandard2.0); the NuGet package `NibblePoker.BakaShrot.Client` with the four platforms' libraries, packed by CI after the releases (an artifact) | Its NUnit tests pass on net48 and net8.0 (by hand, not in `test.ps1`); the package loads the library on net8.0 and net48 | Asked by the owner 2026-11-18 (the name too) | Done 2026-11-18 |
+| 15 | Filtered lists | `ListNames`' `topics` and `nodes` filters (protocol 8): server, client, `BakaShrot_ListNames` (`A`/`W`), Python, C#, PureBasic, `bakashrot list --topics/--nodes` | `end_to_end.rs` `names` (patterns, case, permissions), `exports.rs`, `check_bakashrot.py`, the NUnit tests | Decided 2026-11-19 | Done 2026-11-19 |
+| 16 | The DLL's enumerations | `GetNamesListAsJson`, `GetQueryResultAsJson`; `EnumerateNames` / `EnumerateQuery`, `Next...`, their getters, `CloseEnum` (`enumerations.rs`); `ListTopics` / `ListNodes` dropped; PureBasic's example on them; C#'s `EnumerateTopics` / `EnumerateNodes` / `EnumerateQuery` (`IEnumerable`, asked at each `foreach`) | `exports.rs` `enumerations` (names, query rows and nulls, several at once, bad and closed handles, freed with the client); the NUnit `Enumerations` test | Decided 2026-11-19 | Done 2026-11-19 |
 
 Each step ends with its tests passing and its docs updated (the crate's
 docs, `docs/`, this file's status), then a commit when the owner

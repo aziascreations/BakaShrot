@@ -24,7 +24,7 @@ int64_t BakaShrot_CreateClient(void);
 
 /**
  * Frees a client and closes its connection (once a call on it in another
- * thread ends): 1, or 0 if it wasn't one.
+ * thread ends), its enumerations closed too: 1, or 0 if it wasn't one.
  */
 ptrdiff_t BakaShrot_FreeClient(int64_t client);
 
@@ -245,34 +245,43 @@ ptrdiff_t BakaShrot_GetMessageNodeA(int64_t client, char *buffer, ptrdiff_t size
 ptrdiff_t BakaShrot_GetMessageNodeW(int64_t client, uint16_t *buffer, ptrdiff_t size);
 
 /**
- * Lists the topics with messages that this client may push to or read
- * (every one if its roles have `list_topics` or `query`): how many, -1 on
- * failure. Then `BakaShrot_GetNamesList()`.
+ * Lists topics (`kind` 1) or nodes (`kind` 2): the topics with messages
+ * that this client may push to or read (every one if its roles have
+ * `list_topics` or `query`), the nodes with messages in the topics it may
+ * read (every one with `list_nodes` or `query`). Only those of the topic
+ * and node pairs that `topics` and `nodes` match: each a name or a
+ * pattern (`sensors.*`), null for any. Every topic: 1, null, null; the
+ * topics a node pushed to: 1, null, the node; the nodes that pushed to a
+ * topic: 2, the topic, null. How many, -1 on failure. Then
+ * `BakaShrot_GetNamesListAsJson()`, or `BakaShrot_EnumerateNames()`
+ * instead.
  */
-int32_t BakaShrot_ListTopics(int64_t client);
+int32_t BakaShrot_ListNamesA(int64_t client, int32_t kind, const char *topics, const char *nodes);
 
 /**
- * Lists the nodes with messages in the topics this client may read (every
- * one if its roles have `list_nodes` or `query`): how many, -1 on failure. Then
- * `BakaShrot_GetNamesList()`.
+ * The same as `BakaShrot_ListNamesA`, in UTF-16.
  */
-int32_t BakaShrot_ListNodes(int64_t client);
+int32_t BakaShrot_ListNamesW(int64_t client,
+                             int32_t kind,
+                             const uint16_t *topics,
+                             const uint16_t *nodes);
 
 /**
  * The last list, as JSON:
  * `{"kind":"topic","truncated":false,"names":["logs",...]}`, `truncated`
  * if some didn't fit.
  */
-ptrdiff_t BakaShrot_GetNamesListA(int64_t client, char *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetNamesListAsJsonA(int64_t client, char *buffer, ptrdiff_t size);
 
 /**
- * The same as `BakaShrot_GetNamesListA`, in UTF-16.
+ * The same as `BakaShrot_GetNamesListAsJsonA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_GetNamesListW(int64_t client, uint16_t *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetNamesListAsJsonW(int64_t client, uint16_t *buffer, ptrdiff_t size);
 
 /**
  * Runs read-only SQL on the server (one SELECT or WITH), if this client
- * may query. Then `BakaShrot_GetQueryResult()`.
+ * may query. Then `BakaShrot_GetQueryResultAsJson()`, or
+ * `BakaShrot_EnumerateQuery()` instead.
  */
 ptrdiff_t BakaShrot_QueryA(int64_t client, const char *sql);
 
@@ -285,12 +294,12 @@ ptrdiff_t BakaShrot_QueryW(int64_t client, const uint16_t *sql);
  * The last query's result, as JSON:
  * `{"columns":[...],"rows":[[...],...]}`, every value a string or null.
  */
-ptrdiff_t BakaShrot_GetQueryResultA(int64_t client, char *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetQueryResultAsJsonA(int64_t client, char *buffer, ptrdiff_t size);
 
 /**
- * The same as `BakaShrot_GetQueryResultA`, in UTF-16.
+ * The same as `BakaShrot_GetQueryResultAsJsonA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_GetQueryResultW(int64_t client, uint16_t *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetQueryResultAsJsonW(int64_t client, uint16_t *buffer, ptrdiff_t size);
 
 /**
  * Pushes a message with the file at `FilePath` as its attachment (1 byte
@@ -382,6 +391,126 @@ int64_t BakaShrot_GetAttachmentData(int64_t client, void *buffer, int64_t buffer
  * Frees what `BakaShrot_LoadAttachment()` read: 1.
  */
 ptrdiff_t BakaShrot_FreeAttachmentData(int64_t client);
+
+/**
+ * Closes an enumeration: 1, or 0 if it wasn't one.
+ */
+ptrdiff_t BakaShrot_CloseEnum(int64_t enumeration);
+
+/**
+ * Lists names as `BakaShrot_ListNames()` does (the same arguments), into
+ * an enumeration: its handle, 0 on failure (`BakaShrot_GetLastError(client)`).
+ * Then `BakaShrot_NextName()` and `BakaShrot_GetEnumName()`, and
+ * `BakaShrot_CloseEnum()`. Closed with its client by
+ * `BakaShrot_FreeClient()`.
+ */
+int64_t BakaShrot_EnumerateNamesA(int64_t client,
+                                  int32_t kind,
+                                  const char *topics,
+                                  const char *nodes);
+
+/**
+ * The same as `BakaShrot_EnumerateNamesA`, in UTF-16.
+ */
+int64_t BakaShrot_EnumerateNamesW(int64_t client,
+                                  int32_t kind,
+                                  const uint16_t *topics,
+                                  const uint16_t *nodes);
+
+/**
+ * Moves to the next name (the first, the first time): 1, 0 if there are
+ * no more, -1 if it isn't a names enumeration.
+ */
+ptrdiff_t BakaShrot_NextName(int64_t enumeration);
+
+/**
+ * The current name: the bytes it needs, 0 if there's none (before the
+ * first, past the last) or it isn't a names enumeration.
+ */
+ptrdiff_t BakaShrot_GetEnumNameA(int64_t enumeration, char *buffer, ptrdiff_t size);
+
+/**
+ * The same as `BakaShrot_GetEnumNameA`, in UTF-16.
+ */
+ptrdiff_t BakaShrot_GetEnumNameW(int64_t enumeration, uint16_t *buffer, ptrdiff_t size);
+
+/**
+ * How many names, -1 if it isn't a names enumeration.
+ */
+int32_t BakaShrot_GetNameCount(int64_t enumeration);
+
+/**
+ * Whether some names didn't fit in the server's answer: 1 or 0, -1 if it
+ * isn't a names enumeration.
+ */
+ptrdiff_t BakaShrot_IsNamesListTruncated(int64_t enumeration);
+
+/**
+ * Runs a query as `BakaShrot_Query()` does, into an enumeration: its
+ * handle, 0 on failure (`BakaShrot_GetLastError(client)`). Then
+ * `BakaShrot_GetQueryColumnCount()` and `GetQueryColumnName()`,
+ * `BakaShrot_NextQueryRow()` and `GetQueryValue()` / `IsQueryValueNull()`,
+ * and `BakaShrot_CloseEnum()`. Closed with its client by
+ * `BakaShrot_FreeClient()`.
+ */
+int64_t BakaShrot_EnumerateQueryA(int64_t client, const char *sql);
+
+/**
+ * The same as `BakaShrot_EnumerateQueryA`, in UTF-16.
+ */
+int64_t BakaShrot_EnumerateQueryW(int64_t client, const uint16_t *sql);
+
+/**
+ * How many columns, -1 if it isn't a query enumeration.
+ */
+int32_t BakaShrot_GetQueryColumnCount(int64_t enumeration);
+
+/**
+ * A column's name (`index` 0 to the count - 1): the bytes it needs, 0 if
+ * there's no such column or it isn't a query enumeration.
+ */
+ptrdiff_t BakaShrot_GetQueryColumnNameA(int64_t enumeration,
+                                        int32_t index,
+                                        char *buffer,
+                                        ptrdiff_t size);
+
+/**
+ * The same as `BakaShrot_GetQueryColumnNameA`, in UTF-16.
+ */
+ptrdiff_t BakaShrot_GetQueryColumnNameW(int64_t enumeration,
+                                        int32_t index,
+                                        uint16_t *buffer,
+                                        ptrdiff_t size);
+
+/**
+ * Moves to the next row (the first, the first time): 1, 0 if there are
+ * no more, -1 if it isn't a query enumeration.
+ */
+ptrdiff_t BakaShrot_NextQueryRow(int64_t enumeration);
+
+/**
+ * The current row's value in a column (`index` 0 to the count - 1): the
+ * bytes it needs, 0 if it's null (`BakaShrot_IsQueryValueNull()`), there's
+ * no current row or such column, or it isn't a query enumeration.
+ */
+ptrdiff_t BakaShrot_GetQueryValueA(int64_t enumeration,
+                                   int32_t index,
+                                   char *buffer,
+                                   ptrdiff_t size);
+
+/**
+ * The same as `BakaShrot_GetQueryValueA`, in UTF-16.
+ */
+ptrdiff_t BakaShrot_GetQueryValueW(int64_t enumeration,
+                                   int32_t index,
+                                   uint16_t *buffer,
+                                   ptrdiff_t size);
+
+/**
+ * Whether the current row's value in a column is null: 1 or 0, -1 if
+ * there's no current row or such column, or it isn't a query enumeration.
+ */
+ptrdiff_t BakaShrot_IsQueryValueNull(int64_t enumeration, int32_t index);
 
 #ifdef __cplusplus
 }  // extern "C"

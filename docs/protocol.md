@@ -1,4 +1,4 @@
-# Protocol 7
+# Protocol 8
 
 What goes over a connection between a client and a server, or two servers.
 The code is `crates/bakashrot-proto`; this describes it.
@@ -83,8 +83,9 @@ format, its values are checked all the same.)
 ### Types
 
 Direction: **C** client, **S** server, **P** peer (a server linked to
-another, as its client). Ids are protocol 7's own (6 can't connect); a new
-packet takes the next one, none is ever reused.
+another, as its client). Ids are protocol 7's own (6 can't connect; 8
+added `ListNames`' filters); a new packet takes the next one, none is
+ever reused.
 
 | Id | Packet | Dir | Fields | Answered by |
 |---|---|---|---|---|
@@ -98,7 +99,7 @@ packet takes the next one, none is ever reused.
 | 8 | GetAttachment | C→S | `topic`, `node`, `message_id`, `from_part` | Attachment then its parts / RequestRefused |
 | 9 | Attachment | S→C | `size`, `sha256` | |
 | 10 | AttachmentPart | C→S, S→C, P→S | `data` bin, 1 B to 1 MiB | |
-| 11 | ListNames | C→S | `kind` (1 topics, 2 nodes) | NamesList |
+| 11 | ListNames | C→S | `kind` (1 topics, 2 nodes), `topics`, `nodes`: each a name or a pattern, or nil for any (those of the topic/node pairs they match) | NamesList |
 | 12 | NamesList | S→C | `kind`, `truncated` bool, `[name...]` (65536 at most) | |
 | 13 | Query | C→S | `sql` str | QueryResult / RequestRefused |
 | 14 | QueryResult | S→C | `json` str: `{"columns":[...],"rows":[[...],...]}` | |

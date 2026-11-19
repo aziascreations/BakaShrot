@@ -9,7 +9,6 @@ use crate::limits::{
     MAX_ATTACHMENT_PARTS, MAX_MESSAGE_ID, MAX_MESSAGES_PER_PACKET, MAX_MISSING_ATTACHMENTS,
     MAX_NAMES_LIST_ENTRIES,
 };
-use crate::names;
 use serde::{Deserialize, Serialize};
 
 /// What the server takes from this peer, how far it is, and the
@@ -75,11 +74,7 @@ impl Check for SyncState {
         ] {
             rules::most(list.len(), MAX_NAMES_LIST_ENTRIES, field)?;
             for item in list {
-                rules::require(
-                    names::is_valid_name_or_pattern(item),
-                    field,
-                    "must be a name or a pattern",
-                )?;
+                rules::name_or_pattern(item, field)?;
             }
         }
         for head in &self.heads {

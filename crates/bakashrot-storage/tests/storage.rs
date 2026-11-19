@@ -159,7 +159,6 @@ fn pushing_and_reading() {
 
     // Names, heads.
     assert_eq!(reader.topics().unwrap(), ["logs", "sensors"]);
-    assert_eq!(reader.nodes().unwrap(), ["garage", "kitchen"]);
     let heads: Vec<_> = reader
         .heads()
         .unwrap()

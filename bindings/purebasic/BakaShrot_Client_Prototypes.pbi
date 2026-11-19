@@ -1,7 +1,7 @@
 ;{- Code Header
 ; ==- Basic Info -================================
 ;     Name: BakaShrot_Client_Prototypes.pbi
-;  Version: 0.0.1
+;  Version: 0.4.0
 ;   Author: Herwin Bozet (NibblePoker)
 ;
 ; ==- Compatibility -=============================
@@ -40,7 +40,12 @@
 ; about each are in BakaShrot_ErrorCodes.pbi, next to this file (included
 ; below), BakaShrot_ErrorName() names them;
 ; BakaShrot_GetRefusalReasonString(Client) says why in words.
-; _GetNamesList() is {"kind":"topic","names":[...],"truncated":false}.
+; _GetNamesListAsJson() is {"kind":"topic","names":[...],"truncated":false}.
+; _GetQueryResultAsJson() is {"columns":[...],"rows":[[...],...]}.
+; Without JSON: _EnumerateNames() / _EnumerateQuery() give an enumeration
+; (a quad, like a client's handle); _NextName() / _NextQueryRow() move to
+; the next item (the first, the first time: While ... = 1), the getters
+; read it, _CloseEnum() closes it (_FreeClient() closes its client's).
 ; ============================================================================
 
 XIncludeFile "BakaShrot_ErrorCodes.pbi"
@@ -71,11 +76,23 @@ PrototypeC.i BakaShrot_IsMessageAttachmentReady_Prototype(Client.q)
 PrototypeC.i BakaShrot_GetMessageData_Prototype(Client.q, *Buffer, BufferSize.i)
 PrototypeC.i BakaShrot_GetMessageTopic_Prototype(Client.q, *Buffer, BufferSize.i)
 PrototypeC.i BakaShrot_GetMessageNode_Prototype(Client.q, *Buffer, BufferSize.i)
-PrototypeC.l BakaShrot_ListTopics_Prototype(Client.q)
-PrototypeC.l BakaShrot_ListNodes_Prototype(Client.q)
-PrototypeC.i BakaShrot_GetNamesList_Prototype(Client.q, *Buffer, BufferSize.i)
+; Kind 1 topics, 2 nodes; Topics and Nodes a name or a pattern, "" for any.
+PrototypeC.l BakaShrot_ListNames_Prototype(Client.q, Kind.l, Topics.p-unicode, Nodes.p-unicode)
+PrototypeC.i BakaShrot_GetNamesListAsJson_Prototype(Client.q, *Buffer, BufferSize.i)
 PrototypeC.i BakaShrot_Query_Prototype(Client.q, Sql.p-unicode)
-PrototypeC.i BakaShrot_GetQueryResult_Prototype(Client.q, *Buffer, BufferSize.i)
+PrototypeC.i BakaShrot_GetQueryResultAsJson_Prototype(Client.q, *Buffer, BufferSize.i)
+PrototypeC.q BakaShrot_EnumerateNames_Prototype(Client.q, Kind.l, Topics.p-unicode, Nodes.p-unicode)
+PrototypeC.i BakaShrot_NextName_Prototype(Enum.q)
+PrototypeC.i BakaShrot_GetEnumName_Prototype(Enum.q, *Buffer, BufferSize.i)
+PrototypeC.l BakaShrot_GetNameCount_Prototype(Enum.q)
+PrototypeC.i BakaShrot_IsNamesListTruncated_Prototype(Enum.q)
+PrototypeC.q BakaShrot_EnumerateQuery_Prototype(Client.q, Sql.p-unicode)
+PrototypeC.l BakaShrot_GetQueryColumnCount_Prototype(Enum.q)
+PrototypeC.i BakaShrot_GetQueryColumnName_Prototype(Enum.q, Index.l, *Buffer, BufferSize.i)
+PrototypeC.i BakaShrot_NextQueryRow_Prototype(Enum.q)
+PrototypeC.i BakaShrot_GetQueryValue_Prototype(Enum.q, Index.l, *Buffer, BufferSize.i)
+PrototypeC.i BakaShrot_IsQueryValueNull_Prototype(Enum.q, Index.l)
+PrototypeC.i BakaShrot_CloseEnum_Prototype(Enum.q)
 PrototypeC.q BakaShrot_PushMessageWithFile_Prototype(Client.q, Topic.p-unicode, JsonData.p-unicode, FilePath.p-unicode)
 PrototypeC.q BakaShrot_PushMessageWithData_Prototype(Client.q, Topic.p-unicode, JsonData.p-unicode, *Data, Size.q)
 PrototypeC.q BakaShrot_SaveAttachment_Prototype(Client.q, Topic.p-unicode, Node.p-unicode, MessageId.q, FilePath.p-unicode)
@@ -109,11 +126,22 @@ Global BakaShrot_IsMessageAttachmentReady.BakaShrot_IsMessageAttachmentReady_Pro
 Global BakaShrot_GetMessageData.BakaShrot_GetMessageData_Prototype
 Global BakaShrot_GetMessageTopic.BakaShrot_GetMessageTopic_Prototype
 Global BakaShrot_GetMessageNode.BakaShrot_GetMessageNode_Prototype
-Global BakaShrot_ListTopics.BakaShrot_ListTopics_Prototype
-Global BakaShrot_ListNodes.BakaShrot_ListNodes_Prototype
-Global BakaShrot_GetNamesList.BakaShrot_GetNamesList_Prototype
+Global BakaShrot_ListNames.BakaShrot_ListNames_Prototype
+Global BakaShrot_GetNamesListAsJson.BakaShrot_GetNamesListAsJson_Prototype
 Global BakaShrot_Query.BakaShrot_Query_Prototype
-Global BakaShrot_GetQueryResult.BakaShrot_GetQueryResult_Prototype
+Global BakaShrot_GetQueryResultAsJson.BakaShrot_GetQueryResultAsJson_Prototype
+Global BakaShrot_EnumerateNames.BakaShrot_EnumerateNames_Prototype
+Global BakaShrot_NextName.BakaShrot_NextName_Prototype
+Global BakaShrot_GetEnumName.BakaShrot_GetEnumName_Prototype
+Global BakaShrot_GetNameCount.BakaShrot_GetNameCount_Prototype
+Global BakaShrot_IsNamesListTruncated.BakaShrot_IsNamesListTruncated_Prototype
+Global BakaShrot_EnumerateQuery.BakaShrot_EnumerateQuery_Prototype
+Global BakaShrot_GetQueryColumnCount.BakaShrot_GetQueryColumnCount_Prototype
+Global BakaShrot_GetQueryColumnName.BakaShrot_GetQueryColumnName_Prototype
+Global BakaShrot_NextQueryRow.BakaShrot_NextQueryRow_Prototype
+Global BakaShrot_GetQueryValue.BakaShrot_GetQueryValue_Prototype
+Global BakaShrot_IsQueryValueNull.BakaShrot_IsQueryValueNull_Prototype
+Global BakaShrot_CloseEnum.BakaShrot_CloseEnum_Prototype
 Global BakaShrot_PushMessageWithFile.BakaShrot_PushMessageWithFile_Prototype
 Global BakaShrot_PushMessageWithData.BakaShrot_PushMessageWithData_Prototype
 Global BakaShrot_SaveAttachment.BakaShrot_SaveAttachment_Prototype
@@ -185,11 +213,22 @@ Procedure.i BakaShrot_LoadClient(DllPath.s)
 	BakaShrot_GetMessageData           = BakaShrot_ClientFunction("BakaShrot_GetMessageDataW")
 	BakaShrot_GetMessageTopic          = BakaShrot_ClientFunction("BakaShrot_GetMessageTopicW")
 	BakaShrot_GetMessageNode           = BakaShrot_ClientFunction("BakaShrot_GetMessageNodeW")
-	BakaShrot_ListTopics               = BakaShrot_ClientFunction("BakaShrot_ListTopics")
-	BakaShrot_ListNodes                = BakaShrot_ClientFunction("BakaShrot_ListNodes")
-	BakaShrot_GetNamesList             = BakaShrot_ClientFunction("BakaShrot_GetNamesListW")
+	BakaShrot_ListNames                = BakaShrot_ClientFunction("BakaShrot_ListNamesW")
+	BakaShrot_GetNamesListAsJson       = BakaShrot_ClientFunction("BakaShrot_GetNamesListAsJsonW")
 	BakaShrot_Query                    = BakaShrot_ClientFunction("BakaShrot_QueryW")
-	BakaShrot_GetQueryResult           = BakaShrot_ClientFunction("BakaShrot_GetQueryResultW")
+	BakaShrot_GetQueryResultAsJson     = BakaShrot_ClientFunction("BakaShrot_GetQueryResultAsJsonW")
+	BakaShrot_EnumerateNames           = BakaShrot_ClientFunction("BakaShrot_EnumerateNamesW")
+	BakaShrot_NextName                 = BakaShrot_ClientFunction("BakaShrot_NextName")
+	BakaShrot_GetEnumName              = BakaShrot_ClientFunction("BakaShrot_GetEnumNameW")
+	BakaShrot_GetNameCount             = BakaShrot_ClientFunction("BakaShrot_GetNameCount")
+	BakaShrot_IsNamesListTruncated     = BakaShrot_ClientFunction("BakaShrot_IsNamesListTruncated")
+	BakaShrot_EnumerateQuery           = BakaShrot_ClientFunction("BakaShrot_EnumerateQueryW")
+	BakaShrot_GetQueryColumnCount      = BakaShrot_ClientFunction("BakaShrot_GetQueryColumnCount")
+	BakaShrot_GetQueryColumnName       = BakaShrot_ClientFunction("BakaShrot_GetQueryColumnNameW")
+	BakaShrot_NextQueryRow             = BakaShrot_ClientFunction("BakaShrot_NextQueryRow")
+	BakaShrot_GetQueryValue            = BakaShrot_ClientFunction("BakaShrot_GetQueryValueW")
+	BakaShrot_IsQueryValueNull         = BakaShrot_ClientFunction("BakaShrot_IsQueryValueNull")
+	BakaShrot_CloseEnum                = BakaShrot_ClientFunction("BakaShrot_CloseEnum")
 	BakaShrot_PushMessageWithFile      = BakaShrot_ClientFunction("BakaShrot_PushMessageWithFileW")
 	BakaShrot_PushMessageWithData      = BakaShrot_ClientFunction("BakaShrot_PushMessageWithDataW")
 	BakaShrot_SaveAttachment           = BakaShrot_ClientFunction("BakaShrot_SaveAttachmentW")
@@ -226,6 +265,26 @@ Procedure.s BakaShrot_GetString(Client.q, Getter.BakaShrot_StringGetter_Prototyp
 	ProcedureReturn Text
 EndProcedure
 
+; The same for a getter of a column (Getter(Enum, Index, *Buffer, BufferSize)).
+PrototypeC.i BakaShrot_ColumnGetter_Prototype(Enum.q, Index.l, *Buffer, BufferSize.i)
+Procedure.s BakaShrot_GetColumnString(Enum.q, Index.l, Getter.BakaShrot_ColumnGetter_Prototype)
+	Protected *Buffer, BufferSize.i, Text.s
+
+	BufferSize = Getter(Enum, Index, 0, 0)
+	If BufferSize <= 0
+		ProcedureReturn ""
+	EndIf
+	*Buffer = AllocateMemory(BufferSize)
+	If Not *Buffer
+		ProcedureReturn ""
+	EndIf
+	Getter(Enum, Index, *Buffer, BufferSize)
+	Text = PeekS(*Buffer, -1, #PB_Unicode)
+	FreeMemory(*Buffer)
+
+	ProcedureReturn Text
+EndProcedure
+
 ; The string getters, as strings.
 Procedure.s BakaShrot_GetRefusalReasonString(Client.q)
 	ProcedureReturn BakaShrot_GetString(Client, BakaShrot_GetRefusalReason)
@@ -247,12 +306,24 @@ Procedure.s BakaShrot_GetMessageNodeString(Client.q)
 	ProcedureReturn BakaShrot_GetString(Client, BakaShrot_GetMessageNode)
 EndProcedure
 
-Procedure.s BakaShrot_GetNamesListString(Client.q)
-	ProcedureReturn BakaShrot_GetString(Client, BakaShrot_GetNamesList)
+Procedure.s BakaShrot_GetNamesListAsJsonString(Client.q)
+	ProcedureReturn BakaShrot_GetString(Client, BakaShrot_GetNamesListAsJson)
 EndProcedure
 
-Procedure.s BakaShrot_GetQueryResultString(Client.q)
-	ProcedureReturn BakaShrot_GetString(Client, BakaShrot_GetQueryResult)
+Procedure.s BakaShrot_GetQueryResultAsJsonString(Client.q)
+	ProcedureReturn BakaShrot_GetString(Client, BakaShrot_GetQueryResultAsJson)
+EndProcedure
+
+Procedure.s BakaShrot_GetEnumNameString(Enum.q)
+	ProcedureReturn BakaShrot_GetString(Enum, BakaShrot_GetEnumName)
+EndProcedure
+
+Procedure.s BakaShrot_GetQueryColumnNameString(Enum.q, Index.l)
+	ProcedureReturn BakaShrot_GetColumnString(Enum, Index, BakaShrot_GetQueryColumnName)
+EndProcedure
+
+Procedure.s BakaShrot_GetQueryValueString(Enum.q, Index.l)
+	ProcedureReturn BakaShrot_GetColumnString(Enum, Index, BakaShrot_GetQueryValue)
 EndProcedure
 
 
@@ -264,7 +335,7 @@ EndProcedure
 ; connected at the same time reads it too.
 CompilerIf #PB_Compiler_IsMainFile
 
-	Define Client.q, Second.q, Id.q, Size.q, *Attachment, *Copy
+	Define Client.q, Second.q, Enum.q, Id.q, Size.q, *Attachment, *Copy
 
 	; Prints why a client's last call failed, then ends.
 	Procedure Failed(Client.q, What.s)
@@ -321,8 +392,16 @@ CompilerIf #PB_Compiler_IsMainFile
 	EndIf
 	FreeMemory(*Attachment) : FreeMemory(*Copy)
 
-	If BakaShrot_ListTopics(Client) < 0 : Failed(Client, "Listing") : EndIf
-	PrintN("Topics: " + BakaShrot_GetNamesListString(Client))
+	If BakaShrot_ListNames(Client, 1, "", "") < 0 : Failed(Client, "Listing") : EndIf
+	PrintN("Topics: " + BakaShrot_GetNamesListAsJsonString(Client))
+	; The topics this client's node pushed to ("" for any topic), one at a time.
+	Enum = BakaShrot_EnumerateNames(Client, 1, "", BakaShrot_GetNodeString(Client))
+	If Not Enum : Failed(Client, "Listing") : EndIf
+	PrintN("Topics it pushed to (" + Str(BakaShrot_GetNameCount(Enum)) + "):")
+	While BakaShrot_NextName(Enum) = 1
+		PrintN("  " + BakaShrot_GetEnumNameString(Enum))
+	Wend
+	BakaShrot_CloseEnum(Enum)
 
 	If BakaShrot_PushMessageTo(Client, "nothing", "{}") < 0
 		PrintN("A push to a topic it may not push to: " + BakaShrot_ErrorName(BakaShrot_GetLastError(Client)) + ", " + BakaShrot_GetRefusalReasonString(Client))

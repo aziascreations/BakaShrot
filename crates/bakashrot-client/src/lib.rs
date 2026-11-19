@@ -24,7 +24,7 @@ use bakashrot_proto::limits::{
     ALPN, ATTACHMENT_PART_SIZE, MAX_ATTACHMENT_SIZE, MAX_MESSAGE_ID, MAX_MESSAGE_SIZE,
     MAX_MESSAGES_PER_PACKET, MAX_PACKET_SIZE,
 };
-use bakashrot_proto::names::is_valid_name;
+use bakashrot_proto::names::{is_valid_name, is_valid_name_or_pattern};
 use bakashrot_proto::packets::{
     Attachment, AttachmentPart, GetAttachment, GetMessages, ListNames, Messages, NameKind,
     NamesList, PushMessage, Query,
@@ -245,12 +245,9 @@ impl Client {
             sha256.update(&buffer[..read]);
             size += read as u64;
         }
-        if !(1..=MAX_ATTACHMENT_SIZE).contains(&size) {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                format!("an attachment of {size} bytes: 1 to {MAX_ATTACHMENT_SIZE}"),
-            ));
-        }
+        require((1..=MAX_ATTACHMENT_SIZE).contains(&size), || {
+            format!("an attachment of {size} bytes: 1 to {MAX_ATTACHMENT_SIZE}")
+        })?;
         source.rewind().map_err(file_error)?;
         let mut digest = [0; 32];
         digest.copy_from_slice(sha256.finish().as_ref());
@@ -297,12 +294,9 @@ impl Client {
     ) -> Result<u64> {
         check_name(topic, "topic")?;
         check_name(node, "node")?;
-        if !(1..=MAX_MESSAGE_ID).contains(&message_id) {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                format!("message {message_id}: 1 to {MAX_MESSAGE_ID}"),
-            ));
-        }
+        require((1..=MAX_MESSAGE_ID).contains(&message_id), || {
+            format!("message {message_id}: 1 to {MAX_MESSAGE_ID}")
+        })?;
         let get = GetAttachment {
             topic: topic.to_owned(),
             node: node.to_owned(),
@@ -389,18 +383,12 @@ impl Client {
     ) -> Result<Messages> {
         check_name(topic, "topic")?;
         check_name(node, "node")?;
-        if !(1..=MAX_MESSAGES_PER_PACKET).contains(&limit) {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                format!("a limit of {limit}: 1 to {MAX_MESSAGES_PER_PACKET}"),
-            ));
-        }
-        if after.is_some_and(|after| after > MAX_MESSAGE_ID) {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                format!("after {}: {MAX_MESSAGE_ID} at most", after.unwrap_or(0)),
-            ));
-        }
+        require((1..=MAX_MESSAGES_PER_PACKET).contains(&limit), || {
+            format!("a limit of {limit}: 1 to {MAX_MESSAGES_PER_PACKET}")
+        })?;
+        require(after.is_none_or(|after| after <= MAX_MESSAGE_ID), || {
+            format!("after {}: {MAX_MESSAGE_ID} at most", after.unwrap_or(0))
+        })?;
         let get = GetMessages {
             topic: topic.to_owned(),
             node: node.to_owned(),
@@ -415,10 +403,29 @@ impl Client {
 
     /// The topics with messages that this client may push to or read, or
     /// the nodes with messages in the topics it may read; every one if its
-    /// roles have `list_topics` / `list_nodes`, or `query`. `truncated` if
-    /// some didn't fit.
-    pub fn list_names(&mut self, kind: NameKind) -> Result<NamesList> {
-        match self.request(ListNames { kind }.into())? {
+    /// roles have `list_topics` / `list_nodes`, or `query`. `topics` and
+    /// `nodes` (a name or a pattern, `None` for any) keep those of the
+    /// topic and node pairs they match: the topics a node pushed to, the
+    /// nodes that pushed to a topic. `truncated` if some didn't fit.
+    pub fn list_names(
+        &mut self,
+        kind: NameKind,
+        topics: Option<&str>,
+        nodes: Option<&str>,
+    ) -> Result<NamesList> {
+        for (filter, what) in [(topics, "topic"), (nodes, "node")] {
+            if let Some(filter) = filter {
+                require(is_valid_name_or_pattern(filter), || {
+                    format!("'{filter}' isn't a {what} name or pattern")
+                })?;
+            }
+        }
+        let list = ListNames {
+            kind,
+            topics: topics.map(str::to_owned),
+            nodes: nodes.map(str::to_owned),
+        };
+        match self.request(list.into())? {
             Packet::NamesList(names) => Ok(names),
             other => Err(unexpected(&other)),
         }
@@ -511,26 +518,25 @@ fn lost(error: io::Error) -> Error {
     }
 }
 
-fn check_name(name: &str, what: &str) -> Result<()> {
-    if is_valid_name(name) {
-        Ok(())
-    } else {
-        Err(Error::new(
-            ErrorCode::InvalidArgument,
-            format!("'{name}' isn't a {what} name"),
-        ))
+/// An argument checked before sending: `InvalidArgument`, saying `why`,
+/// if it isn't `ok`.
+fn require(ok: bool, why: impl FnOnce() -> String) -> Result<()> {
+    match ok {
+        true => Ok(()),
+        false => Err(Error::new(ErrorCode::InvalidArgument, why())),
     }
 }
 
+fn check_name(name: &str, what: &str) -> Result<()> {
+    require(is_valid_name(name), || {
+        format!("'{name}' isn't a {what} name")
+    })
+}
+
 fn check_size(text: &str, what: &str) -> Result<()> {
-    if text.len() <= MAX_MESSAGE_SIZE {
-        Ok(())
-    } else {
-        Err(Error::new(
-            ErrorCode::InvalidArgument,
-            format!("{what} of {} bytes: {MAX_MESSAGE_SIZE} at most", text.len()),
-        ))
-    }
+    require(text.len() <= MAX_MESSAGE_SIZE, || {
+        format!("{what} of {} bytes: {MAX_MESSAGE_SIZE} at most", text.len())
+    })
 }
 
 fn file_error(error: io::Error) -> Error {

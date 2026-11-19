@@ -5,7 +5,7 @@
 /// The protocol's version. Both ends must have the same: they tell each
 /// other first thing (`frame::write_version()`), and abandon the
 /// connection if it differs.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// The ALPN protocol name both ends offer during the TLS handshake: what
 /// isn't BakaShrot doesn't get past it. Not versioned: the version is

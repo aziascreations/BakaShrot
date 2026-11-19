@@ -1,7 +1,7 @@
 ;{- Code Header
 ; ==- Basic Info -================================
 ;     Name: BakaShrot_ErrorCodes.pbi
-;  Version: 0.0.1
+;  Version: 0.4.0
 ;   Author: Herwin Bozet (NibblePoker)
 ;
 ; ==- Compatibility -=============================
@@ -16,7 +16,7 @@
 ; BakaShrot error codes
 ;
 ; What BakaShrot_GetLastError() returns after a failed call of the client DLL
-; (bakashrot.dll), and the code a server sends with each refusal (protocol 7,
+; (bakashrot.dll), and the code a server sends with each refusal (protocol 8,
 ; crates/bakashrot-proto/src/error.rs).
 ; The Python client has them in bakashrot.ErrorCode. Shipped next to
 ; BakaShrot_Client_Prototypes.pbi, which includes it.

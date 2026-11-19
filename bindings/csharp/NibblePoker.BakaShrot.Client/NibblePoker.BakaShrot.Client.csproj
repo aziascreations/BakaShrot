@@ -15,7 +15,7 @@
        holding win-x64/, win-arm64/, linux-x64/, linux-arm64/, each with
        that release's library and THIRD-PARTY.txt (.github/workflows/ci.yml). -->
   <PropertyGroup>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <Authors>Herwin Bozet (NibblePoker)</Authors>
     <Description>BakaShrot's client: a message store with replication. Over the client library, its Windows and Linux x64 and ARM64 builds included; .NET Framework 2.0 and up, .NET Core, .NET.</Description>
     <PackageLicenseExpression>CC0-1.0</PackageLicenseExpression>

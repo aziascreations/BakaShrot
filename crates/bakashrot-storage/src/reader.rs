@@ -152,11 +152,6 @@ impl Reader {
         self.strings("SELECT DISTINCT topic FROM streams ORDER BY topic")
     }
 
-    /// Every node with messages (or that had some), in order.
-    pub fn nodes(&self) -> Result<Vec<String>> {
-        self.strings("SELECT DISTINCT node FROM streams ORDER BY node")
-    }
-
     /// Whether `node` has messages in any topic (or had some).
     fn has_node(&self, node: &str) -> Result<bool> {
         self.connection

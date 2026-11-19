@@ -7,7 +7,7 @@ use aws_lc_rs::digest;
 use bakashrot_config::Permissions;
 use bakashrot_pki::Identity;
 use bakashrot_proto::limits::{MAX_MESSAGE_SIZE, MAX_NAMES_LIST_ENTRIES, MAX_PACKET_SIZE};
-use bakashrot_proto::names::names_equal;
+use bakashrot_proto::names::{name_matches, names_equal};
 use bakashrot_proto::packets::{
     Attachment, AttachmentPart, Continue, GetAttachment, GetMessages, ListNames, MessagePushed,
     Messages, NameKind, NamesList, PushMessage, Query, QueryResult, RequestRefused, Welcome,
@@ -476,38 +476,50 @@ async fn get_messages(shared: &Arc<Shared>, peer: &Peer, get: GetMessages) -> Pa
     }
 }
 
-/// Topics: those with messages (pushed here or replicated) that it may
-/// push to or read; every one with `list_topics` or `query`. Nodes: those
-/// with messages in the topics it may read; every one with `list_nodes`
-/// or `query`.
+/// The topics or nodes of the topic and node pairs with messages (pushed
+/// here or replicated, or that had some) that the filters match, among
+/// those it may see. A pair's topic must be one it may see when the answer
+/// is topics or `topics` filters them: one it may push to or read, any
+/// with `list_topics` or `query`. Its node, when the answer is nodes or
+/// `nodes` filters them: one in a topic it may read, any with
+/// `list_nodes` or `query`. Without filters: the topics it may see, the
+/// nodes it may.
 async fn list_names(shared: &Arc<Shared>, peer: &Peer, list: ListNames) -> Packet {
-    let permissions = &peer.permissions;
-    let found = match list.kind {
-        NameKind::Topic => shared
-            .read(|reader| reader.topics())
-            .await
-            .map(|mut topics| {
-                if !permissions.lists_every_topic() {
-                    topics
-                        .retain(|topic| permissions.can_push(topic) || permissions.can_read(topic));
-                }
-                topics
-            }),
-        NameKind::Node if permissions.lists_every_node() => {
-            shared.read(|reader| reader.nodes()).await
-        }
-        NameKind::Node => shared.read(|reader| reader.heads()).await.map(|heads| {
-            let mut nodes: Vec<String> = heads
+    let permissions = peer.permissions.clone();
+    let kind = list.kind;
+    // A pass over every pair: on the read's thread, off the async ones.
+    let found = shared
+        .read(move |reader| {
+            let matches = |filter: &Option<String>, name: &str| {
+                filter
+                    .as_deref()
+                    .is_none_or(|filter| name_matches(filter, name))
+            };
+            let check_topic = kind == NameKind::Topic || list.topics.is_some();
+            let check_node = kind == NameKind::Node || list.nodes.is_some();
+            let mut names: Vec<String> = reader
+                .heads()?
                 .into_iter()
-                .filter(|head| permissions.can_read(&head.topic))
-                .map(|head| head.node)
+                .filter(|head| {
+                    matches(&list.topics, &head.topic)
+                        && matches(&list.nodes, &head.node)
+                        && (!check_topic || permissions.may_list_topic(&head.topic))
+                        && (!check_node || permissions.may_list_nodes_of(&head.topic))
+                })
+                .map(|head| match kind {
+                    NameKind::Topic => head.topic,
+                    NameKind::Node => head.node,
+                })
                 .collect();
-            // As `reader.nodes()` answers them: in order, none twice.
-            nodes.sort_by_cached_key(|node| node.to_ascii_lowercase());
-            nodes.dedup_by(|a, b| names_equal(a, b));
-            nodes
-        }),
-    };
+            // In order, none twice (names are without case).
+            names.sort_unstable_by(|a, b| {
+                let a = a.bytes().map(|c| c.to_ascii_lowercase());
+                a.cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
+            });
+            names.dedup_by(|a, b| names_equal(a, b));
+            Ok(names)
+        })
+        .await;
     let mut names = match found {
         Ok(names) => names,
         Err(refused) => return refused.into(),
@@ -515,7 +527,7 @@ async fn list_names(shared: &Arc<Shared>, peer: &Peer, list: ListNames) -> Packe
     let truncated = names.len() > MAX_NAMES_LIST_ENTRIES;
     names.truncate(MAX_NAMES_LIST_ENTRIES);
     NamesList {
-        kind: list.kind,
+        kind,
         truncated,
         names,
     }

@@ -596,12 +596,13 @@ fn names() {
         .connect(&running.issue("analyst-1", &["analyst"]))
         .unwrap();
 
-    let names = |client: &mut Client, kind| {
-        let list = client.list_names(kind).unwrap();
+    let filtered = |client: &mut Client, kind, topics, nodes| {
+        let list = client.list_names(kind, topics, nodes).unwrap();
         assert_eq!(list.kind, kind);
         assert!(!list.truncated);
         list.names
     };
+    let names = |client: &mut Client, kind| filtered(client, kind, None, None);
     // Topics: those it may push to or read; every one for a query role.
     assert_eq!(names(&mut sensor, NameKind::Topic), ["logs", "sensors"]);
     assert_eq!(names(&mut screen, NameKind::Topic), ["logs"]);
@@ -624,6 +625,55 @@ fn names() {
         ),
         ErrorCode::NotAllowed.code()
     );
+
+    // Filtered: the topics a node pushed to, the nodes that pushed to a
+    // topic; names (without case) or patterns.
+    sensor.push("sensors", "{}").unwrap();
+    let (topic, node) = (NameKind::Topic, NameKind::Node);
+    let every = &mut analyst;
+    assert_eq!(
+        filtered(every, topic, None, Some("kitchen")),
+        ["logs", "sensors"]
+    );
+    assert_eq!(
+        filtered(every, topic, None, Some("KITCHEN")),
+        ["logs", "sensors"]
+    );
+    assert_eq!(filtered(every, topic, None, Some("g*")), ["sensors"]);
+    assert!(filtered(every, topic, None, Some("nobody")).is_empty());
+    assert_eq!(
+        filtered(every, node, Some("sensors"), None),
+        ["garage", "kitchen"]
+    );
+    assert_eq!(filtered(every, node, Some("l?gs"), None), ["kitchen"]);
+    assert_eq!(filtered(every, node, Some("*"), Some("k*")), ["kitchen"]);
+    assert_eq!(
+        filtered(every, topic, Some("s*"), Some("kitchen")),
+        ["sensors"]
+    );
+    // Only what it may see: the nodes of the topics it may read...
+    assert_eq!(
+        filtered(&mut screen, topic, None, Some("kitchen")),
+        ["logs"]
+    );
+    assert!(filtered(&mut screen, topic, None, Some("garage")).is_empty());
+    assert_eq!(filtered(&mut screen, node, Some("*"), None), ["kitchen"]);
+    // ...not of those it may only push to, the topics of those it may.
+    assert!(filtered(&mut sensor, topic, None, Some("garage")).is_empty());
+    assert_eq!(filtered(&mut sensor, topic, Some("s*"), None), ["sensors"]);
+    assert_eq!(
+        filtered(&mut explorer, topic, None, Some("garage")),
+        ["sensors"]
+    );
+    assert_eq!(
+        filtered(&mut explorer, node, Some("logs"), None),
+        ["kitchen"]
+    );
+    // Neither a name nor a pattern: refused before it's sent.
+    let error = analyst
+        .list_names(NameKind::Node, Some("a b"), None)
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument.code(), "{error}");
 }
 
 /// Queries: allowed or not, results, refusals.
@@ -1549,14 +1599,20 @@ fn replication_edges() {
     assert_eq!(got.messages[0].data, "m1");
     // (`old` had a message, past its age.)
     assert_eq!(
-        reader.list_names(NameKind::Topic).unwrap().names,
+        reader
+            .list_names(NameKind::Topic, None, None)
+            .unwrap()
+            .names,
         ["elsewhere", "logs", "old"]
     );
     let mut logs_only = running
         .connect(&running.issue("lounge", &["logs"]))
         .unwrap();
     assert_eq!(
-        logs_only.list_names(NameKind::Topic).unwrap().names,
+        logs_only
+            .list_names(NameKind::Topic, None, None)
+            .unwrap()
+            .names,
         ["logs"]
     );
     assert_eq!(

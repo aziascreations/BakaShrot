@@ -463,6 +463,24 @@ fn queries_and_lists() {
         json.ok().out,
         "{\"kind\":\"node\",\"names\":[\"kitchen\"],\"truncated\":false}\n"
     );
+    // Filtered: the topics a node pushed to, the nodes of some topics.
+    assert_eq!(
+        server
+            .tool("kitchen", &["list", "topics", "--nodes", "Kitchen"])
+            .ok()
+            .out,
+        "Topics (1):\n  logs\n"
+    );
+    assert_eq!(
+        server
+            .tool("kitchen", &["list", "--topics", "l*", "--nodes", "nobody"])
+            .ok()
+            .out,
+        "Topics (0):\nNodes (0):\n"
+    );
+    server
+        .tool("kitchen", &["list", "nodes", "--topics", "a b"])
+        .fails(1, "isn't a topic name or pattern");
     server
         .tool("kitchen", &["list", "everything"])
         .fails(2, "everything");

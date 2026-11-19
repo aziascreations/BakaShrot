@@ -99,6 +99,38 @@ namespace NibblePoker.BakaShrot
         }
     }
 
+    /// <summary>A row of EnumerateQuery(): its values (null for NULL), by
+    /// index or column name.</summary>
+    public sealed class QueryRow
+    {
+        /// <summary>The query's columns, the same array for every row.</summary>
+        public readonly string[] Columns;
+        public readonly string[] Values;
+
+        internal QueryRow(string[] columns, string[] values)
+        {
+            Columns = columns;
+            Values = values;
+        }
+
+        public string this[int column]
+        {
+            get { return Values[column]; }
+        }
+
+        /// <summary>The first column with that name (as the query wrote it).</summary>
+        public string this[string column]
+        {
+            get
+            {
+                int index = Array.IndexOf(Columns, column);
+                if (index < 0)
+                    throw new ArgumentException("No column " + column, "column");
+                return Values[index];
+            }
+        }
+    }
+
     public sealed class Client : IDisposable
     {
         public readonly string Host, Ca, Certificate, Key, Crl;
@@ -294,16 +326,31 @@ namespace NibblePoker.BakaShrot
         /// read, as JSON: {"kind":"topic","truncated":false,"names":[...]}.</summary>
         public string ListTopics()
         {
+            return ListTopics(null, null);
+        }
+
+        /// <summary>ListTopics(), only those of the topic and node pairs that
+        /// topic and node match, each a name or a pattern ("sensors.*"), null
+        /// for any: ListTopics(null, "kitchen") is the topics kitchen pushed to.</summary>
+        public string ListTopics(string topic, string node)
+        {
             lock (sync)
-                return Names(Native.BakaShrot_ListTopics(Handle()), "List topics");
+                return Names(Native.BakaShrot_ListNamesW(Handle(), 1, Text(topic), Text(node)), "List topics");
         }
 
         /// <summary>The nodes with messages in the topics this client may
         /// read, as ListTopics() says them.</summary>
         public string ListNodes()
         {
+            return ListNodes(null, null);
+        }
+
+        /// <summary>ListNodes(), filtered as ListTopics(topic, node) is:
+        /// ListNodes("logs", null) is the nodes that pushed to logs.</summary>
+        public string ListNodes(string topic, string node)
+        {
             lock (sync)
-                return Names(Native.BakaShrot_ListNodes(Handle()), "List nodes");
+                return Names(Native.BakaShrot_ListNamesW(Handle(), 2, Text(topic), Text(node)), "List nodes");
         }
 
         /// <summary>Runs one read-only SELECT or WITH: the server's JSON,
@@ -313,11 +360,97 @@ namespace NibblePoker.BakaShrot
             lock (sync)
             {
                 Check(Native.BakaShrot_QueryW(Handle(), Text(sql)), "Query");
-                return GetString(Native.BakaShrot_GetQueryResultW);
+                return GetString(Native.BakaShrot_GetQueryResultAsJsonW);
+            }
+        }
+
+        /// <summary>The topics ListTopics() lists, one at a time, without
+        /// JSON. Asked once a foreach starts (each one asks again), closed
+        /// when it ends.</summary>
+        public IEnumerable<string> EnumerateTopics()
+        {
+            return EnumerateNames(1, null, null);
+        }
+
+        /// <summary>The topics ListTopics(topic, node) lists, as EnumerateTopics() gives them.</summary>
+        public IEnumerable<string> EnumerateTopics(string topic, string node)
+        {
+            return EnumerateNames(1, topic, node);
+        }
+
+        /// <summary>The nodes ListNodes() lists, as EnumerateTopics() gives them.</summary>
+        public IEnumerable<string> EnumerateNodes()
+        {
+            return EnumerateNames(2, null, null);
+        }
+
+        /// <summary>The nodes ListNodes(topic, node) lists, as EnumerateTopics() gives them.</summary>
+        public IEnumerable<string> EnumerateNodes(string topic, string node)
+        {
+            return EnumerateNames(2, topic, node);
+        }
+
+        /// <summary>Query(sql)'s rows, one at a time, without JSON. Asked
+        /// once a foreach starts (each one asks again), closed when it ends.</summary>
+        public IEnumerable<QueryRow> EnumerateQuery(string sql)
+        {
+            long enumeration;
+            lock (sync)
+                enumeration = Opened(Native.BakaShrot_EnumerateQueryW(Handle(), Text(sql)), "Query");
+            try
+            {
+                string[] columns = new string[Native.BakaShrot_GetQueryColumnCount(enumeration)];
+                for (int column = 0; column < columns.Length; column++)
+                    columns[column] = GetString(enumeration, ColumnGetter(Native.BakaShrot_GetQueryColumnNameW, column));
+                while (Next(Native.BakaShrot_NextQueryRow(enumeration)))
+                {
+                    string[] values = new string[columns.Length];
+                    for (int column = 0; column < values.Length; column++)
+                        if (Native.BakaShrot_IsQueryValueNull(enumeration, column) == IntPtr.Zero)
+                            values[column] = GetString(enumeration, ColumnGetter(Native.BakaShrot_GetQueryValueW, column));
+                    yield return new QueryRow(columns, values);
+                }
+            }
+            finally
+            {
+                Native.BakaShrot_CloseEnum(enumeration);
             }
         }
 
         // --- Inside ---------------------------------------------------------
+
+        private IEnumerable<string> EnumerateNames(int kind, string topic, string node)
+        {
+            long enumeration;
+            lock (sync)
+                enumeration = Opened(Native.BakaShrot_EnumerateNamesW(Handle(), kind, Text(topic), Text(node)),
+                    kind == 1 ? "List topics" : "List nodes");
+            try
+            {
+                while (Next(Native.BakaShrot_NextName(enumeration)))
+                    yield return GetString(enumeration, Native.BakaShrot_GetEnumNameW);
+            }
+            finally
+            {
+                Native.BakaShrot_CloseEnum(enumeration);
+            }
+        }
+
+        // An enumeration's handle, 0 on failure.
+        private long Opened(long enumeration, string what)
+        {
+            if (enumeration == 0)
+                throw Failed(what, false);
+            return enumeration;
+        }
+
+        // A Next...(): 1 an item, 0 no more, -1 closed (with its client, by Close()).
+        private static bool Next(IntPtr result)
+        {
+            if (result.ToInt64() < 0)
+                throw new ConnectionLostException("The client was closed while enumerating", ErrorCode.NotConnected);
+            return result != IntPtr.Zero;
+        }
 
         private long Handle()
         {
@@ -343,7 +476,7 @@ namespace NibblePoker.BakaShrot
         {
             if (count < 0)
                 throw Failed(what, false);
-            return GetString(Native.BakaShrot_GetNamesListW);
+            return GetString(Native.BakaShrot_GetNamesListAsJsonW);
         }
 
         // Strings go as UTF-16: one with a NUL would be cut there.
@@ -354,17 +487,30 @@ namespace NibblePoker.BakaShrot
             return value;
         }
 
-        private delegate IntPtr Getter(long client, byte[] buffer, IntPtr size);
+        private delegate IntPtr Getter(long handle, byte[] buffer, IntPtr size);
+        private delegate IntPtr IndexGetter(long handle, int index, byte[] buffer, IntPtr size);
 
-        // A string getter: the size first (bytes, the terminator included), then the copy.
         private string GetString(Getter getter)
         {
-            int size = getter(handle, null, IntPtr.Zero).ToInt32();
+            return GetString(handle, getter);
+        }
+
+        // A string getter, of a client or an enumeration: the size first
+        // (bytes, the terminator included), then the copy.
+        private static string GetString(long from, Getter getter)
+        {
+            int size = getter(from, null, IntPtr.Zero).ToInt32();
             if (size <= 2)
                 return "";
             byte[] buffer = new byte[size];
-            getter(handle, buffer, new IntPtr(size));
+            getter(from, buffer, new IntPtr(size));
             return Encoding.Unicode.GetString(buffer, 0, size - 2);
+        }
+
+        // A column's getter, as a string getter.
+        private static Getter ColumnGetter(IndexGetter getter, int column)
+        {
+            return delegate(long from, byte[] buffer, IntPtr size) { return getter(from, column, buffer, size); };
         }
 
         private void Check(IntPtr result, string what)
@@ -430,11 +576,20 @@ namespace NibblePoker.BakaShrot
         [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetMessageDataW(long client, byte[] buffer, IntPtr size);
         [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetMessageTopicW(long client, byte[] buffer, IntPtr size);
         [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetMessageNodeW(long client, byte[] buffer, IntPtr size);
-        [DllImport(Dll, ExactSpelling = true)] internal static extern int BakaShrot_ListTopics(long client);
-        [DllImport(Dll, ExactSpelling = true)] internal static extern int BakaShrot_ListNodes(long client);
-        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetNamesListW(long client, byte[] buffer, IntPtr size);
+        [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern int BakaShrot_ListNamesW(long client, int kind, string topics, string nodes);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetNamesListAsJsonW(long client, byte[] buffer, IntPtr size);
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern IntPtr BakaShrot_QueryW(long client, string sql);
-        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetQueryResultW(long client, byte[] buffer, IntPtr size);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetQueryResultAsJsonW(long client, byte[] buffer, IntPtr size);
+        [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern long BakaShrot_EnumerateNamesW(long client, int kind, string topics, string nodes);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_NextName(long enumeration);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetEnumNameW(long enumeration, byte[] buffer, IntPtr size);
+        [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern long BakaShrot_EnumerateQueryW(long client, string sql);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern int BakaShrot_GetQueryColumnCount(long enumeration);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetQueryColumnNameW(long enumeration, int index, byte[] buffer, IntPtr size);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_NextQueryRow(long enumeration);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetQueryValueW(long enumeration, int index, byte[] buffer, IntPtr size);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_IsQueryValueNull(long enumeration, int index);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_CloseEnum(long enumeration);
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern long BakaShrot_PushMessageWithFileW(long client, string topic, string data, string filePath);
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern long BakaShrot_PushMessageWithDataW(long client, string topic, string data, byte[] attachment, long size);
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern long BakaShrot_SaveAttachmentW(long client, string topic, string node, long messageId, string filePath);

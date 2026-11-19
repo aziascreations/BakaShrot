@@ -145,6 +145,54 @@ namespace NibblePoker.BakaShrot.Tests
             kitchen.Push("listed", "x");
             Assert.That(kitchen.ListTopics(), Does.StartWith("{\"kind\":\"topic\"").And.Contain("\"listed\""));
             Assert.That(kitchen.ListNodes(), Does.StartWith("{\"kind\":\"node\"").And.Contain("\"kitchen\""));
+
+            // Filtered: the topics a node pushed to, the nodes of a topic.
+            Assert.That(kitchen.ListTopics(null, "KITCHEN"), Does.Contain("\"listed\""));
+            Assert.That(kitchen.ListNodes("list?d", null), Is.EqualTo("{\"kind\":\"node\",\"names\":[\"kitchen\"],\"truncated\":false}"));
+            Assert.That(kitchen.ListTopics(null, "nobody"), Is.EqualTo("{\"kind\":\"topic\",\"names\":[],\"truncated\":false}"));
+            BakaShrotException invalid = Assert.Catch<BakaShrotException>(() => kitchen.ListNodes("a b", null))!;
+            Assert.That(invalid.Code, Is.EqualTo(ErrorCode.InvalidArgument));
+        }
+
+        [Test]
+        public void Enumerations()
+        {
+            using Client kitchen = Server.Connect("kitchen");
+            kitchen.Push("enumerated", "x");
+            kitchen.Push("enumerated", "y");
+            Assert.That(kitchen.EnumerateTopics(), Does.Contain("enumerated"));
+            Assert.That(kitchen.EnumerateTopics(null, "KITCHEN"), Does.Contain("enumerated"));
+            Assert.That(kitchen.EnumerateNodes("enumer*", null), Is.EqualTo(new[] { "kitchen" }));
+            Assert.That(kitchen.EnumerateNodes("nothing", null), Is.Empty);
+
+            // Rows: by index or column, NULL as null; asked again each time.
+            IEnumerable<QueryRow> rows = kitchen.EnumerateQuery(
+                "SELECT message_data AS data, NULL AS missing, '' AS empty FROM messages WHERE topic = 'enumerated' ORDER BY message_id");
+            for (int pass = 0; pass < 2; pass++)
+            {
+                List<QueryRow> got = new List<QueryRow>(rows);
+                Assert.That(got.Count, Is.EqualTo(2));
+                Assert.That(got[0].Columns, Is.EqualTo(new[] { "data", "missing", "empty" }));
+                Assert.That(got[0]["data"], Is.EqualTo("x"));
+                Assert.That(got[1][0], Is.EqualTo("y"));
+                Assert.That(got[1]["missing"], Is.Null);
+                Assert.That(got[1]["empty"], Is.EqualTo(""));
+                Assert.Throws<ArgumentException>(() => { string _ = got[0]["nope"]; });
+            }
+            Assert.That(kitchen.EnumerateQuery("SELECT 1 AS a WHERE 0"), Is.Empty);
+
+            // Failures when the foreach starts; closing the client ends one.
+            IEnumerable<string> bad = kitchen.EnumerateNodes("a b", null);
+            Assert.That(Assert.Catch<BakaShrotException>(() => bad.GetEnumerator().MoveNext())!.Code,
+                Is.EqualTo(ErrorCode.InvalidArgument));
+            Assert.That(Assert.Throws<RefusedException>(() => new List<QueryRow>(kitchen.EnumerateQuery("SELECT nope")))!.Code,
+                Is.EqualTo(ErrorCode.QueryFailed));
+            using (IEnumerator<string> topics = kitchen.EnumerateTopics().GetEnumerator())
+            {
+                Assert.That(topics.MoveNext(), Is.True);
+                kitchen.Close();
+                Assert.Throws<ConnectionLostException>(() => topics.MoveNext());
+            }
         }
 
         [Test]

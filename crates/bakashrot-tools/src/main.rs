@@ -105,10 +105,20 @@ enum Command {
     },
     /// Lists the topics this client may use and the nodes of those it may
     /// read; every one if its roles have list_topics / list_nodes, or query.
+    /// --topics and --nodes keep the topics and nodes of the topic and node
+    /// pairs they match: `list topics --nodes kitchen` the topics kitchen
+    /// pushed to, `list nodes --topics 'sensors.*'` the nodes that pushed
+    /// to those.
     List {
         /// What to list.
         #[arg(value_enum, default_value_t = What::All)]
         what: What,
+        /// Only of the topics with this name or matching this pattern.
+        #[arg(long)]
+        topics: Option<String>,
+        /// Only of the nodes with this name or matching this pattern.
+        #[arg(long)]
+        nodes: Option<String>,
         /// Prints JSON, a line per list: {"kind":...,"names":[...],"truncated":...}.
         #[arg(long)]
         json: bool,
@@ -264,7 +274,12 @@ fn run(config: &Path, command: Command) -> Result<(), String> {
             let sql = input(&sql)?;
             println!("{}", connect(config)?.query(&sql).map_err(failed)?);
         }
-        Command::List { what, json } => {
+        Command::List {
+            what,
+            topics,
+            nodes,
+            json,
+        } => {
             let mut client = connect(config)?;
             let kinds = [
                 (NameKind::Topic, "topic", "Topics"),
@@ -277,7 +292,9 @@ fn run(config: &Path, command: Command) -> Result<(), String> {
                 ) {
                     continue;
                 }
-                let list = client.list_names(kind).map_err(failed)?;
+                let list = client
+                    .list_names(kind, topics.as_deref(), nodes.as_deref())
+                    .map_err(failed)?;
                 if json {
                     let json = serde_json::json!({
                         "kind": name,

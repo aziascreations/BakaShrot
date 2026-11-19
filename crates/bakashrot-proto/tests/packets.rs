@@ -98,6 +98,14 @@ fn samples() -> Vec<Packet> {
         AttachmentPart { data: vec![1] }.into(),
         ListNames {
             kind: NameKind::Topic,
+            topics: None,
+            nodes: None,
+        }
+        .into(),
+        ListNames {
+            kind: NameKind::Node,
+            topics: Some("sensors.*".into()),
+            nodes: Some("kitchen".into()),
         }
         .into(),
         NamesList {
@@ -297,8 +305,18 @@ fn shapes() {
         PacketType::Messages,
         (1u8, Vec::<u8>::new())
     )));
-    assert!(malformed(&raw(PacketType::ListNames, (3u8,))), "kind 3");
-    assert!(malformed(&raw(PacketType::ListNames, (0u8,))), "kind 0");
+    assert!(
+        malformed(&raw(PacketType::ListNames, (3u8, (), ()))),
+        "kind 3"
+    );
+    assert!(
+        malformed(&raw(PacketType::ListNames, (0u8, (), ()))),
+        "kind 0"
+    );
+    assert!(
+        malformed(&raw(PacketType::ListNames, (1u8,))),
+        "protocol 7's, no filters"
+    );
     assert!(
         malformed(&raw(
             PacketType::Attachment,
@@ -364,6 +382,19 @@ fn ranges() {
     assert!(invalid(&get(Some(1 << 63), 1)));
     assert!(Packet::decode(&get(Some(MAX_MESSAGE_ID), 1)).is_ok());
     assert!(invalid(&get(Some(MAX_MESSAGE_ID + 1), 1)));
+
+    let list = |topics: Option<&str>, nodes: Option<&str>| {
+        ListNames {
+            kind: NameKind::Node,
+            topics: topics.map(Into::into),
+            nodes: nodes.map(Into::into),
+        }
+        .encode()
+    };
+    assert!(Packet::decode(&list(Some("sensors.*"), Some("kitchen"))).is_ok());
+    assert!(invalid(&list(Some("a b"), None)));
+    assert!(invalid(&list(None, Some(""))));
+    assert!(invalid(&list(None, Some("12"))));
 
     let times = |pushed_at| {
         Messages {

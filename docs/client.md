@@ -67,11 +67,12 @@ Its conventions:
   on the other; the C runtime linked statically on Windows (the release
   DLL imports system DLLs only).
 
-Every export but `CreateClient` takes the handle first (left out below).
+Every export but `CreateClient` takes the handle first (left out below):
+a client's, or an enumeration's for the enumeration getters.
 
 | Exports | What |
 |---|---|
-| `CreateClient()`, `FreeClient` | a new client's handle (0 if it failed); freed, 1 |
+| `CreateClient()`, `FreeClient` | a new client's handle (0 if it failed); freed (its enumerations closed), 1 |
 | `SetCaCertificate`, `SetCertificate`, `SetPrivateKey`, `SetCrl` (`A`/`W`) | PEM text (starting with `-----BEGIN`), or the path of a file holding it; `SetCrl` null or empty for none. Before connecting (`AlreadyConnected`); a file that can't be read is `FileError` |
 | `Connect(Host, Port)` (`A`/`W`) | TLS with those; refused: `AuthRejected` (the server refused the certificate), `ServerNotVerified` (this client refused the server's), `NotAllowed` (none of its roles is the server's), `VersionMismatch` |
 | `IsConnected`, `Disconnect` | `IsConnected` notices a connection the server closed |
@@ -80,14 +81,38 @@ Every export but `CreateClient` takes the handle first (left out below).
 | `GetLatestMessageOf(Topic, Node)` (`A`/`W`) | 1, or 0 with `NotFound` when there's none yet |
 | `GetMessages(Topic, Node, After, Limit)` (`A`/`W`) | how many (0 isn't a failure), -1 on failure; then `GetMessageCount`, `SelectMessage(Index)`, `HasMoreMessages` |
 | `GetMessageId`, `GetMessagePushedAt`, `GetMessageAttachmentSize`, `IsMessageAttachmentReady`, `GetMessageData`/`Topic`/`Node` (`A`/`W`) | the selected message; topic and node as asked |
-| `ListTopics`, `ListNodes`, then `GetNamesList` (`A`/`W`) | how many; `{"kind":"topic","names":[...],"truncated":false}` |
-| `Query(Sql)`, then `GetQueryResult` (`A`/`W`) | `{"columns":[...],"rows":[[...],...]}` |
+| `ListNames(Kind, Topics, Nodes)` (`A`/`W`), then `GetNamesListAsJson` (`A`/`W`) | how many; `{"kind":"topic","names":[...],"truncated":false}`. 1 topics, 2 nodes, of the topic/node pairs `Topics` and `Nodes` match (a name or a pattern each, null for any): `(1, null, null)` every topic it may see, `(1, null, "kitchen")` the topics kitchen pushed to, `(2, "sensors.*", null)` the nodes that pushed to those |
+| `Query(Sql)` (`A`/`W`), then `GetQueryResultAsJson` (`A`/`W`) | `{"columns":[...],"rows":[[...],...]}` |
+| `EnumerateNames(Kind, Topics, Nodes)` (`A`/`W`), then `NextName`, `GetEnumName` (`A`/`W`), `GetNameCount`, `IsNamesListTruncated` | the same list without JSON: an enumeration's handle (0 on failure, the client's error); see below |
+| `EnumerateQuery(Sql)` (`A`/`W`), then `GetQueryColumnCount`, `GetQueryColumnName(Index)` (`A`/`W`), `NextQueryRow`, `GetQueryValue(Index)` (`A`/`W`), `IsQueryValueNull(Index)` | the same result without JSON, a row at a time; see below |
+| `CloseEnum` | an enumeration closed: 1, 0 if it wasn't one |
 | `PushMessageWithFile(Topic, Data, FilePath)`, `PushMessageWithData(Topic, Data, *Data, Size)` (`A`/`W`) | the id, -1 on failure; the attachment 1 byte and up, as much as the server takes (`TooBig`); a file read twice (its SHA-256 first), one changed in between refused (`DataMismatch`) |
 | `SaveAttachment(Topic, Node, MessageId, FilePath)` (`A`/`W`) | its size, -1 on failure (`NotFound`, `NotReady`, `AttachmentMismatch`); a failed one leaves no file |
 | `LoadAttachment(Topic, Node, MessageId)` (`A`/`W`), then `GetAttachmentData(*Buffer, Size)`, `FreeAttachmentData()` | into memory, for small ones; the getter returns the size, copies nothing if it doesn't fit |
 | `GetLastError`, `GetRefusalReason` (`A`/`W`) | why the client's last call failed |
 
 The header has each one's comment. Every name starts with `BakaShrot_`.
+
+**Enumerations**, like Win32's `FindFirstFile` / `FindNextFile` /
+`FindClose`: `EnumerateNames()` or `EnumerateQuery()` asks the server
+once and keeps the whole answer; `NextName()` / `NextQueryRow()` move to
+the next item (1, 0 once there are no more, -1 for a handle that isn't
+one of that kind), the getters read it. An enumeration starts before its
+first item, so `while (BakaShrot_NextName(e) == 1)` reads them all, none
+for an empty list. Several can be open at once, even on one client; the
+client's later calls don't change them. They don't outlive their client:
+`FreeClient()` closes them, their handles refused after. Otherwise
+`CloseEnum()` once done. Their handles are numbered with the clients',
+never reused: one is never the other's. A value's getter returns 0 for a
+null, `IsQueryValueNull()` tells it from an empty string.
+
+```c
+int64_t e = BakaShrot_EnumerateNamesW(client, 1, NULL, L"kitchen");
+while (BakaShrot_NextName(e) == 1) {
+    BakaShrot_GetEnumNameW(e, name, sizeof name);   /* a topic kitchen pushed to */
+}
+BakaShrot_CloseEnum(e);
+```
 
 ## Python
 
@@ -98,7 +123,9 @@ on 3.8), `client.node` once connected, `push(data, topic,
 attachment=None)` (the topic required; the attachment bytes or a path),
 `latest()`, `get_messages()`, `iter_messages()`, `follow()`,
 `get_attachment()` (bytes), `save_attachment()` (a file),
-`list_topics()` / `list_nodes()` (names), `query()` / `query_raw()`.
+`list_topics()` / `list_nodes()` (names; `topic=` and `node=`, a name or
+a pattern each, filter them: `list_topics(node="kitchen")` the topics
+kitchen pushed to), `query()` / `query_raw()`.
 Each `Client` has its own client in the DLL: several can be connected at
 once, from any threads.
 Errors: `RefusedError`, `ConnectionLostError`, `AuthError` (a certificate
@@ -140,8 +167,15 @@ using (Client client = new Client("10.0.0.2", 7000, "ca.crt", "kitchen.crt", "ki
 data[, byte[]])`, `PushFile(topic, data, path)`, `Latest()` (null if
 none), `GetMessages()` (a `MessagesPage`), `IterMessages()`, `Follow()`,
 `GetAttachment()` (bytes), `SaveAttachment()` (a file), `ListTopics()` /
-`ListNodes()` / `Query()` (the library's JSON, as a string: parsing it is
-the app's), `Close()` / `Dispose()`. The same exceptions as Python's:
+`ListNodes()` / `Query()` (the library's JSON, as a string: parsing it
+is the app's; `ListTopics(topic, node)` / `ListNodes(topic, node)`
+filter the lists as Python's do, null for any), `EnumerateTopics()` /
+`EnumerateNodes()` (the same, filtered the same, as an
+`IEnumerable<string>`) and `EnumerateQuery()` (`QueryRow`s: `Values`,
+null for NULL, by index or column name, `Columns`), over the library's
+enumerations, no JSON: each `foreach` asks again, the enumeration closed
+when it ends (`Close()` ends it too, `ConnectionLostException`),
+`Close()` / `Dispose()`. The same exceptions as Python's:
 `RefusedException`, `ConnectionLostException`, `AuthException`,
 `BakaShrotException`, each with its `ErrorCode`. Strings go as UTF-16 (the
 `W` exports); one with a NUL is refused (`InvalidArgument`) rather than
@@ -184,6 +218,8 @@ bakashrot messages logs kitchen -f --after latest --time
 bakashrot query "SELECT topic, count(*) FROM messages GROUP BY topic"
 bakashrot list                                 Topics (2): ... Nodes (1): ...
 bakashrot list nodes --json                    {"kind":"node","names":["kitchen"],"truncated":false}
+bakashrot list topics --nodes kitchen          Topics (1): the topics kitchen pushed to
+bakashrot list nodes --topics 'sensors.*'      Nodes (2): those that pushed to sensors.*
 ```
 
 - **`messages`:** the first 100 by default (`--limit 0` for all), `--after
