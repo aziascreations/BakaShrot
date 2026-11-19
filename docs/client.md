@@ -18,6 +18,31 @@ wire: `protocol.md`; the server's side: `server.md`.
 **Status:** steps 7 to 9: connecting, pushes, messages, attachments,
 names, queries, several clients.
 
+## The Rust client
+
+`bakashrot_client::Client`, blocking, one request at a time. A refusal
+(1-99), or an argument refused before anything is sent
+(`InvalidArgument`), keeps the connection. **Anything that leaves it out
+of step closes it** (2026-11-19): an I/O error, no answer within
+`answer_timeout()` (`ConnectionLost`), an answer that isn't the
+request's or doesn't decode (`ProtocolError`), an attachment's parts cut
+short or of the wrong size, a refusal among them, a source failing
+mid-upload (`FileError`). Every request after fails with `NotConnected`
+without reading anything: before, the socket stayed open, and a late
+answer could be read as the next request's (a push returning the
+previous push's id). `is_closed()` says so. The DLL forgets its client
+whenever it's closed so (it did on `ConnectionLost` and `ProtocolError`
+already; now on a file failing mid-upload too), so connecting again
+works; Python and C# go through it.
+
+- `set_answer_timeout()`: how long an answer, or sending a packet, may
+  take: 30 s (`ANSWER_TIMEOUT`) until changed, more than 0. Longer for a
+  slow query, say.
+- `is_open()`: false once closed; it looks at the socket without
+  blocking, then always makes it blocking again (it was left
+  non-blocking when it found the connection gone).
+- `ping()`: keeps an idle connection open (`protocol.md`, "Rules").
+
 ## Who connects: certificates
 
 A client is its certificate, issued by the CA the servers trust
@@ -242,6 +267,16 @@ bakashrot list nodes --topics 'sensors.*'      Nodes (2): those that pushed to s
   1.5 s). More: `server.md`, "Measured".
 
 ## Tests
+
+`crates/bakashrot-client/tests/failures.rs`, against a fake server (TLS
+with a test CA, then scripted answers): a late answer never taken for
+the next request's, a wrong, malformed or cut answer, a part of the
+wrong size, a refusal among the parts, a source failing mid-upload, a
+connection the server closed (each: closed, `NotConnected` after,
+nothing more sent); a refusal and an argument refused before sending
+keeping it; a longer timeout waiting for a slow answer; `is_open()`
+leaving it blocking. Each closing path broken on purpose once: the
+tests caught it.
 
 `crates/bakashrot-capi/tests/`, each against a server on a free port:
 

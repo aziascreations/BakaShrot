@@ -15,7 +15,7 @@ use bakashrot_proto::limits::{ALPN, KEEPALIVE_SECS, MAX_PACKET_SIZE};
 use bakashrot_proto::names::name_matches;
 use bakashrot_proto::packets::{
     Attachment, AttachmentPart, MissingAttachment, Pair, Ping, ReplicateAttachment,
-    ReplicateMessages, SyncState, SyncStateRequest,
+    ReplicateMessages, RequestRefused, SyncState, SyncStateRequest,
 };
 use bakashrot_proto::{ErrorCode, Packet, frame};
 use bakashrot_storage::AttachmentState;
@@ -371,11 +371,21 @@ async fn check_own_copy(
     attachment: &Attachment,
     message: &str,
 ) {
-    let read = shared.hash_parts(attachment_id, 0..attachment.part_count());
-    if let Ok(sha256) = read.await
-        && sha256.finish().as_ref() == attachment.sha256
-    {
-        return;
+    let read = shared
+        .hash_parts(attachment_id, 0..attachment.part_count())
+        .await
+        .map(|sha256| sha256.finish().as_ref() == attachment.sha256);
+    match judge(&read) {
+        OwnCopy::Intact => return,
+        OwnCopy::Damaged => {}
+        OwnCopy::Unknown => {
+            let why = read.err().map(|refused| refused.reason).unwrap_or_default();
+            warn!(
+                "{message}: this server's copy of its attachment couldn't be read back ({why}): \
+                 kept, checked again when a peer refuses it again"
+            );
+            return;
+        }
     }
     let damaged = Write::Damaged {
         attachment: attachment_id as u64,
@@ -388,6 +398,31 @@ async fn check_own_copy(
     }
 }
 
+/// What reading back this server's copy of an attachment says about it.
+#[derive(Debug, PartialEq, Eq)]
+enum OwnCopy {
+    /// Read whole, matching its SHA-256.
+    Intact,
+    /// Read whole and not matching, or a part missing: dropped and asked
+    /// for again.
+    Damaged,
+    /// The read failed (the database busy, a connection not opened...):
+    /// nothing is known, the copy is kept. Dropping it then could lose the
+    /// only one there is (this server the attachment's origin).
+    Unknown,
+}
+
+/// The verdict on a read-back: whether its SHA-256 matched, or why it
+/// failed.
+fn judge(read: &Result<bool, RequestRefused>) -> OwnCopy {
+    match read {
+        Ok(true) => OwnCopy::Intact,
+        Ok(false) => OwnCopy::Damaged,
+        Err(refused) if refused.code == ErrorCode::NotFound.code() => OwnCopy::Damaged,
+        Err(_) => OwnCopy::Unknown,
+    }
+}
+
 /// A topic and node, to compare without case.
 fn key(topic: &str, node: &str) -> (String, String) {
     (topic.to_ascii_lowercase(), node.to_ascii_lowercase())
@@ -395,4 +430,21 @@ fn key(topic: &str, node: &str) -> (String, String) {
 
 fn unexpected(packet: &Packet) -> String {
     format!("answered {}", packet.packet_type().name())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_copy_read_whole_or_missing_a_part_is_damaged() {
+        let refused = |code| Err(RequestRefused::new(code, "why"));
+        assert_eq!(judge(&Ok(true)), OwnCopy::Intact);
+        assert_eq!(judge(&Ok(false)), OwnCopy::Damaged);
+        // A part missing (read_part's NotFound): damaged too.
+        assert_eq!(judge(&refused(ErrorCode::NotFound)), OwnCopy::Damaged);
+        // A read that failed says nothing about the copy: kept.
+        assert_eq!(judge(&refused(ErrorCode::ServerError)), OwnCopy::Unknown);
+        assert_eq!(judge(&refused(ErrorCode::InvalidRequest)), OwnCopy::Unknown);
+    }
 }

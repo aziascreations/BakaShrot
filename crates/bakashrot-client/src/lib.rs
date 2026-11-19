@@ -17,6 +17,13 @@
 //! ALPN `bakashrot`, both ends' protocol versions, then the server's
 //! `Welcome` (`docs/protocol.md`). Errors carry the protocol's codes
 //! (`bakashrot_proto::ErrorCode`): a server's refusal keeps its own.
+//!
+//! **A failure that leaves the connection out of step closes it:** an
+//! I/O error, an answer that didn't come in time ([`Client::answer_timeout`]),
+//! one that isn't the request's, a part cut short. Every request after
+//! fails with `NotConnected` at once, without reading: a late answer is
+//! never taken for the next request's. Connect again. A refusal, or an
+//! argument refused before sending, keeps it.
 
 use aws_lc_rs::digest;
 use bakashrot_pki::{Revocations, tls};
@@ -102,6 +109,11 @@ pub struct Client {
     stream: StreamOwned<ClientConnection, TcpStream>,
     server: String,
     node: String,
+    /// How long an answer may take: [`ANSWER_TIMEOUT`] until changed.
+    answer_timeout: Duration,
+    /// Closed, after a failure that left it out of step: requests fail
+    /// with `NotConnected`.
+    closed: bool,
 }
 
 impl fmt::Debug for Client {
@@ -166,18 +178,41 @@ impl Client {
             stream,
             server: String::new(),
             node: String::new(),
+            answer_timeout: CONNECT_TIMEOUT,
+            closed: false,
         };
         match client.answer()? {
             Packet::Welcome(welcome) => {
                 client.server = welcome.server;
                 client.node = welcome.node;
             }
-            other => return Err(unexpected(&other)),
+            other => return Err(client.unexpected(&other)),
         }
-        let tcp = &client.stream.sock;
-        tcp.set_read_timeout(Some(ANSWER_TIMEOUT)).map_err(lost)?;
-        tcp.set_write_timeout(Some(ANSWER_TIMEOUT)).map_err(lost)?;
+        client.set_answer_timeout(ANSWER_TIMEOUT)?;
         Ok(client)
+    }
+
+    /// How long an answer may take before its request fails
+    /// (`ConnectionLost`, the connection closed): [`ANSWER_TIMEOUT`] (30 s)
+    /// until changed.
+    pub fn answer_timeout(&self) -> Duration {
+        self.answer_timeout
+    }
+
+    /// Sets how long an answer may take, more than 0: longer for a slow
+    /// query, say. It's also how long sending a packet may take. Past it,
+    /// the request fails and the connection is closed (a late answer would
+    /// be taken for the next request's).
+    pub fn set_answer_timeout(&mut self, timeout: Duration) -> Result<()> {
+        require(!timeout.is_zero(), || "an answer timeout of 0".to_owned())?;
+        self.check_open()?;
+        let tcp = &self.stream.sock;
+        let set = tcp
+            .set_read_timeout(Some(timeout))
+            .and_then(|()| tcp.set_write_timeout(Some(timeout)));
+        set.map_err(|error| self.io_failed(error))?;
+        self.answer_timeout = timeout;
+        Ok(())
     }
 
     /// The server's name.
@@ -193,6 +228,9 @@ impl Client {
     /// Whether the connection still looks open: the server hasn't closed
     /// it (after its idle timeout, say). Only a request tells for sure.
     pub fn is_open(&self) -> bool {
+        if self.closed {
+            return false;
+        }
         let tcp = &self.stream.sock;
         if tcp.set_nonblocking(true).is_err() {
             return false;
@@ -201,7 +239,17 @@ impl Client {
             Ok(read) => read > 0,
             Err(error) => error.kind() == io::ErrorKind::WouldBlock,
         };
-        open && tcp.set_nonblocking(false).is_ok()
+        // Blocking again whatever it found: the next request waits for
+        // its answer.
+        let blocking = tcp.set_nonblocking(false).is_ok();
+        open && blocking
+    }
+
+    /// Whether a failure closed the connection: every request fails with
+    /// `NotConnected` now, connect again. Unlike [`Client::is_open`], it
+    /// doesn't look at the socket.
+    pub fn is_closed(&self) -> bool {
+        self.closed
     }
 
     /// Keeps the connection open: the server closes one silent for
@@ -210,7 +258,7 @@ impl Client {
     pub fn ping(&mut self) -> Result<()> {
         match self.request(Ping {}.into())? {
             Packet::Pong(_) => Ok(()),
-            other => Err(unexpected(&other)),
+            other => Err(self.unexpected(&other)),
         }
     }
 
@@ -225,7 +273,7 @@ impl Client {
         };
         match self.request(push.into())? {
             Packet::MessagePushed(pushed) => Ok(pushed.message_id),
-            other => Err(unexpected(&other)),
+            other => Err(self.unexpected(&other)),
         }
     }
 
@@ -272,23 +320,22 @@ impl Client {
         };
         match self.request(push.into())? {
             Packet::Continue(_) => {}
-            other => return Err(unexpected(&other)),
+            other => return Err(self.unexpected(&other)),
         }
         for part in 0..attachment.part_count() {
             let part = &mut buffer[..attachment.part_len(part) as usize];
             if let Err(error) = source.read_exact(part) {
-                self.close();
-                return Err(file_error(error));
+                // The server waits for parts that won't come.
+                return Err(self.out_of_step(file_error(error)));
             }
-            let packet = Packet::from(AttachmentPart {
+            self.send(&Packet::from(AttachmentPart {
                 data: part.to_vec(),
-            });
-            frame::write(&mut self.stream, &packet.encode()).map_err(lost)?;
+            }))?;
         }
-        self.stream.flush().map_err(lost)?;
+        self.flush()?;
         match self.answer()? {
             Packet::MessagePushed(pushed) => Ok(pushed.message_id),
-            other => Err(unexpected(&other)),
+            other => Err(self.unexpected(&other)),
         }
     }
 
@@ -315,27 +362,26 @@ impl Client {
         };
         let attachment = match self.request(get.into())? {
             Packet::Attachment(attachment) => attachment,
-            other => return Err(unexpected(&other)),
+            other => return Err(self.unexpected(&other)),
         };
         let mut sha256 = digest::Context::new(&digest::SHA256);
         // A failing `out`: the parts are still all read, the connection
         // stays usable.
         let mut failed = None;
         for part in 0..attachment.part_count() {
-            let data = match self.answer()? {
-                Packet::AttachmentPart(part) => part.data,
-                other => {
-                    self.close();
-                    return Err(unexpected(&other));
-                }
+            // Parts come without a request each: anything else, a refusal
+            // too, leaves the rest of them unread.
+            let data = match self.answer() {
+                Ok(Packet::AttachmentPart(part)) => part.data,
+                Ok(other) => return Err(self.unexpected(&other)),
+                Err(error) => return Err(self.out_of_step(error)),
             };
             let expected = attachment.part_len(part);
             if data.len() as u64 != expected {
-                self.close();
-                return Err(Error::new(
+                return Err(self.out_of_step(Error::new(
                     ErrorCode::ProtocolError,
                     format!("part {part}: {} bytes, {expected} expected", data.len()),
-                ));
+                )));
             }
             sha256.update(&data);
             if failed.is_none() {
@@ -407,7 +453,7 @@ impl Client {
         };
         match self.request(get.into())? {
             Packet::Messages(messages) => Ok(messages),
-            other => Err(unexpected(&other)),
+            other => Err(self.unexpected(&other)),
         }
     }
 
@@ -437,7 +483,7 @@ impl Client {
         };
         match self.request(list.into())? {
             Packet::NamesList(names) => Ok(names),
-            other => Err(unexpected(&other)),
+            other => Err(self.unexpected(&other)),
         }
     }
 
@@ -450,40 +496,104 @@ impl Client {
         };
         match self.request(query.into())? {
             Packet::QueryResult(result) => Ok(result.json),
-            other => Err(unexpected(&other)),
+            other => Err(self.unexpected(&other)),
         }
     }
 
-    /// Closes the connection: it's out of step (a part not sent, or not
-    /// as expected). Every request fails then (`ConnectionLost`).
+    /// Closes the connection for good: every request fails then
+    /// (`NotConnected`).
     fn close(&mut self) {
+        self.closed = true;
         let _ = self.stream.sock.shutdown(Shutdown::Both);
+    }
+
+    /// `NotConnected` once closed.
+    fn check_open(&self) -> Result<()> {
+        match self.closed {
+            false => Ok(()),
+            true => Err(Error::new(
+                ErrorCode::NotConnected,
+                "the connection was closed after an earlier failure: connect again",
+            )),
+        }
+    }
+
+    /// `error`, which left the connection out of step: closed.
+    fn out_of_step(&mut self, error: Error) -> Error {
+        self.close();
+        error
+    }
+
+    /// An I/O error on the connection: closed. A timeout says so (its
+    /// answer may still come, after the next request).
+    fn io_failed(&mut self, error: io::Error) -> Error {
+        let timed_out = matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        );
+        let error = match timed_out {
+            true => Error::new(
+                ErrorCode::ConnectionLost,
+                format!(
+                    "no answer within {:?}: the connection is closed",
+                    self.answer_timeout
+                ),
+            ),
+            false => lost(error),
+        };
+        self.out_of_step(error)
+    }
+
+    /// An answer that isn't the request's: `ProtocolError`, closed.
+    fn unexpected(&mut self, packet: &Packet) -> Error {
+        self.out_of_step(unexpected(packet))
+    }
+
+    /// Writes a packet's frame (not flushed).
+    fn send(&mut self, packet: &Packet) -> Result<()> {
+        self.check_open()?;
+        // Refused before anything is written: the connection stays.
+        let frame = frame::encode(&packet.encode())
+            .map_err(|error| Error::new(ErrorCode::InvalidArgument, error.to_string()))?;
+        let written = self.stream.write_all(&frame);
+        written.map_err(|error| self.io_failed(error))
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        let flushed = self.stream.flush();
+        flushed.map_err(|error| self.io_failed(error))
     }
 
     /// Sends a request, reads its answer.
     fn request(&mut self, packet: Packet) -> Result<Packet> {
-        frame::write(&mut self.stream, &packet.encode()).map_err(lost)?;
-        self.stream.flush().map_err(lost)?;
+        self.send(&packet)?;
+        self.flush()?;
         self.answer()
     }
 
-    /// Reads the server's next packet: a refusal is an error.
+    /// Reads the server's next packet: a refusal is an error (the
+    /// connection kept), anything else wrong closes it.
     fn answer(&mut self) -> Result<Packet> {
-        let bytes = frame::read(&mut self.stream, MAX_PACKET_SIZE)
-            .map_err(lost)?
-            .ok_or_else(|| {
-                Error::new(
+        self.check_open()?;
+        let bytes = match frame::read(&mut self.stream, MAX_PACKET_SIZE) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                return Err(self.out_of_step(Error::new(
                     ErrorCode::ConnectionLost,
                     "the server closed the connection",
-                )
-            })?;
+                )));
+            }
+            Err(error) => return Err(self.io_failed(error)),
+        };
         match Packet::decode(&bytes) {
             Ok(Packet::RequestRefused(refused)) => Err(Error {
                 code: refused.code,
                 message: refused.reason,
             }),
             Ok(packet) => Ok(packet),
-            Err(error) => Err(Error::new(ErrorCode::ProtocolError, error.to_string())),
+            Err(error) => {
+                Err(self.out_of_step(Error::new(ErrorCode::ProtocolError, error.to_string())))
+            }
         }
     }
 }

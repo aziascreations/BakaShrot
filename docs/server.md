@@ -131,7 +131,10 @@ otherwise:
    part it needs. One it says doesn't match its SHA-256 is read back
    here: damaged (a disk, a bug), this server's copy is dropped and asked
    for again from its own peers (`replicating`, not served meanwhile),
-   instead of sent again at every check-in.
+   instead of sent again at every check-in. Damaged means read whole and
+   not matching, or a part missing; a read-back that fails otherwise (the
+   database busy, a connection not opened) says nothing, so the copy is
+   kept and warned about (2026-11-19): it may be the only one there is.
 
 **Receiving** (`accept_from.rs`): replication requests are answered only
 if the connection comes from `accept_from` (a hostname looked up at its

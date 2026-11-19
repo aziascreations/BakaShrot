@@ -124,9 +124,13 @@ impl State {
     fn fail(&mut self, error: Error) {
         self.last_error = error.code();
         self.reason = error.message().to_owned();
+        // The client closes its connection on those, and on others that
+        // leave it out of step (a file failing mid-upload): forgotten then,
+        // so connecting again works.
         let closed = [ErrorCode::ConnectionLost, ErrorCode::ProtocolError]
             .iter()
-            .any(|code| code.code() == error.code());
+            .any(|code| code.code() == error.code())
+            || self.client.as_ref().is_some_and(Client::is_closed);
         if closed {
             self.client = None;
         }

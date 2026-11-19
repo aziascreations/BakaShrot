@@ -389,6 +389,10 @@ fn revoked_certificates_are_dropped() {
     // Its open connection goes at its next request, a new one is refused.
     let error = connected.push("logs", "{}").unwrap_err();
     assert_eq!(error.code(), ErrorCode::ConnectionLost.code(), "{error}");
+    // Closed by the client too: the next one isn't even sent.
+    let error = connected.push("logs", "{}").unwrap_err();
+    assert_eq!(error.code(), ErrorCode::NotConnected.code(), "{error}");
+    assert!(!connected.is_open());
     let error = running.connect(&kitchen).unwrap_err();
     assert_eq!(error.code(), ErrorCode::AuthRejected.code(), "{error}");
     // Others go on.
@@ -1098,7 +1102,7 @@ fn attachment_edges() {
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::FileError.code(), "{error}");
     let error = kitchen.push("logs", "{}").unwrap_err();
-    assert_eq!(error.code(), ErrorCode::ConnectionLost.code(), "{error}");
+    assert_eq!(error.code(), ErrorCode::NotConnected.code(), "{error}");
     let started = Instant::now();
     while uploads(&mut analyst) != none_left {
         assert!(
