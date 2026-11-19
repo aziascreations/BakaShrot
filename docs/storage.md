@@ -97,8 +97,8 @@ read while the writer writes. Answers are the protocol's own types:
 | Reader | Gives | How |
 |---|---|---|
 | `messages(topic, node, after, limit)` | `Messages`: after an id in order, or the last ones; about 1 MiB at most (a bigger message alone), `more` if others follow | a range of keys |
-| `topics()`, `nodes()` | the names with messages | `streams` |
-| `heads()`, `last_id(topic, node)` | each stream's last id: `SyncState` | `streams` |
+| `topics()` | the topics with messages | `streams` |
+| `heads()`, `heads_after(after, limit)`, `last_id(topic, node)` | each stream's last id, all or a page after a pair (names without case): `SyncState` | `streams` (its `(topic, node)` index) |
 | `to_replicate(topic, node, after, limit)` | messages after an id as replication sends them (attachments' SHA-256s), about 1 MiB at most | a range of keys |
 | `missing_attachments(limit)` | replicated attachments not all here, from which part | `attachments` (index on states) |
 | `attachment(topic, node, id)`, `read_part(id, part)` | an attachment, its parts | the message's key; a part's key |

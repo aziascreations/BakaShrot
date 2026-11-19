@@ -63,12 +63,15 @@ __version__ = "0.4.0"
 __all__ = [
     "Client", "Message", "MessagesPage", "NamesList",
     "BakaShrotError", "RefusedError", "ConnectionLostError", "AuthError", "ErrorCode",
-    "MAX_GET_MESSAGES", "MAX_MESSAGE_SIZE",
+    "MAX_GET_MESSAGES", "MAX_MESSAGE_SIZE", "KEEPALIVE_SECONDS",
 ]
 
 # The protocol's: crates/bakashrot-proto/src/limits.rs.
 MAX_GET_MESSAGES = 10000
 MAX_MESSAGE_SIZE = 16 * 1024 * 1024 - 4096
+# The server closes a connection silent for 5 min: ping() every minute or
+# so while waiting longer than that (follow() does it itself).
+KEEPALIVE_SECONDS = 60
 
 DLL_NAME = "bakashrot.dll" if sys.platform == "win32" else "libbakashrot.so"
 
@@ -250,6 +253,7 @@ class _Dll:
             "BakaShrot_ConnectA": (I, [H, P, L]),
             "BakaShrot_IsConnected": (I, [H]),
             "BakaShrot_Disconnect": (I, [H]),
+            "BakaShrot_Ping": (I, [H]),
             "BakaShrot_GetNodeA": (I, [H, S, I]),
             "BakaShrot_PushMessageToA": (Q, [H, P, P]),
             "BakaShrot_GetLatestMessageOfA": (I, [H, P, P]),
@@ -429,6 +433,27 @@ class Client:
 
     # --- Requests ----------------------------------------------------------
 
+    def ping(self) -> None:
+        """Keeps the connection open: the server closes one silent for 5
+        min. An app waiting longer than that between requests calls it
+        every minute or so (KEEPALIVE_SECONDS). ConnectionLostError if
+        the connection is gone."""
+        with self._lock:
+            self._check_connected()
+            if not self._dll.Ping(self._handle):
+                raise self._failed("Ping")
+
+    def _wait(self, seconds: float) -> None:
+        """Sleeps `seconds`, pinging every KEEPALIVE_SECONDS meanwhile."""
+        left = seconds
+        while True:
+            step = min(left, KEEPALIVE_SECONDS)
+            time.sleep(step)
+            left -= step
+            if left <= 0:
+                return
+            self.ping()
+
     def push(self, data: Any, topic: str,
              attachment: Union[None, bytes, bytearray, memoryview, str, os.PathLike] = None) -> int:
         """Pushes a message into topic, under the client's node. data is
@@ -538,8 +563,9 @@ class Client:
     def follow(self, topic: str, node: str, after: Union[int, str] = "latest",
                interval: float = 0.5, batch: int = 1000) -> Iterator[Message]:
         """Every message of topic/node after `after`, then new ones as they
-        come, checking every `interval` seconds once caught up. Forever:
-        stop iterating to stop. after="latest" starts with the next new one.
+        come, checking every `interval` seconds once caught up (pinging
+        every minute meanwhile if it's longer). Forever: stop iterating to
+        stop. after="latest" starts with the next new one.
         Raises ConnectionLostError if the connection fails: nothing
         reconnects by itself, connect() again and follow from the last id."""
         if after == "latest":
@@ -553,7 +579,7 @@ class Client:
             if page.messages:
                 after = page.last_id
             if not page.more:
-                time.sleep(interval)
+                self._wait(interval)
 
     def list_topics(self, topic: Optional[str] = None, node: Optional[str] = None) -> NamesList:
         """The topics with messages that the client may push to or read (every one with list_topics or query).

@@ -201,6 +201,18 @@ namespace NibblePoker.BakaShrot
                 Native.BakaShrot_FreeClient(handle);
         }
 
+        /// <summary>Keeps the connection open: the server closes one silent
+        /// for 5 min. An app waiting longer between requests calls it every
+        /// minute or so (KeepAliveMs); Follow() does it itself.</summary>
+        public void Ping()
+        {
+            lock (sync)
+                Check(Native.BakaShrot_Ping(Handle()), "Ping");
+        }
+
+        /// <summary>How often to Ping() while waiting between requests, in ms.</summary>
+        public const int KeepAliveMs = 60000;
+
         /// <summary>Pushes data (JSON or not) to topic, as this client's node: its id.</summary>
         public long Push(string topic, string data)
         {
@@ -278,8 +290,9 @@ namespace NibblePoker.BakaShrot
         }
 
         /// <summary>Every message after id after, then new ones as they
-        /// come, checking every intervalMs: forever, stop enumerating to
-        /// stop. Nothing reconnects by itself.</summary>
+        /// come, checking every intervalMs (pinging every minute meanwhile
+        /// if it's longer): forever, stop enumerating to stop. Nothing
+        /// reconnects by itself.</summary>
         public IEnumerable<Message> Follow(string topic, string node, long after, int intervalMs)
         {
             while (true)
@@ -289,7 +302,7 @@ namespace NibblePoker.BakaShrot
                     yield return message;
                 after = Math.Max(after, page.LastId);
                 if (!page.More)
-                    Thread.Sleep(intervalMs);
+                    Wait(intervalMs);
             }
         }
 
@@ -418,6 +431,21 @@ namespace NibblePoker.BakaShrot
         }
 
         // --- Inside ---------------------------------------------------------
+
+        // Sleeps intervalMs, pinging every KeepAliveMs meanwhile.
+        private void Wait(int intervalMs)
+        {
+            int left = intervalMs;
+            while (true)
+            {
+                int step = Math.Min(left, KeepAliveMs);
+                Thread.Sleep(step);
+                left -= step;
+                if (left <= 0)
+                    return;
+                Ping();
+            }
+        }
 
         private IEnumerable<string> EnumerateNames(int kind, string topic, string node)
         {
@@ -563,6 +591,7 @@ namespace NibblePoker.BakaShrot
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern IntPtr BakaShrot_SetCrlW(long client, string crl);
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern IntPtr BakaShrot_ConnectW(long client, string host, int port);
         [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_IsConnected(long client);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_Ping(long client);
         [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetNodeW(long client, byte[] buffer, IntPtr size);
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern long BakaShrot_PushMessageToW(long client, string topic, string data);
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern IntPtr BakaShrot_GetLatestMessageOfW(long client, string topic, string node);

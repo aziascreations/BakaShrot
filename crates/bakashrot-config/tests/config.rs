@@ -59,6 +59,7 @@ fn defaults() {
     assert_eq!(server.synchronous, Synchronous::Full);
     assert_eq!(server.max_attachment_size, 1 << 30);
     assert_eq!(server.retention_interval, Duration::from_secs(60));
+    assert_eq!(server.idle_database_connections, 8);
     assert_eq!(config.retention.age("logs"), None);
     assert_eq!(config.replication.retry_delay, Duration::from_secs(10));
     assert_eq!(config.replication.sync_interval, Duration::from_secs(5));
@@ -75,6 +76,7 @@ database = "data/messages.sqlite"
 synchronous = "NORMAL"
 max_attachment_size = 0
 retention_interval = "1h30m"
+idle_database_connections = 0
 
 [replication]
 push_to = ["10.0.0.2:7000", "server-3.lan:7001", "[fd00::4]:7000"]
@@ -89,6 +91,7 @@ batch_size = 10000
     assert_eq!(config.server.synchronous, Synchronous::Normal);
     assert_eq!(config.server.max_attachment_size, 0);
     assert_eq!(config.server.retention_interval, Duration::from_secs(5400));
+    assert_eq!(config.server.idle_database_connections, 0);
     assert_eq!(config.replication.push_to.len(), 3);
     assert_eq!(config.replication.accept_from[2], "fd00::4");
     assert_eq!(config.replication.retry_delay, Duration::from_secs(60));
@@ -120,6 +123,24 @@ logs = "30d"
     assert_eq!(age("sensors.kettle"), hours(12));
     // "*" last, though it's first.
     assert_eq!(age("other"), days(365));
+}
+
+/// Ages go up to 100 years, and the cutoff never wraps around.
+#[test]
+fn retention_cutoff() {
+    let config = Config::parse(&with(
+        "[retention]\nlogs = \"36500d\"\nsensors = \"1h\"\n\"*\" = \"forever\"\n",
+    ))
+    .unwrap();
+    assert_eq!(config.retention.age("logs"), days(36_500));
+    let now = 2_000_000_000_000;
+    assert_eq!(
+        config.retention.cutoff("sensors", now),
+        Some(now - 3_600_000)
+    );
+    // Longer than the clock is old: nothing is past it yet.
+    assert_eq!(config.retention.cutoff("logs", now), Some(0));
+    assert_eq!(config.retention.cutoff("other", now), None);
 }
 
 #[test]
@@ -277,6 +298,14 @@ fn refusals() {
             &with("retention_interval = \"0s\"\n"),
             "'0s' isn't a duration",
         ),
+        (
+            &with("idle_database_connections = 513\n"),
+            "513 idle database connections: 0 to 512",
+        ),
+        (
+            &with("idle_database_connections = -1\n"),
+            "invalid value: integer `-1`",
+        ),
         // [retention]
         (
             &with("[retention]\nlogs = \"30\"\n"),
@@ -294,6 +323,16 @@ fn refusals() {
         (
             &with("[retention]\nsensors.kitchen = \"1d\"\n"),
             "quote names with dots",
+        ),
+        // 100 years at most: past 2^64 ms an age once wrapped around to
+        // almost nothing ("18446744073709552s" was 384 ms).
+        (
+            &with("[retention]\nlogs = \"36501d\"\n"),
+            "100 years (36500d) at most",
+        ),
+        (
+            &with("[retention]\nlogs = \"18446744073709552s\"\n"),
+            "100 years (36500d) at most",
         ),
         // [replication]
         (

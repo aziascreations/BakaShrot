@@ -20,8 +20,11 @@ connecting, pushes and messages (`server.md`).
   expected), no host names or IPs. Revoked certificates are in the CA's
   CRL: servers check it, and so do clients given it (servers dialing their
   peers too).
-- **ALPN `bakashrot`** (`limits::ALPN`): both ends offer it, what isn't
-  BakaShrot doesn't get past the TLS handshake. It isn't versioned.
+- **ALPN `bakashrot`** (`limits::ALPN`): both ends offer it and check it
+  was agreed on, what isn't BakaShrot doesn't get past TLS. rustls only
+  refuses a client offering other protocols, so the server closes one
+  offering none right after the handshake, before the versions
+  (2026-11-19). It isn't versioned.
 - **The versions, first:** right after TLS, each end sends its protocol
   version, 4 bytes little-endian (`frame::write_version()`), and reads the
   other's (`frame::check_version()`). Different versions: both ends
@@ -36,6 +39,11 @@ connecting, pushes and messages (`server.md`).
   or over `MAX_PACKET_SIZE` (16 MiB), aborts the connection as soon as it
   arrived. The blocking client reads and writes them with `frame::read()`
   / `write()`, the async server with `frame::codec()` (`tokio-util`).
+  The limit applies to authenticated links only, as the owner asked
+  (2026-11-08, then 4 KB before authenticating): TLS authenticates both
+  ends before any frame, so nothing unauthenticated reaches one (rustls
+  bounds the handshake itself). Kept rather than lifted (2026-11-19): a
+  buggy peer announcing gigabytes would make the other end hold them.
 
 ## Packets
 
@@ -84,8 +92,8 @@ format, its values are checked all the same.)
 
 Direction: **C** client, **S** server, **P** peer (a server linked to
 another, as its client). Ids are protocol 7's own (6 can't connect; 8
-added `ListNames`' filters); a new packet takes the next one, none is
-ever reused.
+added `ListNames`' filters and `SyncState`'s pages); a new packet takes
+the next one, none is ever reused.
 
 | Id | Packet | Dir | Fields | Answered by |
 |---|---|---|---|---|
@@ -103,10 +111,12 @@ ever reused.
 | 12 | NamesList | S→C | `kind`, `truncated` bool, `[name...]` (65536 at most) | |
 | 13 | Query | C→S | `sql` str | QueryResult / RequestRefused |
 | 14 | QueryResult | S→C | `json` str: `{"columns":[...],"rows":[[...],...]}` | |
-| 15 | SyncStateRequest | P→S | none | SyncState / RequestRefused |
-| 16 | SyncState | S→P | `[topic...]`, `[node...]` (names and patterns it takes from P), `[[topic, node, last_id]...]`, `[[topic, node, message_id, next_part]...]` (attachments it lacks, 256 at most) | |
+| 15 | SyncStateRequest | P→S | `after`: `[topic, node]`, the last head of the previous page, or nil for the first | SyncState / RequestRefused |
+| 16 | SyncState | S→P | `more` bool, `[topic...]`, `[node...]` (names and patterns it takes from P), `[[topic, node, last_id]...]` (in the order of their names, 32768 at most), `[[topic, node, message_id, next_part]...]` (attachments it lacks, 256 at most); the lists and attachments in the first page only | |
 | 17 | ReplicateMessages | P→S | `topic`, `node`, `[[id, pushed_at, data, [size, sha256] or nil]...]` (1-10000, ids strictly increasing) | MessagePushed (the last id) / RequestRefused |
 | 18 | ReplicateAttachment | P→S | `topic`, `node`, `message_id`, `from_part` | Continue, then its parts, then MessagePushed / RequestRefused |
+| 19 | Ping | C→S, P→S | none: keeps an idle connection open | Pong |
+| 20 | Pong | S→C, S→P | none | |
 
 ## Flows
 
@@ -118,11 +128,13 @@ Reading         C: GetMessages(after: id)           S: Messages, `more` if other
   the latest    C: GetMessages(after: nil, 1)       S: Messages (empty if none)
 An attachment   C: GetAttachment(from_part)         S: Attachment, then AttachmentPart x the rest
                                                        / RequestRefused (NotFound, NotReady)
-Replicating     P: SyncStateRequest                 S: SyncState
+Replicating     P: SyncStateRequest                 S: SyncState, `more` if others follow
+                P: SyncStateRequest(after) x pages  S: SyncState
                 P: ReplicateMessages x the batches  S: MessagePushed each / RequestRefused
                 P: ReplicateAttachment x missing    S: Continue / RequestRefused
                                                        (NotReady: another peer sending it)
                 P: AttachmentPart x from next_part  S: MessagePushed / RequestRefused
+Keeping alive   C: Ping (every minute while idle)   S: Pong
 ```
 
 - **Parts are streamed:** no request or answer per part, TCP paces them.
@@ -133,8 +145,12 @@ Replicating     P: SyncStateRequest                 S: SyncState
   them failed, then refuses: the client never has to read while sending.
 - **A server failing while it sends parts** closes the connection; the
   client asks again `from_part` the next one it needs.
-- **Replication:** `SyncState` is all a check-in needs. The peer compares
-  it with what it has, by name, sends the messages the server lacks in
+- **Replication:** `SyncState` is all a check-in needs. Its heads come
+  in pages of `MAX_HEADS_PER_PACKET` (32768): the biggest first page,
+  every list full and every name 64 characters, is about 13.3 MB, in a
+  16 MiB frame (`the_biggest_sync_state_fits`). The peer asks for the
+  next `after` the last head while `more`, then compares them all with
+  what it has, by name, sends the messages the server lacks in
   batches of up to `batch_size` messages and about 1 MiB (a bigger
   message alone), then the attachments it listed.
 
@@ -142,6 +158,14 @@ Replicating     P: SyncStateRequest                 S: SyncState
 
 - **One request at a time:** a client sends one, waits for its answer (the
   parts of an attachment being part of its request or answer).
+- **Silence:** the server closes a connection with no request for
+  `IDLE_TIMEOUT_SECS` (5 min). An end waiting longer between requests
+  sends a `Ping` every `KEEPALIVE_SECS` (1 min) meanwhile (added
+  2026-11-19, protocol 8 not released yet): the tool's and the bindings'
+  follows and the replication links do it themselves; the DLL has no
+  thread of its own, so an app idle that long calls `BakaShrot_Ping()`.
+  A `Ping` needs no permission; a revoked certificate's is dropped like
+  any request.
 - **Refuse or abort:** valid but not allowed or not found (permissions,
   unknown names, over a limit, a failed query) is a `RequestRefused` with a
   code, the connection stays. Malformed or out of order (a bad frame, a

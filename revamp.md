@@ -188,6 +188,42 @@ Also decided (2026-11-13):
     writes, asked by the owner: the query connection opens the file
     read-only (`SQLITE_OPEN_READONLY`), beside `query_only`, the
     read-only statement check, one statement only and no PRAGMAs.
+  - **The 16 MiB frame limit stays** (2026-11-19): it was the limit once
+    authenticated (2026-11-08, 4 KB before); since TLS authenticates
+    both ends before any frame, it's the only one left. Not lifted: a
+    buggy peer announcing gigabytes would make the other end hold them.
+  - **`SyncState` in pages** (2026-11-19, protocol 8, asked by the owner
+    for the worst case): `SyncStateRequest` takes `after` (the last head
+    received, a `Pair`), `SyncState` has `more` and 32768 heads at most
+    (`MAX_HEADS_PER_PACKET`), the lists and missing attachments in the
+    first page only. The biggest first page (every list full, every name
+    64 characters) is about 13.3 MB, tested. A cursor by names, like
+    `GetMessages`' `after`, rather than several answers to one request
+    (one request, one answer) or ids (each server's own). The receiver
+    reads its heads in pages too (`heads_after`, on the `(topic, node)`
+    index); the sender gathers every page before comparing.
+  - **Fixes from a read of the code** (2026-11-19, asked by the owner):
+    - **ALPN required by the server too:** rustls only refuses a client
+      offering other protocols; one offering none is now closed right
+      after TLS, before the versions.
+    - **Retention ages, 100 years at most** (`MAX_RETENTION_AGE`,
+      `"36500d"`): turning a huge one into milliseconds wrapped around
+      (`"18446744073709552s"` was 384 ms). The cutoff is computed in one
+      place (`Retention::cutoff`), saturating.
+    - **`Ping` / `Pong`** (19, 20; protocol 8, not released yet): the
+      server closes a connection silent for 5 min
+      (`IDLE_TIMEOUT_SECS`). A ping every minute (`KEEPALIVE_SECS`) keeps
+      one open: the tool's `--follow`, Python's `follow()`, C#'s
+      `Follow()` and the replication links send it while waiting longer
+      (so `sync_interval` over 5 min works now). The DLL has no thread of
+      its own, so it can't on its own: `BakaShrot_Ping()` for apps, with
+      `ping()` / `Ping()` in Python and C#. Preferred to a longer idle
+      timeout (connections of dead clients would linger) or to
+      reconnecting by itself (nothing does, on purpose).
+    - **`[server] idle_database_connections`** (8 by default, 0-512): the
+      idle read and query connections each pool keeps (they were all
+      kept, as many as ever ran at once); one idle for a minute is
+      closed (a thread looks every 10 s).
 - **Schema v9, not compatible with v8** (2026-11-13): old databases aren't
   opened, their data isn't carried over (the real-life tests start empty).
   `docs/storage.md`:
@@ -279,7 +315,8 @@ Also decided (2026-11-13):
   - **version 0.2.0**; **0.3.0** on 2026-11-16 (the identity OID under
     NibblePoker's PEN, the roles as the only lists of topics,
     `list_topics` / `list_nodes`); **0.4.0** on 2026-11-19 (protocol 8:
-    filtered lists; the DLL's enumerations; the C# binding).
+    filtered lists, `SyncState` in pages; the DLL's enumerations; the C#
+    binding).
 - **The PureBasic version removed** (2026-11-15): `OldSource/` deleted,
   kept in git history (up to `68966a8`). What of its notes and designs
   still holds went to `docs/known-issues.md`; the rest was already
@@ -357,8 +394,9 @@ None right now.
 
 The PureBasic version's, still not fixed:
 
-- **Gaps in a topic and node's ids** aren't detected on replication (6),
-  and **`SyncState` is one packet** (9): `docs/known-issues.md`.
+- **Gaps in a topic and node's ids** aren't detected on replication (6):
+  `docs/known-issues.md`. (**`SyncState` in one packet**, 9, fixed
+  2026-11-19: its pages.)
 - **Peers are trusted with what they replicate** (12), unless messages
   get signed by their node: `docs/known-issues.md`.
 - **Names left out of replication aren't warned about:** a topic or
@@ -408,6 +446,8 @@ by hand.
 | 14 | C# binding | `bindings/csharp`: `Client` over the `W` exports, C# 2 and .NET 2.0's library only (net35, netstandard2.0); the NuGet package `NibblePoker.BakaShrot.Client` with the four platforms' libraries, packed by CI after the releases (an artifact) | Its NUnit tests pass on net48 and net8.0 (by hand, not in `test.ps1`); the package loads the library on net8.0 and net48 | Asked by the owner 2026-11-18 (the name too) | Done 2026-11-18 |
 | 15 | Filtered lists | `ListNames`' `topics` and `nodes` filters (protocol 8): server, client, `BakaShrot_ListNames` (`A`/`W`), Python, C#, PureBasic, `bakashrot list --topics/--nodes` | `end_to_end.rs` `names` (patterns, case, permissions), `exports.rs`, `check_bakashrot.py`, the NUnit tests | Decided 2026-11-19 | Done 2026-11-19 |
 | 16 | The DLL's enumerations | `GetNamesListAsJson`, `GetQueryResultAsJson`; `EnumerateNames` / `EnumerateQuery`, `Next...`, their getters, `CloseEnum` (`enumerations.rs`); `ListTopics` / `ListNodes` dropped; PureBasic's example on them; C#'s `EnumerateTopics` / `EnumerateNodes` / `EnumerateQuery` (`IEnumerable`, asked at each `foreach`) | `exports.rs` `enumerations` (names, query rows and nulls, several at once, bad and closed handles, freed with the client); the NUnit `Enumerations` test | Decided 2026-11-19 | Done 2026-11-19 |
+| 17 | `SyncState` in pages | `SyncStateRequest.after`, `SyncState.more`, `MAX_HEADS_PER_PACKET` (protocol 8); `heads_after` in storage; both ends of replication | `packets.rs` `the_biggest_sync_state_fits` and the page rules; `storage.rs` heads in pages; `end_to_end.rs` `sync_state_in_pages` (full and partial pages, the lists in the first only, a cursor in another case or not stored, pairs a peer doesn't take skipped, exactly a page, a pattern refused) and `replication_across_pages` (only what's after a head of the second page sent); each part broken on purpose once, every test caught it | Decided 2026-11-19 | Done 2026-11-19 |
+| 18 | Fixes from a read of the code | The server requiring ALPN; retention ages capped at 100 years; `Ping` / `Pong` (protocol 8) with `BakaShrot_Ping`, Python's and C#'s `ping`, pings in the follows and the replication links; `idle_database_connections` and idle connections closed | `end_to_end.rs` `certificates_refused` (no ALPN: closed), `pings`, `no_idle_database_connections`; `config.rs` the cap, `retention_cutoff`, the key; the server's `pools_keep_few_and_close_the_idle`; `packets.rs` samples and bytes; `exports.rs`, `check_bakashrot.py`, the NUnit `Closing` | Decided 2026-11-19 | Done 2026-11-19 |
 
 Each step ends with its tests passing and its docs updated (the crate's
 docs, `docs/`, this file's status), then a commit when the owner

@@ -391,11 +391,16 @@ fn exports() {
             assert_eq!(error(client).0, code(ErrorCode::InvalidArgument));
         }
         assert_eq!(BakaShrot_IsConnected(client), 1);
+        // A ping keeps it open, its last error cleared.
+        assert_eq!(BakaShrot_Ping(client), 1);
+        assert_eq!(error(client).0, 0);
 
         // Closed: requests refused, the settings kept.
         assert_eq!(BakaShrot_Disconnect(client), 1);
         assert_eq!(BakaShrot_Disconnect(client), 0);
         assert_eq!(BakaShrot_IsConnected(client), 0);
+        assert_eq!(BakaShrot_Ping(client), 0);
+        assert_eq!(error(client).0, code(ErrorCode::NotConnected));
         assert_eq!(get_w(client, BakaShrot_GetNodeW), "");
         assert_eq!(BakaShrot_QueryW(client, w("SELECT 1").as_ptr()), 0);
         assert_eq!(error(client).0, code(ErrorCode::NotConnected));
@@ -470,6 +475,7 @@ fn clients() {
         assert_eq!(failed, code(ErrorCode::InvalidArgument));
         assert!(why.contains("no client 99"), "{why}");
         assert_eq!(BakaShrot_IsConnected(99), 0);
+        assert_eq!(BakaShrot_Ping(99), 0);
         assert_eq!(BakaShrot_GetMessageId(-5), 0);
         assert_eq!(get_w(99, BakaShrot_GetMessageDataW), "");
         assert_eq!(BakaShrot_FreeClient(99), 0);

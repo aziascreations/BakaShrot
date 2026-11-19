@@ -6,20 +6,23 @@
 use bakashrot_client::{Client, Settings};
 use bakashrot_config::Config;
 use bakashrot_pki::{Ca, Identity, Issued, Revocations, Usage, summarize, tls};
-use bakashrot_proto::limits::{ATTACHMENT_PART_SIZE, MAX_MESSAGE_SIZE, MAX_PACKET_SIZE};
+use bakashrot_proto::limits::{
+    ATTACHMENT_PART_SIZE, MAX_HEADS_PER_PACKET, MAX_MESSAGE_SIZE, MAX_PACKET_SIZE,
+};
 use bakashrot_proto::packets::{
-    Attachment, AttachmentPart, GetAttachment, MessagePushed, Messages, NameKind, PushMessage,
-    ReplicateAttachment, ReplicateMessages, ReplicatedMessage, StoredAttachment, SyncState,
-    SyncStateRequest,
+    Attachment, AttachmentPart, GetAttachment, Head, MessagePushed, Messages, NameKind, Pair, Ping,
+    Pong, PushMessage, ReplicateAttachment, ReplicateMessages, ReplicatedMessage, StoredAttachment,
+    SyncState, SyncStateRequest,
 };
 use bakashrot_proto::{ErrorCode, Packet, frame};
 use bakashrot_server::Server;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tokio_rustls::rustls::{ClientConnection, StreamOwned};
+use tokio_rustls::rustls::{ClientConfig, ClientConnection, StreamOwned};
 
 const CONFIG: &str = r#"
 [server]
@@ -219,6 +222,49 @@ fn push_and_read_back() {
     );
 }
 
+/// A ping is answered, needs no permission, and the connection goes on;
+/// a revoked certificate's ping drops it, as any request.
+#[test]
+fn pings() {
+    let running = Running::start("pings");
+    // No role allows anything here but being known.
+    let nobody = running.issue("idle", &["explorer"]);
+    let mut client = running.connect(&nobody).unwrap();
+    client.ping().unwrap();
+    client.ping().unwrap();
+    assert!(client.list_names(NameKind::Topic, None, None).is_ok());
+
+    let mut raw = Raw::connect(&running, &nobody);
+    raw.send(Ping {});
+    assert!(matches!(raw.receive(), Some(Packet::Pong(_))));
+    // An answer, not a request: the server closes.
+    raw.send(Pong {});
+    assert!(raw.receive().is_none());
+
+    let serial = summarize(&nobody.certificate).unwrap().serial;
+    let crl = running.ca.revocation_list(&[serial], 30).unwrap();
+    std::fs::write(running.folder.join("ca.crl"), crl).unwrap();
+    running.server.reload_revocations().unwrap();
+    let error = client.ping().unwrap_err();
+    assert_eq!(error.code(), ErrorCode::ConnectionLost.code(), "{error}");
+}
+
+/// No idle database connection kept: each read and query opens its own.
+#[test]
+fn no_idle_database_connections() {
+    let running = Running::start_with("no-idle", "idle_database_connections = 0\n");
+    let mut client = running
+        .connect(&running.issue("kitchen", &["sensor", "reader", "analyst"]))
+        .unwrap();
+    for n in 1..=3 {
+        assert_eq!(client.push("logs", &format!("{{\"n\":{n}}}")).unwrap(), n);
+        let latest = client.get_messages("logs", "kitchen", None, 1).unwrap();
+        assert_eq!(latest.messages[0].id, n);
+    }
+    let json = client.query("SELECT count(*) AS n FROM messages").unwrap();
+    assert_eq!(json, r#"{"columns":["n"],"rows":[["3"]]}"#);
+}
+
 #[test]
 fn refusals_keep_the_connection() {
     let running = Running::start("refusals");
@@ -297,6 +343,20 @@ fn certificates_refused() {
     )
     .unwrap_err();
     assert_eq!(error.code(), ErrorCode::ServerNotVerified.code(), "{error}");
+
+    // A client of the CA offering no ALPN: TLS goes through (rustls only
+    // refuses other protocols), then the server closes before its version.
+    let kitchen = running.issue("kitchen", &["sensor"]);
+    let mut silent = Raw::open(&running, &kitchen, |config| config.alpn_protocols.clear());
+    frame::write_version(&mut silent.0).unwrap();
+    let _ = silent.0.flush();
+    assert!(frame::read_version(&mut silent.0).is_err());
+    // Offering it, the same client gets in.
+    let mut offering = Raw::open(&running, &kitchen, |_| {});
+    frame::write_version(&mut offering.0).unwrap();
+    offering.0.flush().unwrap();
+    frame::read_version(&mut offering.0).unwrap();
+    assert!(matches!(offering.receive(), Some(Packet::Welcome(_))));
 
     // Nothing listening.
     let error = Client::connect(
@@ -922,22 +982,30 @@ struct Raw(StreamOwned<ClientConnection, TcpStream>);
 
 impl Raw {
     fn connect(running: &Running, issued: &Issued) -> Raw {
-        let config = tls::client_config(
-            &running.ca_certificate,
-            &issued.certificate,
-            &issued.key,
-            Revocations::none().shared(),
-        )
-        .unwrap();
-        let tcp = TcpStream::connect(&running.address).unwrap();
-        tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let connection = ClientConnection::new(config, tls::server_name()).unwrap();
-        let mut raw = Raw(StreamOwned::new(connection, tcp));
+        let mut raw = Raw::open(running, issued, |_| {});
         frame::write_version(&mut raw.0).unwrap();
         raw.0.flush().unwrap();
         frame::read_version(&mut raw.0).unwrap();
         assert!(matches!(raw.receive(), Some(Packet::Welcome(_))));
         raw
+    }
+
+    /// TLS only, its client config changed by `change` first: the
+    /// versions and the welcome are the caller's.
+    fn open(running: &Running, issued: &Issued, change: impl FnOnce(&mut ClientConfig)) -> Raw {
+        let mut config = (*tls::client_config(
+            &running.ca_certificate,
+            &issued.certificate,
+            &issued.key,
+            Revocations::none().shared(),
+        )
+        .unwrap())
+        .clone();
+        change(&mut config);
+        let tcp = TcpStream::connect(&running.address).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let connection = ClientConnection::new(Arc::new(config), tls::server_name()).unwrap();
+        Raw(StreamOwned::new(connection, tcp))
     }
 
     fn send(&mut self, packet: impl Into<Packet>) {
@@ -1442,13 +1510,184 @@ fn replication() {
     );
 }
 
-/// A server's `SyncState`, asked over `raw`.
+/// A server's `SyncState`, asked over `raw`: its first page.
 fn sync_state(raw: &mut Raw) -> SyncState {
-    raw.send(SyncStateRequest {});
+    sync_page(raw, None)
+}
+
+/// A page of a server's `SyncState`, the heads after `after`.
+fn sync_page(raw: &mut Raw, after: Option<Pair>) -> SyncState {
+    raw.send(SyncStateRequest { after });
     match raw.receive() {
         Some(Packet::SyncState(state)) => state,
         other => panic!("expected a SyncState, got {other:?}"),
     }
+}
+
+/// Adds `count` topic and node pairs to the database at `path`, topics
+/// `{prefix}000001` and on, node "far", each pair's last id its number:
+/// faster than pushing.
+fn add_pairs(path: &std::path::Path, prefix: &str, count: usize) {
+    let raw = rusqlite::Connection::open(path).unwrap();
+    raw.execute(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2) \
+         INSERT INTO streams (topic, node, last_id) \
+         SELECT printf('%s%06d', ?1, i), 'far', i FROM n",
+        rusqlite::params![prefix, count],
+    )
+    .unwrap();
+}
+
+/// The pair of a head, to ask the page after it.
+fn after(head: &Head) -> Option<Pair> {
+    Some(Pair {
+        topic: head.topic.clone(),
+        node: head.node.clone(),
+    })
+}
+
+/// Heads as (topic, node, last id), to compare.
+fn triples(heads: &[Head]) -> Vec<(String, String, u64)> {
+    heads
+        .iter()
+        .map(|head| (head.topic.clone(), head.node.clone(), head.last_id))
+        .collect()
+}
+
+#[test]
+fn sync_state_in_pages() {
+    const PAGE: usize = MAX_HEADS_PER_PACKET;
+    // "picky" takes only topics starting with "b".
+    let b = Running::start_with(
+        "pages",
+        "\n[replication]\naccept_from = [\"127.0.0.1\"]\n\n\
+         [roles.picky]\naccept_topics = [\"b*\"]\n",
+    );
+    // A page of "b" pairs, between 1000 "a" and 1000 "c" ones.
+    let database = b.folder.join("bakashrot.sqlite");
+    let b = b.restart_after(|| {
+        add_pairs(&database, "a", 1000);
+        add_pairs(&database, "b", PAGE);
+        add_pairs(&database, "c", 1000);
+    });
+    let mut every: Vec<(String, String, u64)> = Vec::new();
+    for (prefix, count) in [("a", 1000), ("b", PAGE), ("c", 1000)] {
+        every.extend((1..=count as u64).map(|n| (format!("{prefix}{n:06}"), "far".into(), n)));
+    }
+
+    // A peer taking everything: a full first page with the lists, then the
+    // rest after its last head, without them; every pair once, in order.
+    let mut peer = Raw::connect(&b, &b.issue("server-x", &["peer"]));
+    let first = sync_page(&mut peer, None);
+    assert!(first.more);
+    assert_eq!(first.heads.len(), PAGE);
+    assert_eq!(
+        (first.topics.as_slice(), first.nodes.as_slice()),
+        (["*".to_string()].as_slice(), ["*".to_string()].as_slice())
+    );
+    let second = sync_page(&mut peer, after(first.heads.last().unwrap()));
+    assert!(!second.more);
+    assert!(second.topics.is_empty() && second.nodes.is_empty() && second.missing.is_empty());
+    let mut both = triples(&first.heads);
+    both.extend(triples(&second.heads));
+    assert_eq!(both, every);
+
+    // The pair asked after, its names in another case: the same page.
+    let last = first.heads.last().unwrap();
+    let shouted = Pair {
+        topic: last.topic.to_uppercase(),
+        node: last.node.to_uppercase(),
+    };
+    assert_eq!(sync_page(&mut peer, Some(shouted)).heads, second.heads);
+    // A pair it doesn't have: from the next one after it.
+    let between = Pair {
+        topic: "b000005".into(),
+        node: "a".into(),
+    };
+    assert_eq!(
+        sync_page(&mut peer, Some(between)).heads[0].topic,
+        "b000005"
+    );
+    // After the very last: nothing, nothing more.
+    let end = sync_page(&mut peer, after(second.heads.last().unwrap()));
+    assert!(end.heads.is_empty() && !end.more);
+
+    // A peer taking only "b": the others are skipped, not counted. Exactly
+    // a page of its own: one page, no empty one after it.
+    let mut picky = Raw::connect(&b, &b.issue("server-y", &["picky"]));
+    let only = sync_page(&mut picky, None);
+    assert!(!only.more);
+    assert_eq!(only.topics, ["b*"]);
+    assert_eq!(triples(&only.heads), every[1000..1000 + PAGE]);
+    // One more "b" (made while it runs): two pages, the second just it.
+    add_pairs(&database, "bz", 1);
+    let first = sync_page(&mut picky, None);
+    assert!(first.more);
+    assert_eq!(first.heads.len(), PAGE);
+    let second = sync_page(&mut picky, after(first.heads.last().unwrap()));
+    assert!(!second.more);
+    assert_eq!(
+        triples(&second.heads),
+        [("bz000001".into(), "far".into(), 1)]
+    );
+
+    // A pattern to ask after is malformed: the connection is dropped.
+    let pattern = Pair {
+        topic: "b*".into(),
+        node: "far".into(),
+    };
+    picky.send(SyncStateRequest {
+        after: Some(pattern),
+    });
+    assert_eq!(picky.receive(), None);
+}
+
+#[test]
+fn replication_across_pages() {
+    // b with a page and more of pairs before "logs", and kitchen's last id
+    // in "logs" 5 (its messages gone): that head is on the second page.
+    let b = Running::start_with(
+        "across-pages-b",
+        "\n[replication]\naccept_from = [\"127.0.0.1\"]\n",
+    );
+    let database = b.folder.join("bakashrot.sqlite");
+    let b = b.restart_after(|| {
+        add_pairs(&database, "a", MAX_HEADS_PER_PACKET + 1000);
+        let raw = rusqlite::Connection::open(&database).unwrap();
+        raw.execute(
+            "INSERT INTO streams (topic, node, last_id) VALUES ('logs', 'kitchen', 5)",
+            [],
+        )
+        .unwrap();
+    });
+    let a = b.peer(
+        "across-pages-a",
+        "server-a",
+        &format!(
+            "\n[replication]\npush_to = [\"{}\"]\nsync_interval = \"1s\"\n\
+             retry_delay = \"1s\"\n",
+            b.address
+        ),
+    );
+    let mut on_a = a.connect(&a.issue("kitchen", &["sensor"])).unwrap();
+    let mut on_b = b.connect(&b.issue("watcher", &["reader"])).unwrap();
+    let ids = |client: &mut Client| {
+        client
+            .get_messages("logs", "kitchen", Some(0), 10)
+            .map(|messages| messages.messages.iter().map(|m| m.id).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    // a sends only what's after b's 5: the second page was read. (Without
+    // it, a would take b to be at 0 and send all 6.)
+    for n in 1..=6 {
+        on_a.push("logs", &format!("{{\"n\":{n}}}")).unwrap();
+    }
+    wait_for("#6 on b", || ids(&mut on_b) == [6]);
+    on_a.push("logs", "{\"n\":7}").unwrap();
+    wait_for("#7 on b", || ids(&mut on_b) == [6, 7]);
+    // Check-ins after that send nothing more.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(ids(&mut on_b), [6, 7]);
 }
 
 #[test]

@@ -11,11 +11,11 @@ use crate::connection::SEND_TIMEOUT;
 use crate::writer::Write;
 use bakashrot_config::Permissions;
 use bakashrot_pki::tls;
-use bakashrot_proto::limits::{ALPN, MAX_PACKET_SIZE};
-use bakashrot_proto::names::{names_equal, pattern_matches};
+use bakashrot_proto::limits::{ALPN, KEEPALIVE_SECS, MAX_PACKET_SIZE};
+use bakashrot_proto::names::name_matches;
 use bakashrot_proto::packets::{
-    Attachment, AttachmentPart, MissingAttachment, ReplicateAttachment, ReplicateMessages,
-    SyncState, SyncStateRequest,
+    Attachment, AttachmentPart, MissingAttachment, Pair, Ping, ReplicateAttachment,
+    ReplicateMessages, SyncState, SyncStateRequest,
 };
 use bakashrot_proto::{ErrorCode, Packet, frame};
 use bakashrot_storage::AttachmentState;
@@ -58,10 +58,13 @@ async fn keep_linked(shared: Arc<Shared>, address: String) {
                 info!("{address}: linked to {}", link.name);
                 last_failure.clear();
                 loop {
-                    match link.check_in(&shared).await {
-                        Ok(true) => {}
-                        Ok(false) => sleep(replication.sync_interval).await,
-                        Err(why) => break format!("{} ({address}): {why}", link.name),
+                    let checked = match link.check_in(&shared).await {
+                        Ok(true) => Ok(()),
+                        Ok(false) => link.wait(replication.sync_interval).await,
+                        Err(why) => Err(why),
+                    };
+                    if let Err(why) = checked {
+                        break format!("{} ({address}): {why}", link.name);
                     }
                 }
             }
@@ -139,20 +142,11 @@ impl Link {
     /// Whether it sent something it took.
     async fn check_in(&mut self, shared: &Arc<Shared>) -> Result<bool, String> {
         self.sent = false;
-        let state = match self.ask(SyncStateRequest {}.into()).await? {
-            Packet::SyncState(state) => state,
-            Packet::RequestRefused(refused) => return Err(format!("refused: {}", refused.reason)),
-            other => return Err(unexpected(&other)),
-        };
+        let (state, theirs) = self.sync_state().await?;
         let heads = shared
             .read(|reader| reader.heads())
             .await
             .map_err(|refused| refused.reason)?;
-        let theirs: HashMap<(String, String), u64> = state
-            .heads
-            .iter()
-            .map(|head| (key(&head.topic, &head.node), head.last_id))
-            .collect();
         for head in heads {
             let (topic, node) = (head.topic, head.node);
             if !self.sends(&state, &topic, &node) {
@@ -171,13 +165,44 @@ impl Link {
         Ok(self.sent)
     }
 
+    /// Its `SyncState`, every page: the first (the lists), and the last
+    /// id of each topic and node.
+    async fn sync_state(&mut self) -> Result<(SyncState, HashMap<(String, String), u64>), String> {
+        let mut theirs = HashMap::new();
+        let mut first = None;
+        let mut after = None;
+        loop {
+            let mut page = match self.ask(SyncStateRequest { after }.into()).await? {
+                Packet::SyncState(page) => page,
+                Packet::RequestRefused(refused) => {
+                    return Err(format!("refused: {}", refused.reason));
+                }
+                other => return Err(unexpected(&other)),
+            };
+            after = match page.more {
+                true => page.heads.last().map(|head| Pair {
+                    topic: head.topic.clone(),
+                    node: head.node.clone(),
+                }),
+                false => None,
+            };
+            theirs.extend(
+                page.heads
+                    .drain(..)
+                    .map(|head| (key(&head.topic, &head.node), head.last_id)),
+            );
+            first.get_or_insert(page);
+            if after.is_none() {
+                return Ok((first.expect("a page came"), theirs));
+            }
+        }
+    }
+
     /// Whether it takes `node`'s messages in `topic` (its `SyncState`) and
     /// may be sent them (its roles here).
     fn sends(&self, state: &SyncState, topic: &str, node: &str) -> bool {
-        let listed = |list: &[String], name: &str| {
-            list.iter()
-                .any(|entry| names_equal(entry, name) || pattern_matches(entry, name))
-        };
+        let listed =
+            |list: &[String], name: &str| list.iter().any(|entry| name_matches(entry, name));
         listed(&state.topics, topic)
             && listed(&state.nodes, node)
             && self.permissions.sends(topic, node)
@@ -290,6 +315,26 @@ impl Link {
             other => return Err(unexpected(&other)),
         }
         Ok(())
+    }
+
+    /// Waits `duration` before the next check-in, with a `Ping` every
+    /// `KEEPALIVE_SECS` meanwhile: the other server closes a link silent
+    /// for `IDLE_TIMEOUT_SECS`.
+    async fn wait(&mut self, duration: Duration) -> Result<(), String> {
+        let keepalive = Duration::from_secs(KEEPALIVE_SECS);
+        let mut left = duration;
+        loop {
+            let step = left.min(keepalive);
+            sleep(step).await;
+            left -= step;
+            if left.is_zero() {
+                return Ok(());
+            }
+            match self.ask(Ping {}.into()).await? {
+                Packet::Pong(_) => {}
+                other => return Err(unexpected(&other)),
+            }
+        }
     }
 
     async fn ask(&mut self, packet: Packet) -> Result<Packet, String> {

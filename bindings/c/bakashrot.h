@@ -118,6 +118,14 @@ ptrdiff_t BakaShrot_IsConnected(int64_t client);
 ptrdiff_t BakaShrot_Disconnect(int64_t client);
 
 /**
+ * Keeps the connection open: 1, or 0 if it failed (`ConnectionLost`:
+ * connect again). The server closes a connection silent for 5 min; an
+ * app waiting longer between requests calls this every minute or so
+ * (the DLL has no thread of its own to do it).
+ */
+ptrdiff_t BakaShrot_Ping(int64_t client);
+
+/**
  * The node this client is, as the server said when connecting: its
  * certificate's name. Empty when not connected.
  */

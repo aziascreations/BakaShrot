@@ -9,7 +9,7 @@ use bakashrot_proto::packets::{
     Attachment as Sent, Head, MessageEntry, Messages, MissingAttachment, ReplicatedMessage,
     StoredAttachment,
 };
-use rusqlite::{Connection, OptionalExtension, Row};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 
 /// About how many bytes of messages one answer carries: past it, the rest
 /// is left for the next request (`more`). A bigger message goes alone.
@@ -160,11 +160,25 @@ impl Reader {
             .map_err(Error::from)
     }
 
-    /// Every topic and node's last id: what `SyncState` compares.
+    /// Every topic and node's last id, in the order of their names
+    /// (without case).
     pub fn heads(&self) -> Result<Vec<Head>> {
+        self.heads_after(None, usize::MAX)
+    }
+
+    /// Topics and nodes' last ids, what `SyncState` compares: `limit` at
+    /// most, in the order of their names (without case), those after the
+    /// pair `after` (from the first without).
+    pub fn heads_after(&self, after: Option<(&str, &str)>, limit: usize) -> Result<Vec<Head>> {
+        // No name is empty: ("", "") comes before every pair.
+        let (topic, node) = after.unwrap_or(("", ""));
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         self.connection
-            .prepare_cached("SELECT topic, node, last_id FROM streams ORDER BY topic, node")?
-            .query_map([], |row| {
+            .prepare_cached(
+                "SELECT topic, node, last_id FROM streams WHERE (topic, node) > (?1, ?2) \
+                 ORDER BY topic, node LIMIT ?3",
+            )?
+            .query_map(params![topic, node, limit], |row| {
                 Ok(Head {
                     topic: row.get(0)?,
                     node: row.get(1)?,

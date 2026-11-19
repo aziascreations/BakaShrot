@@ -173,6 +173,31 @@ fn pushing_and_reading() {
             ("sensors".into(), "kitchen".into(), 1)
         ]
     );
+    // In pages: after a pair (its names without case), so many at most.
+    let page = |after, limit| -> Vec<_> {
+        reader
+            .heads_after(after, limit)
+            .unwrap()
+            .into_iter()
+            .map(|h| (h.topic, h.node))
+            .collect()
+    };
+    assert_eq!(
+        page(None, 2),
+        [
+            ("logs".into(), "garage".into()),
+            ("logs".into(), "kitchen".into())
+        ]
+    );
+    assert_eq!(
+        page(Some(("LOGS", "Kitchen")), 2),
+        [("sensors".into(), "kitchen".into())]
+    );
+    assert_eq!(
+        page(Some(("logs", "h")), 1),
+        [("logs".into(), "kitchen".into())]
+    );
+    assert!(page(Some(("sensors", "kitchen")), 2).is_empty());
     assert_eq!(reader.last_id("logs", "kitchen").unwrap(), 3);
     assert_eq!(reader.last_id("nope", "kitchen").unwrap(), 0);
 }

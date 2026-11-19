@@ -504,6 +504,18 @@ pub extern "C" fn BakaShrot_Disconnect(client: i64) -> isize {
     })
 }
 
+/// Keeps the connection open: 1, or 0 if it failed (`ConnectionLost`:
+/// connect again). The server closes a connection silent for 5 min; an
+/// app waiting longer between requests calls this every minute or so
+/// (the DLL has no thread of its own to do it).
+#[unsafe(no_mangle)]
+pub extern "C" fn BakaShrot_Ping(client: i64) -> isize {
+    call(client, 0, |state| {
+        state.client()?.ping()?;
+        Ok(1)
+    })
+}
+
 fn node(state: &State) -> &str {
     state.client.as_ref().map_or("", Client::node)
 }

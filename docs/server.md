@@ -118,7 +118,9 @@ otherwise:
 
 1. `SyncStateRequest`: the other server answers what it takes from this
    one (topics and nodes, patterns included), its last id in each topic
-   and node, and the attachments it lacks (256 at most).
+   and node, and the attachments it lacks (256 at most). The last ids
+   come in pages of 32768, each asked after the last of the previous
+   one, until none follow.
 2. **The messages:** for each topic and node here that it takes and that
    its roles here may be sent (`send_topics`, `send_nodes`), and where
    it's behind, the messages after its
@@ -157,7 +159,8 @@ the same ids with different messages, undetected.
 ## A connection
 
 1. **TLS:** the client's certificate must be the CA's, valid, not revoked,
-   with an identity (`certificates.md`). A refused one gets TLS's alert,
+   with an identity (`certificates.md`), and ALPN `bakashrot` agreed on
+   (a client offering none is closed at once). A refused one gets TLS's alert,
    then a gentle close: the server shuts down and reads until the client
    closes (1 s at most). Closing at once reset the connection (the
    client's version bytes unread), which could beat the alert to the
@@ -176,7 +179,7 @@ the same ids with different messages, undetected.
 | Timeout | |
 |---|---|
 | TLS, versions, welcome | 10 s (the server); the client's connect too |
-| Silence between requests | 5 min, then the server closes |
+| Silence between requests | 5 min, then the server closes (a `Ping` is a request: links and follows send one every minute while they wait) |
 | A packet sent (an answer, an attachment's part, to a peer too) | 30 s (the server), then it closes: a client that stopped reading doesn't hold a connection |
 | An answer | 30 s (the client) |
 | An attachment's next part | 30 s (the server), then it closes |
@@ -355,7 +358,11 @@ each:
 - refusals keeping the connection (not allowed, unknown topic, a bad name
   the client catches);
 - certificates refused (no known role, with why; another CA's client; a
-  client trusting another CA; nothing listening);
+  client trusting another CA; a client offering no ALPN; nothing
+  listening);
+- pings (answered with no permission needed, a `Pong` sent to the server
+  closing it, a revoked certificate's ping dropped); a server keeping no
+  idle database connection still serving reads and queries;
 - revoked certificates (an open connection dropped at its next request, a
   new one refused, others going on, a bad CRL refused);
 - six connections pushing at once (one id stream per node, none lost or

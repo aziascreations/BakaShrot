@@ -12,6 +12,15 @@ pub const PROTOCOL_VERSION: u32 = 8;
 /// checked once connected, so a mismatch is told as such.
 pub const ALPN: &[u8] = b"bakashrot";
 
+/// How long a server lets a connection stay silent between requests
+/// before it closes it, in seconds (5 min). An end that waits longer
+/// between requests sends a `Ping` every [`KEEPALIVE_SECS`] meanwhile.
+pub const IDLE_TIMEOUT_SECS: u64 = 300;
+
+/// How often an end waiting between requests sends a `Ping` to keep the
+/// connection open, in seconds: well under [`IDLE_TIMEOUT_SECS`].
+pub const KEEPALIVE_SECS: u64 = 60;
+
 /// The biggest packet on the wire, in bytes (a frame's size field).
 pub const MAX_PACKET_SIZE: usize = 16 * 1024 * 1024;
 
@@ -42,6 +51,11 @@ pub const MAX_NAMES_LIST_ENTRIES: usize = 65_536;
 
 /// The most attachments a `SyncState` lists as missing at once.
 pub const MAX_MISSING_ATTACHMENTS: usize = 256;
+
+/// The most heads in one `SyncState`: the others come in the next ones
+/// (`more`). With every list of the first full and every name 64
+/// characters long, it still fits in a packet (about 13.3 MB).
+pub const MAX_HEADS_PER_PACKET: usize = 32_768;
 
 /// Attachments go in parts of this many bytes, the last one what's left.
 pub const ATTACHMENT_PART_SIZE: u64 = 1024 * 1024;

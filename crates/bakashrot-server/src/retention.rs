@@ -31,10 +31,9 @@ pub(crate) async fn run(shared: &Arc<Shared>) {
 async fn once(shared: &Arc<Shared>) -> Result<(), RequestRefused> {
     let now = crate::now();
     for topic in shared.read(|reader| reader.topics()).await? {
-        let Some(age) = shared.config.retention.age(&topic) else {
+        let Some(cutoff) = shared.config.retention.cutoff(&topic, now) else {
             continue;
         };
-        let cutoff = now.saturating_sub(age.as_millis() as u64);
         let deleted = repeat(shared, MESSAGES_PER_WRITE, |limit| Write::DeleteBefore {
             topic: topic.clone(),
             cutoff,

@@ -287,9 +287,13 @@ namespace NibblePoker.BakaShrot.Tests
         public void Closing()
         {
             Client kitchen = Server.Connect("kitchen");
+            kitchen.Ping();
+            Assert.That(kitchen.Connected, Is.True, "still connected after a ping");
             kitchen.Close();
             Assert.That(kitchen.Connected, Is.False);
             ConnectionLostException lost = Assert.Throws<ConnectionLostException>(() => kitchen.Push("logs", "x"))!;
+            Assert.That(lost.Code, Is.EqualTo(ErrorCode.NotConnected));
+            lost = Assert.Throws<ConnectionLostException>(() => kitchen.Ping())!;
             Assert.That(lost.Code, Is.EqualTo(ErrorCode.NotConnected));
             kitchen.Connect();
             Assert.That(kitchen.Connected, Is.True, "connects again");

@@ -76,6 +76,7 @@ a client's, or an enumeration's for the enumeration getters.
 | `SetCaCertificate`, `SetCertificate`, `SetPrivateKey`, `SetCrl` (`A`/`W`) | PEM text (starting with `-----BEGIN`), or the path of a file holding it; `SetCrl` null or empty for none. Before connecting (`AlreadyConnected`); a file that can't be read is `FileError` |
 | `Connect(Host, Port)` (`A`/`W`) | TLS with those; refused: `AuthRejected` (the server refused the certificate), `ServerNotVerified` (this client refused the server's), `NotAllowed` (none of its roles is the server's), `VersionMismatch` |
 | `IsConnected`, `Disconnect` | `IsConnected` notices a connection the server closed |
+| `Ping` | 1, or 0 if the connection is gone: keeps it open. The server closes one silent for 5 min; the DLL has no thread of its own, so an app idle longer calls it every minute or so |
 | `GetNode` (`A`/`W`) | the node the server says this client is |
 | `PushMessageTo(Topic, Data)` (`A`/`W`) | the id, -1 on failure |
 | `GetLatestMessageOf(Topic, Node)` (`A`/`W`) | 1, or 0 with `NotFound` when there's none yet |
@@ -121,7 +122,8 @@ certificate, key, crl=None)` (PEM text or paths) or
 `Client.from_file("client.toml")` (Python 3.11+, `tomllib`; the rest runs
 on 3.8), `client.node` once connected, `push(data, topic,
 attachment=None)` (the topic required; the attachment bytes or a path),
-`latest()`, `get_messages()`, `iter_messages()`, `follow()`,
+`latest()`, `get_messages()`, `iter_messages()`, `follow()` (pinging
+every minute while it waits longer), `ping()` (`KEEPALIVE_SECONDS`),
 `get_attachment()` (bytes), `save_attachment()` (a file),
 `list_topics()` / `list_nodes()` (names; `topic=` and `node=`, a name or
 a pattern each, filter them: `list_topics(node="kitchen")` the topics
@@ -165,7 +167,8 @@ using (Client client = new Client("10.0.0.2", 7000, "ca.crt", "kitchen.crt", "ki
 `new Client(host, port, ca, certificate, key, crl)` (PEM text or paths,
 `crl` null for none), `Connect()`, `Node`, `Connected`, `Push(topic,
 data[, byte[]])`, `PushFile(topic, data, path)`, `Latest()` (null if
-none), `GetMessages()` (a `MessagesPage`), `IterMessages()`, `Follow()`,
+none), `GetMessages()` (a `MessagesPage`), `IterMessages()`, `Follow()`
+(pinging every minute while it waits longer), `Ping()` (`KeepAliveMs`),
 `GetAttachment()` (bytes), `SaveAttachment()` (a file), `ListTopics()` /
 `ListNodes()` / `Query()` (the library's JSON, as a string: parsing it
 is the app's; `ListTopics(topic, node)` / `ListNodes(topic, node)`
@@ -224,8 +227,8 @@ bakashrot list nodes --topics 'sensors.*'      Nodes (2): those that pushed to s
 
 - **`messages`:** the first 100 by default (`--limit 0` for all), `--after
   <id>` or `latest`; data as stored, a line break in it spanning lines;
-  `--follow` checks every `--interval` ms (500) until stopped or the
-  connection fails (exit 1); `--time` adds the push time between the id and
+  `--follow` checks every `--interval` ms (500, up to an hour, pinging
+  every minute meanwhile) until stopped or the connection fails (exit 1); `--time` adds the push time between the id and
   the data.
 - **Attachments:** `push -a <file>`; `attachment` replaces the file,
   leaves none if it fails; `latest` says a message's (", not on this

@@ -62,6 +62,7 @@ PrototypeC.i BakaShrot_SetCrl_Prototype(Client.q, Crl.p-unicode)
 PrototypeC.i BakaShrot_Connect_Prototype(Client.q, Host.p-unicode, Port.l)
 PrototypeC.i BakaShrot_IsConnected_Prototype(Client.q)
 PrototypeC.i BakaShrot_Disconnect_Prototype(Client.q)
+PrototypeC.i BakaShrot_Ping_Prototype(Client.q)
 PrototypeC.i BakaShrot_GetNode_Prototype(Client.q, *Buffer, BufferSize.i)
 PrototypeC.q BakaShrot_PushMessageTo_Prototype(Client.q, Topic.p-unicode, JsonData.p-unicode)
 PrototypeC.i BakaShrot_GetLatestMessageOf_Prototype(Client.q, Topic.p-unicode, Node.p-unicode)
@@ -112,6 +113,7 @@ Global BakaShrot_SetCrl.BakaShrot_SetCrl_Prototype
 Global BakaShrot_Connect.BakaShrot_Connect_Prototype
 Global BakaShrot_IsConnected.BakaShrot_IsConnected_Prototype
 Global BakaShrot_Disconnect.BakaShrot_Disconnect_Prototype
+Global BakaShrot_Ping.BakaShrot_Ping_Prototype
 Global BakaShrot_GetNode.BakaShrot_GetNode_Prototype
 Global BakaShrot_PushMessageTo.BakaShrot_PushMessageTo_Prototype
 Global BakaShrot_GetLatestMessageOf.BakaShrot_GetLatestMessageOf_Prototype
@@ -199,6 +201,7 @@ Procedure.i BakaShrot_LoadClient(DllPath.s)
 	BakaShrot_Connect                  = BakaShrot_ClientFunction("BakaShrot_ConnectW")
 	BakaShrot_IsConnected              = BakaShrot_ClientFunction("BakaShrot_IsConnected")
 	BakaShrot_Disconnect               = BakaShrot_ClientFunction("BakaShrot_Disconnect")
+	BakaShrot_Ping                     = BakaShrot_ClientFunction("BakaShrot_Ping")
 	BakaShrot_GetNode                  = BakaShrot_ClientFunction("BakaShrot_GetNodeW")
 	BakaShrot_PushMessageTo            = BakaShrot_ClientFunction("BakaShrot_PushMessageToW")
 	BakaShrot_GetLatestMessageOf       = BakaShrot_ClientFunction("BakaShrot_GetLatestMessageOfW")

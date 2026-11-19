@@ -6,11 +6,13 @@ use crate::{Shared, accept_from, now};
 use aws_lc_rs::digest;
 use bakashrot_config::Permissions;
 use bakashrot_pki::Identity;
-use bakashrot_proto::limits::{MAX_MESSAGE_SIZE, MAX_NAMES_LIST_ENTRIES, MAX_PACKET_SIZE};
+use bakashrot_proto::limits::{
+    ALPN, IDLE_TIMEOUT_SECS, MAX_MESSAGE_SIZE, MAX_NAMES_LIST_ENTRIES, MAX_PACKET_SIZE,
+};
 use bakashrot_proto::names::{name_matches, names_equal};
 use bakashrot_proto::packets::{
     Attachment, AttachmentPart, Continue, GetAttachment, GetMessages, ListNames, MessagePushed,
-    Messages, NameKind, NamesList, PushMessage, Query, QueryResult, RequestRefused, Welcome,
+    Messages, NameKind, NamesList, Pong, PushMessage, Query, QueryResult, RequestRefused, Welcome,
 };
 use bakashrot_proto::{ErrorCode, Packet, frame};
 use bakashrot_storage::AttachmentState;
@@ -29,8 +31,9 @@ use tracing::{debug, info};
 /// How long TLS and the versions may take.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long a connection may stay silent between requests.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a connection may stay silent between requests (a `Ping`
+/// counts).
+const IDLE_TIMEOUT: Duration = Duration::from_secs(IDLE_TIMEOUT_SECS);
 
 /// How long an attachment's next part may take to come.
 const PART_TIMEOUT: Duration = Duration::from_secs(30);
@@ -107,7 +110,10 @@ async fn serve(shared: &Arc<Shared>, tcp: TcpStream, address: IpAddr) -> Result<
             Packet::GetMessages(get) => get_messages(shared, &peer, get).await,
             Packet::ListNames(list) => list_names(shared, &peer, list).await,
             Packet::Query(query) => self::query(shared, &peer, query).await,
-            Packet::SyncStateRequest(_) => accept_from::sync_state(shared, &mut peer).await,
+            Packet::Ping(_) => Pong {}.into(),
+            Packet::SyncStateRequest(request) => {
+                accept_from::sync_state(shared, &mut peer, request).await
+            }
             Packet::ReplicateMessages(batch) => {
                 accept_from::replicate_messages(shared, &mut peer, batch).await
             }
@@ -158,6 +164,12 @@ async fn open(
             return Err(format!("TLS: {error}"));
         }
     };
+    // rustls refuses a client offering other protocols, not one offering
+    // none: that one is refused here, before the versions.
+    if stream.get_ref().1.alpn_protocol() != Some(ALPN) {
+        let _ = stream.shutdown().await;
+        return Err("TLS: no ALPN \"bakashrot\" offered, not a BakaShrot client".into());
+    }
 
     stream
         .write_all(&frame::version_bytes())

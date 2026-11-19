@@ -223,6 +223,8 @@ with kitchen:
                         "missing.bin", ErrorCode.FILE_ERROR)
     check("A missing file: refused before sending", ok, detail)
     check("Still connected", kitchen.connected)
+    kitchen.ping()
+    check("ping(): answered, still connected", kitchen.connected)
 
     # --- Two Clients, two threads, at the same time --------------------------
     other = Client.from_file(os.path.join(folder, "kitchen.toml"), dll_path).connect()
@@ -247,6 +249,8 @@ with kitchen:
 check("close(): disconnected", not kitchen.connected)
 ok, detail = raises(lambda: kitchen.push("x", "logs"), ConnectionLostError, code=ErrorCode.NOT_CONNECTED)
 check("A request once closed: ConnectionLostError, NOT_CONNECTED", ok, detail)
+ok, detail = raises(kitchen.ping, ConnectionLostError, code=ErrorCode.NOT_CONNECTED)
+check("ping() once closed: ConnectionLostError, NOT_CONNECTED", ok, detail)
 
 # --- Connecting: unreachable, refused, PEM text ----------------------------------
 with open(kitchen.ca) as ca, open(kitchen.certificate) as certificate, open(kitchen.key) as key:

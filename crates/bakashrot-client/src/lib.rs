@@ -27,7 +27,7 @@ use bakashrot_proto::limits::{
 use bakashrot_proto::names::{is_valid_name, is_valid_name_or_pattern};
 use bakashrot_proto::packets::{
     Attachment, AttachmentPart, GetAttachment, GetMessages, ListNames, Messages, NameKind,
-    NamesList, PushMessage, Query,
+    NamesList, Ping, PushMessage, Query,
 };
 use bakashrot_proto::{ErrorCode, Packet, frame};
 use rustls::{ClientConnection, StreamOwned};
@@ -202,6 +202,16 @@ impl Client {
             Err(error) => error.kind() == io::ErrorKind::WouldBlock,
         };
         open && tcp.set_nonblocking(false).is_ok()
+    }
+
+    /// Keeps the connection open: the server closes one silent for
+    /// `IDLE_TIMEOUT_SECS` (5 min). An app waiting longer than that
+    /// between requests calls this every `KEEPALIVE_SECS` (1 min) or so.
+    pub fn ping(&mut self) -> Result<()> {
+        match self.request(Ping {}.into())? {
+            Packet::Pong(_) => Ok(()),
+            other => Err(unexpected(&other)),
+        }
     }
 
     /// Pushes a message to `topic`, as this client's node: its id.

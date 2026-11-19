@@ -89,9 +89,21 @@ peers' `send_topics`.
   `[roles."site.reader"]`. Unquoted, TOML reads dots as tables: refused,
   `[retention]` says to quote.
 - **Durations:** numbers with a unit (`s m h d w`), added up: `"30s"`,
-  `"1d12h"`. Ages in `[retention]` can also be `"forever"`.
+  `"1d12h"`. Ages in `[retention]` can also be `"forever"`, and are 100
+  years (`"36500d"`) at most (2026-11-19): longer ones once overflowed
+  when turned into milliseconds, a huge age wrapping around to almost
+  nothing.
 - **Sizes:** bytes, or `"500M"` with `K M G T` (1024-based), up to 1T.
 - **Paths:** relative ones are from the config file's folder.
+
+## Database connections
+
+Reads and queries each have a pool of SQLite connections: one is opened
+when none is idle, then kept for the next request.
+`[server] idle_database_connections` (8 by default, 0 to 512) is how many
+idle ones each pool keeps; more are closed as they're put back, and an
+idle one is closed after a minute unused (looked at every 10 s). 0 opens
+one per request.
 
 ## Retention
 

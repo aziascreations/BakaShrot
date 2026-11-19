@@ -29,6 +29,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use values::{DURATION_HELP, NAME_HELP, parse_age};
 
+/// The longest retention age: 100 years (36500 days). Longer is
+/// "forever"; past about 584 million years, an age wouldn't even fit in
+/// milliseconds.
+pub const MAX_RETENTION_AGE: Duration = Duration::from_secs(36_500 * 86_400);
+
 /// What's wrong with a config, in words: where (the file, the line) and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(String);
@@ -95,6 +100,14 @@ pub struct Server {
         deserialize_with = "values::duration"
     )]
     pub retention_interval: Duration,
+    /// The most database connections kept open once idle, for reads, and
+    /// as many for queries (0 to 512); 8 by default. More are opened
+    /// while they're needed, and closed after a minute unused.
+    #[serde(
+        default = "defaults::idle_database_connections",
+        deserialize_with = "values::idle_connections"
+    )]
+    pub idle_database_connections: usize,
 }
 
 /// How hard the database makes sure a push is on disk before answering it
@@ -165,6 +178,11 @@ impl TryFrom<IndexMap<String, toml::Value>> for Retention {
             let age = age.ok_or_else(|| {
                 format!("{key} = {value} isn't an age: {DURATION_HELP}, or \"forever\"")
             })?;
+            if age.is_some_and(|age| age > MAX_RETENTION_AGE) {
+                return Err(format!(
+                    "{key} = {value}: 100 years (36500d) at most, or \"forever\""
+                ));
+            }
             lines.push((key, age));
         }
         Ok(Retention { lines })
@@ -184,6 +202,14 @@ impl Retention {
             .or_else(|| line(|key, topic| is_valid_pattern(key) && pattern_matches(key, topic)))
             .or_else(|| self.lines.iter().find(|(key, _)| key == "*"))
             .and_then(|(_, age)| *age)
+    }
+
+    /// When `topic`'s messages pushed before are past their age, for a
+    /// clock at `now` (both in ms since 1970), `None` if they're kept
+    /// forever. 0 while the clock is earlier than the age.
+    pub fn cutoff(&self, topic: &str, now: u64) -> Option<u64> {
+        let age = self.age(topic)?;
+        Some(now.saturating_sub(u64::try_from(age.as_millis()).unwrap_or(u64::MAX)))
     }
 }
 
@@ -237,6 +263,9 @@ mod defaults {
     }
     pub(crate) fn retention_interval() -> Duration {
         Duration::from_secs(60)
+    }
+    pub(crate) fn idle_database_connections() -> usize {
+        8
     }
 }
 

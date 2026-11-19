@@ -33,10 +33,10 @@ pub use messages::{
     PushMessage, Query, QueryResult, StoredAttachment,
 };
 pub use replication::{
-    Head, MissingAttachment, ReplicateAttachment, ReplicateMessages, ReplicatedMessage, SyncState,
-    SyncStateRequest,
+    Head, MissingAttachment, Pair, ReplicateAttachment, ReplicateMessages, ReplicatedMessage,
+    SyncState, SyncStateRequest,
 };
-pub use session::{Continue, RequestRefused, Welcome};
+pub use session::{Continue, Ping, Pong, RequestRefused, Welcome};
 
 use serde::de::{self, DeserializeOwned, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -244,6 +244,10 @@ packets! {
     ReplicateMessages = 17,
     /// P→S: an attachment the server is missing, its parts after it (`Continue`, then `MessagePushed` / `RequestRefused`).
     ReplicateAttachment = 18,
+    /// C→S, P→S: keeps an idle connection open (`Pong`).
+    Ping = 19,
+    /// S→C, S→P: the answer to a `Ping`.
+    Pong = 20,
 }
 
 impl Packet {

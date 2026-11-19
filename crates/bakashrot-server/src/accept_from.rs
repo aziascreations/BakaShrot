@@ -5,9 +5,12 @@
 use crate::connection::{Frames, Peer, receive_parts, refused, send};
 use crate::writer::Write;
 use crate::{Shared, now};
-use bakashrot_proto::limits::{ATTACHMENT_PART_SIZE, MAX_MESSAGE_SIZE, MAX_MISSING_ATTACHMENTS};
+use bakashrot_proto::limits::{
+    ATTACHMENT_PART_SIZE, MAX_HEADS_PER_PACKET, MAX_MESSAGE_SIZE, MAX_MISSING_ATTACHMENTS,
+};
 use bakashrot_proto::packets::{
-    Attachment, Continue, MessagePushed, ReplicateAttachment, ReplicateMessages, SyncState,
+    Attachment, Continue, Head, MessagePushed, ReplicateAttachment, ReplicateMessages, SyncState,
+    SyncStateRequest,
 };
 use bakashrot_proto::{ErrorCode, Packet};
 use bakashrot_storage::AttachmentState;
@@ -111,27 +114,61 @@ async fn check(shared: &Shared, peer: &mut Peer, topic: &str, node: &str) -> Res
 }
 
 /// What it takes from this peer, how far it is in those, and the
-/// attachments it lacks among them.
-pub(crate) async fn sync_state(shared: &Arc<Shared>, peer: &mut Peer) -> Packet {
+/// attachments it lacks among them: a page of it, the lists in the first.
+pub(crate) async fn sync_state(
+    shared: &Arc<Shared>,
+    peer: &mut Peer,
+    request: SyncStateRequest,
+) -> Packet {
     if let Err(refusal) = check_address(shared, peer).await {
         return refusal;
     }
-    let (topics, nodes) = peer.permissions.accepted();
-    let found = shared
-        .read(|reader| {
-            Ok((
-                reader.heads()?,
-                reader.missing_attachments(MAX_MISSING_ATTACHMENTS)?,
-            ))
-        })
-        .await;
-    let (mut heads, mut missing) = match found {
-        Ok(found) => found,
-        Err(refusal) => return refusal.into(),
-    };
-    heads.retain(|head| peer.permissions.accepts(&head.topic, &head.node));
-    missing.retain(|missing| peer.permissions.accepts(&missing.topic, &missing.node));
+    let first = request.after.is_none();
+    let mut after = request.after.map(|pair| (pair.topic, pair.node));
+    let (mut heads, mut more) = (Vec::new(), false);
+    // Read in pages too, those it doesn't take from this peer skipped:
+    // until the page is full and one more is found, or none is left.
+    'pages: loop {
+        let from = after.clone();
+        let read = shared
+            .read(move |reader| {
+                let from = from.as_ref().map(|(t, n)| (t.as_str(), n.as_str()));
+                reader.heads_after(from, MAX_HEADS_PER_PACKET)
+            })
+            .await;
+        let read: Vec<Head> = match read {
+            Ok(read) => read,
+            Err(refusal) => return refusal.into(),
+        };
+        let last_page = read.len() < MAX_HEADS_PER_PACKET;
+        after = read.last().map(|h| (h.topic.clone(), h.node.clone()));
+        for head in read {
+            if peer.permissions.accepts(&head.topic, &head.node) {
+                if heads.len() == MAX_HEADS_PER_PACKET {
+                    more = true;
+                    break 'pages;
+                }
+                heads.push(head);
+            }
+        }
+        if last_page {
+            break;
+        }
+    }
+    let (mut topics, mut nodes, mut missing) = (Vec::new(), Vec::new(), Vec::new());
+    if first {
+        (topics, nodes) = peer.permissions.accepted();
+        missing = match shared
+            .read(|reader| reader.missing_attachments(MAX_MISSING_ATTACHMENTS))
+            .await
+        {
+            Ok(missing) => missing,
+            Err(refusal) => return refusal.into(),
+        };
+        missing.retain(|missing| peer.permissions.accepts(&missing.topic, &missing.node));
+    }
     SyncState {
+        more,
         topics,
         nodes,
         heads,
@@ -163,8 +200,8 @@ pub(crate) async fn replicate_messages(
     let skip_before = shared
         .config
         .retention
-        .age(&batch.topic)
-        .map_or(0, |age| now().saturating_sub(age.as_millis() as u64));
+        .cutoff(&batch.topic, now())
+        .unwrap_or(0);
     let write = Write::Replicate {
         topic: batch.topic,
         node: batch.node,
