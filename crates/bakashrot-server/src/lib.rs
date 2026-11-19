@@ -362,7 +362,7 @@ fn refusal(error: bakashrot_storage::Error) -> RequestRefused {
         Error::UnknownName(_) => ErrorCode::UnknownName,
         Error::TooBig(_) => ErrorCode::TooBig,
         Error::Query(_) => ErrorCode::QueryFailed,
-        Error::Sqlite(_) | Error::Unusable(_) => {
+        Error::Sqlite(_) | Error::Unusable(_) | Error::RolledBack => {
             warn!("the database: {error}");
             return server_error("the database failed");
         }

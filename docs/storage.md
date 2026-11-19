@@ -73,6 +73,17 @@ operation of a `Batch` is all or nothing on its own (a savepoint), so a
 batch goes on after one fails: the server queues pushes and stores them
 together, one disk flush for all.
 
+Except when SQLite rolls the whole transaction back by itself, which it
+may on a full disk, an I/O error or out of memory (`Batch::is_rolled_back()`).
+What came after then ran outside any transaction, each operation
+committed alone, while the batch failed and every write in it was
+answered as failed: a retried push stored twice. Since 2026-11-19 every
+operation after is refused (`Error::RolledBack`) and so is the batch:
+nothing in it is stored, every write answered `ServerError`
+(`nothing_runs_once_sqlite_rolled_back` in `batch.rs`, a `ROLLBACK`
+standing in for SQLite's). The server's writer stops running the group
+there.
+
 | Operation | What |
 |---|---|
 | `push(topic, node, pushed_at, data)` | the next id of its stream, which it returns; the stream is made if new |

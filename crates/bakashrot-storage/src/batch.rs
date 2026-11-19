@@ -26,6 +26,12 @@ impl Writer {
     /// rolled back otherwise. Each operation of a [`Batch`] is all or
     /// nothing on its own, so `write` may go on after one fails: many
     /// pushes in one batch are a group commit, one disk flush for all.
+    ///
+    /// Unless SQLite rolled the whole transaction back by itself (it may,
+    /// on a full disk, an I/O error, out of memory): then every operation
+    /// after is refused ([`Error::RolledBack`], they'd be written outside
+    /// the transaction, one at a time), and so is the batch: nothing in it
+    /// was stored.
     pub fn batch<T>(&mut self, write: impl FnOnce(&mut Batch<'_>) -> Result<T>) -> Result<T> {
         let mut batch = Batch {
             transaction: self
@@ -33,6 +39,7 @@ impl Writer {
                 .transaction_with_behavior(TransactionBehavior::Immediate)?,
         };
         let value = write(&mut batch)?;
+        batch.check_open()?;
         batch.transaction.commit()?;
         Ok(value)
     }
@@ -52,7 +59,22 @@ impl Batch<'_> {
     /// which it returns. Without a savepoint, the hot path: a push that
     /// fails leaves at most its topic and node's (empty) stream.
     pub fn push(&mut self, topic: &str, node: &str, pushed_at: u64, data: &str) -> Result<u64> {
+        self.check_open()?;
         Ok(insert_pushed(&self.transaction, topic, node, pushed_at, data)?.0)
+    }
+
+    /// Whether SQLite rolled the transaction back by itself: nothing more
+    /// may run in it.
+    pub fn is_rolled_back(&self) -> bool {
+        self.transaction.is_autocommit()
+    }
+
+    /// [`Error::RolledBack`] once rolled back.
+    fn check_open(&self) -> Result<()> {
+        match self.is_rolled_back() {
+            false => Ok(()),
+            true => Err(Error::RolledBack),
+        }
     }
 
     /// Stores a pushed message with its attachment, an upload all of whose
@@ -302,6 +324,9 @@ impl Batch<'_> {
     /// Runs one operation all or nothing (a savepoint), so the batch can go
     /// on after it fails.
     fn atomic<T>(&mut self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        // Outside a transaction, a savepoint would start one of its own,
+        // committed when released.
+        self.check_open()?;
         let savepoint = self.transaction.savepoint()?;
         let value = operation(&savepoint)?;
         savepoint.commit()?;
@@ -420,4 +445,61 @@ pub(crate) fn clean_up(db: &Connection) -> Result<()> {
         delete_attachment(db, upload)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SQLite may roll a whole transaction back by itself (a full disk, an
+    /// I/O error): what came after ran outside it, each committed alone,
+    /// while the batch failed and every write was answered as failed.
+    #[test]
+    fn nothing_runs_once_sqlite_rolled_back() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("schema_v9.sql"))
+            .unwrap();
+        let mut writer = Writer::new(connection);
+        let outcome = writer.batch(|batch| {
+            assert_eq!(batch.push("logs", "kitchen", 1, "a")?, 1);
+            assert!(!batch.is_rolled_back());
+            // What SQLite does on its own, sometimes, on those errors.
+            batch.transaction.execute_batch("ROLLBACK")?;
+            assert!(batch.is_rolled_back());
+            let refused = |result: Result<_>| matches!(result, Err(Error::RolledBack));
+            assert!(refused(batch.push("logs", "kitchen", 2, "b")));
+            assert!(refused(batch.push("other", "garage", 3, "c")));
+            assert!(refused(batch.start_upload(5, &[0; 32]).map(|_| 0)));
+            assert!(refused(batch.delete_before("logs", 10, 10).map(|_| 0)));
+            assert!(refused(batch.purge_attachments(10).map(|_| 0)));
+            Ok(())
+        });
+        assert!(matches!(outcome, Err(Error::RolledBack)), "{outcome:?}");
+        let count = |writer: &Writer, table: &str| -> i64 {
+            writer
+                .connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        // Nothing stored: neither before the rollback nor after it.
+        assert_eq!(
+            (
+                count(&writer, "data"),
+                count(&writer, "streams"),
+                count(&writer, "attachments")
+            ),
+            (0, 0, 0)
+        );
+        // The next batch goes on as usual.
+        assert_eq!(
+            writer
+                .batch(|batch| batch.push("logs", "kitchen", 4, "d"))
+                .unwrap(),
+            1
+        );
+        assert_eq!(count(&writer, "data"), 1);
+    }
 }

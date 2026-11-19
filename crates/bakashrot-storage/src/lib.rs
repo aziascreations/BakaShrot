@@ -55,12 +55,19 @@ pub enum Error {
     TooBig(String),
     /// A client's query that failed or isn't read-only: `QueryFailed`.
     Query(String),
+    /// SQLite rolled the batch's transaction back by itself (disk full,
+    /// an I/O error...): nothing in it is stored, and nothing more runs in
+    /// it (it would be written outside the transaction): `ServerError`.
+    RolledBack,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Sqlite(error) => write!(f, "database: {error}"),
+            Error::RolledBack => f.write_str(
+                "database: the transaction was rolled back after a failure, nothing in it stored",
+            ),
             Error::Unusable(what)
             | Error::Invalid(what)
             | Error::NotFound(what)

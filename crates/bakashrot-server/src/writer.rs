@@ -196,6 +196,11 @@ fn write(writer: &mut Writer, group: Vec<(Write, oneshot::Sender<Outcome>)>) {
     let mut outcomes = Vec::with_capacity(group.len());
     let committed = writer.batch(|batch| {
         for (write, _) in &group {
+            // SQLite rolled the group back (a full disk...): the batch
+            // fails, every write in it is refused below, none stored.
+            if batch.is_rolled_back() {
+                break;
+            }
             outcomes.push(write.run(batch).map_err(refusal));
         }
         Ok(())
