@@ -19,8 +19,8 @@ use bakashrot_server::Server;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Once, PoisonError};
 use std::time::{Duration, Instant};
 use tokio_rustls::rustls::{ClientConfig, ClientConnection, StreamOwned};
 
@@ -1690,6 +1690,90 @@ fn sync_state_in_pages() {
         after: Some(pattern),
     });
     assert_eq!(picky.receive(), None);
+}
+
+/// The servers' log, every test's (tracing's subscriber is global): from
+/// the first call on.
+fn log() -> String {
+    static LOG: Mutex<String> = Mutex::new(String::new());
+    struct Writer;
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let mut log = LOG.lock().unwrap_or_else(PoisonError::into_inner);
+            log.push_str(&String::from_utf8_lossy(bytes));
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    static START: Once = Once::new();
+    START.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(|| Writer)
+            .with_ansi(false)
+            .try_init();
+    });
+    LOG.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// What a peer doesn't take of what it may be sent is warned about once,
+/// again when it changes, and not sent.
+#[test]
+fn replication_not_taken_is_warned() {
+    log();
+    // b takes only "logs" from its peers.
+    let b = Running::start_with(
+        "not-taken-b",
+        "\n[replication]\naccept_from = [\"127.0.0.1\"]\n",
+    );
+    let config = b.folder.join("server.toml");
+    let b = b.restart_after(|| {
+        let text = std::fs::read_to_string(&config).unwrap();
+        let picky = text.replacen("accept_topics = [\"*\"]", "accept_topics = [\"logs\"]", 1);
+        assert_ne!(text, picky);
+        std::fs::write(&config, picky).unwrap();
+    });
+    let a = b.peer(
+        "not-taken-a",
+        "server-a",
+        &format!(
+            "\n[replication]\npush_to = [\"{}\"]\nsync_interval = \"1s\"\n",
+            b.address
+        ),
+    );
+    let mut kitchen = a.connect(&a.issue("kitchen", &["sensor"])).unwrap();
+    kitchen.push("logs", "{}").unwrap();
+    kitchen.push("sensors", "{}").unwrap();
+
+    let mut on_b = b.connect(&b.issue("watcher", &["reader"])).unwrap();
+    let mut on_b_has = |topic: &str| {
+        on_b.get_messages(topic, "kitchen", Some(0), 10)
+            .map(|answer| answer.messages.len())
+            .unwrap_or(0)
+    };
+    wait_for("logs on b", || on_b_has("logs") == 1);
+    let warnings = |names: &str| {
+        let line = format!("({}): doesn't take {names}, which", b.address);
+        log()
+            .lines()
+            .filter(|logged| logged.contains(&line))
+            .count()
+    };
+    wait_for("the warning", || warnings("sensors:kitchen") == 1);
+    // Checked in again and again (every second): not warned again.
+    std::thread::sleep(Duration::from_millis(3500));
+    assert_eq!(warnings("sensors:kitchen"), 1, "{}", log());
+    assert_eq!(on_b_has("sensors"), 0);
+
+    // Another pair it doesn't take: warned again, both named.
+    let mut garage = a.connect(&a.issue("garage", &["sensor"])).unwrap();
+    garage.push("sensors", "{}").unwrap();
+    wait_for("the new warning", || {
+        warnings("sensors:garage, sensors:kitchen") == 1
+    });
+    assert_eq!(warnings("sensors:kitchen"), 1);
+    assert!(!log().contains(&format!("({}): doesn't take logs", b.address)));
 }
 
 #[test]

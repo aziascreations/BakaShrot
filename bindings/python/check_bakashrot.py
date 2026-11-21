@@ -138,6 +138,10 @@ with kitchen:
     ok, detail = raises(lambda: kitchen.push("x" * (bakashrot.MAX_MESSAGE_SIZE + 1), "logs"), BakaShrotError, "too big",
                         ErrorCode.INVALID_ARGUMENT)
     check("A message over the limit: refused before sending", ok, detail)
+    ok, detail = raises(lambda: kitchen.push("a\0b", "logs"), BakaShrotError, "NUL", ErrorCode.INVALID_ARGUMENT)
+    check("A message with a NUL: refused rather than cut", ok, detail)
+    ok, detail = raises(lambda: kitchen.query("SELECT 1\0; DELETE"), BakaShrotError, "NUL", ErrorCode.INVALID_ARGUMENT)
+    check("SQL with a NUL: refused too", ok and kitchen.connected, detail)
     secret_id = kitchen.push({"s": 1}, "secret")
     check("Push to another allowed topic", secret_id == 1, secret_id)
     with lounge:

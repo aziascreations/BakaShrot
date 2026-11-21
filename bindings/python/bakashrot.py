@@ -202,10 +202,18 @@ class NamesList:
     truncated: bool  # True if they didn't all fit in one answer
 
 
+def _text(value: str) -> bytes:
+    """value as the DLL's C string: one with a NUL is refused rather than
+    cut there."""
+    if "\0" in value:
+        raise BakaShrotError("A string with a NUL character", ErrorCode.INVALID_ARGUMENT)
+    return value.encode("utf-8")
+
+
 def _name(value: str) -> bytes:
     if not isinstance(value, str):
         raise TypeError(f"a topic or node is a name, not {value!r}")
-    return value.encode("utf-8")
+    return _text(value)
 
 
 def _find_dll(dll_path: Optional[str]) -> str:
@@ -388,9 +396,9 @@ class Client:
                 raise self._failed("Answer timeout")
             for setter, value in ((dll.SetCaCertificateA, self.ca), (dll.SetCertificateA, self.certificate),
                                   (dll.SetPrivateKeyA, self.key), (dll.SetCrlA, self.crl or "")):
-                if not setter(handle, value.encode("utf-8")):
+                if not setter(handle, _text(value)):
                     raise self._failed("Certificates")
-            if not dll.ConnectA(handle, self.host.encode("utf-8"), self.port):
+            if not dll.ConnectA(handle, _text(self.host), self.port):
                 raise self._failed(f"Connect to {self.host}:{self.port}", connecting=True)
             self.node = dll.string(dll.GetNodeA, handle)
             return self
@@ -496,7 +504,7 @@ class Client:
         message is only stored once all of it came."""
         if not isinstance(data, str):
             data = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
-        encoded = data.encode("utf-8")
+        encoded = _text(data)
         if len(encoded) > MAX_MESSAGE_SIZE:
             raise BakaShrotError(f"The message is too big: {len(encoded)} bytes, at most {MAX_MESSAGE_SIZE}", ErrorCode.INVALID_ARGUMENT)
         with self._lock:
@@ -507,7 +515,7 @@ class Client:
                 raw = bytes(attachment)
                 message_id = self._dll.PushMessageWithDataA(self._handle, _name(topic), encoded, raw, len(raw))
             else:
-                path = os.fspath(attachment).encode("utf-8")
+                path = _text(os.fspath(attachment))
                 message_id = self._dll.PushMessageWithFileA(self._handle, _name(topic), encoded, path)
             if message_id < 1:
                 raise self._failed("Push")
@@ -536,7 +544,7 @@ class Client:
         with self._lock:
             self._check_connected()
             size = self._dll.SaveAttachmentA(self._handle, _name(topic), _name(node), int(message_id),
-                                             os.fspath(path).encode("utf-8"))
+                                             _text(os.fspath(path)))
             if size < 0:
                 raise self._failed("Attachment")
             return size
@@ -642,7 +650,7 @@ class Client:
         query is refused: RefusedError "malformed JSON"."""
         with self._lock:
             self._check_connected()
-            if not self._dll.QueryA(self._handle, sql.encode("utf-8")):
+            if not self._dll.QueryA(self._handle, _text(sql)):
                 raise self._failed("Query")
             return self._dll.string(self._dll.GetQueryResultAsJsonA, self._handle)
 

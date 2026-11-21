@@ -126,7 +126,11 @@ otherwise:
    it's behind, the messages after its
    last id, `batch_size` (1000) at a time and about 1 MiB at most (a
    bigger one alone), each batch answered before the next. A refusal
-   leaves that topic and node for the next check-in.
+   leaves that topic and node for the next check-in. Those its roles
+   here may be sent but it doesn't take (not in its roles' `accept_*`
+   there) are skipped and warned about (2026-11-21), the first ten
+   named: once per link, again only when they change, and "takes
+   everything" once none are left. Not at every check-in: it would spam.
 3. **The attachments it lacks:** those this server has ready, from the
    part it needs. One it says doesn't match its SHA-256 is read back
    here: damaged (a disk, a bug), this server's copy is dropped and asked
@@ -394,6 +398,11 @@ each:
   first part going on from the second (the first read back for the
   SHA-256), one not matching refused and asked for from the start, a
   certificate whose roles take nothing refused;
+- replication not taken (the server's log captured): a topic the peer
+  doesn't take warned about once over several check-ins and not sent,
+  warned again, both named, when another node pushes to it
+  (`replication_not_taken_is_warned`; `push_to.rs`'s
+  `heads_sent_and_not_taken` for what's sent and what's named);
 - two peers, one attachment (two raw connections): the second refused
   while the first sends it (names in any case), the first finishing it;
   one gone partway, the other going on from there; one whole but never

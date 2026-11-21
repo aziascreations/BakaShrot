@@ -5,6 +5,10 @@
 //! attachments it lacks; again at once if it sent any (it keeps up under
 //! load), after `sync_interval` otherwise. Only what the other server's roles'
 //! `send_*` allow. `accept_from.rs` is the other end.
+//!
+//! What it may send but the other server doesn't take (not in its roles'
+//! `accept_*` there) is skipped, and warned about once per link, again
+//! only when that changes.
 
 use crate::Shared;
 use crate::connection::SEND_TIMEOUT;
@@ -14,13 +18,13 @@ use bakashrot_pki::tls;
 use bakashrot_proto::limits::{ALPN, KEEPALIVE_SECS, MAX_PACKET_SIZE};
 use bakashrot_proto::names::name_matches;
 use bakashrot_proto::packets::{
-    Attachment, AttachmentPart, MissingAttachment, Pair, Ping, ReplicateAttachment,
+    Attachment, AttachmentPart, Head, MissingAttachment, Pair, Ping, ReplicateAttachment,
     ReplicateMessages, RequestRefused, SyncState, SyncStateRequest,
 };
 use bakashrot_proto::{ErrorCode, Packet, frame};
 use bakashrot_storage::AttachmentState;
 use futures_util::{SinkExt, StreamExt};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -48,10 +52,12 @@ pub(crate) async fn run(shared: Arc<Shared>) {
 }
 
 /// Links to `address`, checks in until the link fails, then again after
-/// `retry_delay`. A failure is logged once until it changes.
+/// `retry_delay`. A failure is logged once until it changes, and so is
+/// what the other server doesn't take (across links too).
 async fn keep_linked(shared: Arc<Shared>, address: String) {
     let replication = &shared.config.replication;
     let mut last_failure = String::new();
+    let mut not_taken = BTreeSet::new();
     loop {
         let failure = match Link::open(&shared, &address).await {
             Ok(mut link) => {
@@ -59,8 +65,16 @@ async fn keep_linked(shared: Arc<Shared>, address: String) {
                 last_failure.clear();
                 loop {
                     let checked = match link.check_in(&shared).await {
-                        Ok(true) => Ok(()),
-                        Ok(false) => link.wait(replication.sync_interval).await,
+                        Ok(sent) => {
+                            if link.not_taken != not_taken {
+                                not_taken = link.not_taken.clone();
+                                log_not_taken(&format!("{} ({address})", link.name), &not_taken);
+                            }
+                            match sent {
+                                true => Ok(()),
+                                false => link.wait(replication.sync_interval).await,
+                            }
+                        }
                         Err(why) => Err(why),
                     };
                     if let Err(why) = checked {
@@ -85,6 +99,9 @@ struct Link {
     permissions: Permissions,
     /// Whether this check-in sent something it took.
     sent: bool,
+    /// What it may be sent but doesn't take, as of this check-in:
+    /// "topic:node".
+    not_taken: BTreeSet<String>,
 }
 
 impl Link {
@@ -130,6 +147,7 @@ impl Link {
             name: identity.name,
             permissions,
             sent: false,
+            not_taken: BTreeSet::new(),
         };
         match link.receive().await? {
             Packet::Welcome(_) => Ok(link),
@@ -147,14 +165,16 @@ impl Link {
             .read(|reader| reader.heads())
             .await
             .map_err(|refused| refused.reason)?;
-        for head in heads {
-            let (topic, node) = (head.topic, head.node);
-            if !self.sends(&state, &topic, &node) {
-                continue;
-            }
-            let after = theirs.get(&key(&topic, &node)).copied().unwrap_or(0);
+        let (to_send, not_taken) = sort_heads(&self.permissions, &state, heads);
+        self.not_taken = not_taken;
+        for head in to_send {
+            let after = theirs
+                .get(&key(&head.topic, &head.node))
+                .copied()
+                .unwrap_or(0);
             if after < head.last_id {
-                self.send_messages(shared, topic, node, after).await?;
+                self.send_messages(shared, head.topic, head.node, after)
+                    .await?;
             }
         }
         for missing in state.missing {
@@ -193,16 +213,6 @@ impl Link {
             Packet::RequestRefused(refused) => Err(format!("refused: {}", refused.reason)),
             other => Err(unexpected(&other)),
         }
-    }
-
-    /// Whether it takes `node`'s messages in `topic` (its `SyncState`) and
-    /// may be sent them (its roles here).
-    fn sends(&self, state: &SyncState, topic: &str, node: &str) -> bool {
-        let listed =
-            |list: &[String], name: &str| list.iter().any(|entry| name_matches(entry, name));
-        listed(&state.topics, topic)
-            && listed(&state.nodes, node)
-            && self.permissions.sends(topic, node)
     }
 
     /// A topic and node's messages after `after`, in batches. A refusal
@@ -418,6 +428,54 @@ fn judge(read: Result<bool, RequestRefused>) -> OwnCopy {
     }
 }
 
+/// This server's heads that the other server may be sent (its roles
+/// here, `permissions`) and takes (its `SyncState`'s lists); and the names
+/// of those it may be sent but doesn't take, "topic:node".
+fn sort_heads(
+    permissions: &Permissions,
+    state: &SyncState,
+    heads: Vec<Head>,
+) -> (Vec<Head>, BTreeSet<String>) {
+    let listed = |list: &[String], name: &str| list.iter().any(|entry| name_matches(entry, name));
+    let mut not_taken = BTreeSet::new();
+    let to_send = heads
+        .into_iter()
+        .filter(|head| permissions.sends(&head.topic, &head.node))
+        .filter(|head| {
+            let taken = listed(&state.topics, &head.topic) && listed(&state.nodes, &head.node);
+            if !taken {
+                not_taken.insert(format!("{}:{}", head.topic, head.node));
+            }
+            taken
+        })
+        .collect();
+    (to_send, not_taken)
+}
+
+/// Logs what `peer` doesn't take of what it may be sent, now that it
+/// changed: a warning, or that it takes it all again.
+fn log_not_taken(peer: &str, not_taken: &BTreeSet<String>) {
+    match not_taken.is_empty() {
+        true => info!("{peer}: takes everything this server may send it now"),
+        false => warn!(
+            "{peer}: doesn't take {}, which this server may send it (not in its roles' \
+             accept_topics and accept_nodes there): skipped",
+            some_names(not_taken)
+        ),
+    }
+}
+
+/// The first few names, then how many more.
+fn some_names(names: &BTreeSet<String>) -> String {
+    const SHOWN: usize = 10;
+    let shown: Vec<&str> = names.iter().take(SHOWN).map(String::as_str).collect();
+    let mut text = shown.join(", ");
+    if names.len() > SHOWN {
+        text += &format!(" and {} more", names.len() - SHOWN);
+    }
+    text
+}
+
 /// A topic and node, to compare without case.
 fn key(topic: &str, node: &str) -> (String, String) {
     (topic.to_ascii_lowercase(), node.to_ascii_lowercase())
@@ -430,6 +488,61 @@ fn unexpected(packet: &Packet) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bakashrot_config::Config;
+
+    #[test]
+    fn heads_sent_and_not_taken() {
+        let config = Config::parse(
+            r#"
+[server]
+listen = "127.0.0.1:7000"
+ca = "ca.crt"
+certificate = "server.crt"
+key = "server.key"
+
+[roles.peer]
+send_topics = ["logs", "secret"]
+send_nodes = ["kitchen", "garage"]
+"#,
+        )
+        .unwrap();
+        let permissions = config.permissions(&["peer"]).unwrap();
+        // It takes logs and metrics, from kitchen and lounge.
+        let state = SyncState {
+            more: false,
+            topics: vec!["logs".into(), "met*".into()],
+            nodes: vec!["kitchen".into(), "lounge".into()],
+            heads: Vec::new(),
+            missing: Vec::new(),
+        };
+        let head = |topic: &str, node: &str| Head {
+            topic: topic.into(),
+            node: node.into(),
+            last_id: 1,
+        };
+        let heads = vec![
+            head("logs", "kitchen"),    // sent
+            head("logs", "garage"),     // may be sent, its node not taken
+            head("secret", "kitchen"),  // may be sent, its topic not taken
+            head("metrics", "kitchen"), // taken, not sent from here: not said
+            head("logs", "lounge"),     // the same
+        ];
+        let (to_send, not_taken) = sort_heads(&permissions, &state, heads);
+        assert_eq!(to_send, vec![head("logs", "kitchen")]);
+        assert_eq!(
+            not_taken.into_iter().collect::<Vec<_>>(),
+            ["logs:garage", "secret:kitchen"]
+        );
+
+        let names: BTreeSet<String> = (0..12).map(|n| format!("t{n:02}:n")).collect();
+        let some = some_names(&names);
+        assert!(some.starts_with("t00:n, t01:n,"), "{some}");
+        assert!(some.ends_with("t09:n and 2 more"), "{some}");
+        assert_eq!(
+            some_names(&names.into_iter().take(2).collect()),
+            "t00:n, t01:n"
+        );
+    }
 
     #[test]
     fn only_a_copy_read_whole_or_missing_a_part_is_damaged() {

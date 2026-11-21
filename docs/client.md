@@ -165,6 +165,8 @@ connecting or while connected),
 `list_topics()` / `list_nodes()` (names; `topic=` and `node=`, a name or
 a pattern each, filter them: `list_topics(node="kitchen")` the topics
 kitchen pushed to), `query()` / `query_raw()`.
+Strings go to the DLL as UTF-8 C strings: one with a NUL (a message, a
+name, SQL, a path) is refused (`INVALID_ARGUMENT`) rather than cut there.
 Each `Client` has its own client in the DLL: several can be connected at
 once, from any threads.
 Errors: `RefusedError`, `ConnectionLostError`, `AuthError` (a certificate

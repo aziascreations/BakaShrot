@@ -263,6 +263,15 @@ Also decided (2026-11-13):
       keep it open, close_notify or the socket's end say closed, data
       sent unasked or a broken TLS stream close it (out of step).
       `&mut self` now; the DLL's `IsConnected` unchanged.
+    - **Names not taken by a peer warned about** (2026-11-21, old open
+      item): what a link's roles here may send but the peer doesn't
+      take is skipped as before, and logged to the console (a warning,
+      the first ten "topic:node" named) once per link, again only when
+      that changes; not at every check-in.
+    - **A NUL refused by Python** (2026-11-21, old item 23): every
+      string going to the DLL as a C string (a message, a name, SQL, a
+      path) with a NUL is refused (`INVALID_ARGUMENT`) rather than cut
+      there, as C# already did.
 - **Schema v9, not compatible with v8** (2026-11-13): old databases aren't
   opened, their data isn't carried over (the real-life tests start empty).
   `docs/storage.md`:
@@ -438,13 +447,6 @@ The PureBasic version's, still not fixed:
   2026-11-19: its pages.)
 - **Peers are trusted with what they replicate** (12), unless messages
   get signed by their node: `docs/known-issues.md`.
-- **Names left out of replication aren't warned about:** a topic or
-  node one side doesn't take is skipped silently. Warn once per peer
-  and name, again only when that changes (a log line at every check-in
-  would spam).
-- **A NUL cuts a message from Python** (23): `push()` passes it to
-  `PushMessageToA` as a C string, `"a\x00b"` is stored as `a`. Refuse
-  it in `push()`, or pass a length.
 
 ## Plan
 
@@ -486,7 +488,7 @@ by hand.
 | 15 | Filtered lists | `ListNames`' `topics` and `nodes` filters (protocol 8): server, client, `BakaShrot_ListNames` (`A`/`W`), Python, C#, PureBasic, `bakashrot list --topics/--nodes` | `end_to_end.rs` `names` (patterns, case, permissions), `exports.rs`, `check_bakashrot.py`, the NUnit tests | Decided 2026-11-19 | Done 2026-11-19 |
 | 16 | The DLL's enumerations | `GetNamesListAsJson`, `GetQueryResultAsJson`; `EnumerateNames` / `EnumerateQuery`, `Next...`, their getters, `CloseEnum` (`enumerations.rs`); `ListTopics` / `ListNodes` dropped; PureBasic's example on them; C#'s `EnumerateTopics` / `EnumerateNodes` / `EnumerateQuery` (`IEnumerable`, asked at each `foreach`) | `exports.rs` `enumerations` (names, query rows and nulls, several at once, bad and closed handles, freed with the client); the NUnit `Enumerations` test | Decided 2026-11-19 | Done 2026-11-19 |
 | 17 | `SyncState` in pages | `SyncStateRequest.after`, `SyncState.more`, `MAX_HEADS_PER_PACKET` (protocol 8); `heads_after` in storage; both ends of replication | `packets.rs` `the_biggest_sync_state_fits` and the page rules; `storage.rs` heads in pages; `end_to_end.rs` `sync_state_in_pages` (full and partial pages, the lists in the first only, a cursor in another case or not stored, pairs a peer doesn't take skipped, exactly a page, a pattern refused) and `replication_across_pages` (only what's after a head of the second page sent); each part broken on purpose once, every test caught it | Decided 2026-11-19 | Done 2026-11-19 |
-| 18 | Fixes from a read of the code | The server requiring ALPN; retention ages capped at 100 years; `Ping` / `Pong` (protocol 8) with `BakaShrot_Ping`, Python's and C#'s `ping`, pings in the follows and the replication links; `idle_database_connections` and idle connections closed; a damaged copy told from a failed read-back; the Rust client closing a connection left out of step, `set_answer_timeout`; nothing written once SQLite rolled a batch back; `query_time_limit`, queries stopped when their client leaves, `BakaShrot_SetAnswerTimeout` | `end_to_end.rs` `certificates_refused` (no ALPN: closed), `pings`, `no_idle_database_connections`; `config.rs` the cap, `retention_cutoff`, the key; the server's `pools_keep_few_and_close_the_idle` and `only_a_copy_read_whole_or_missing_a_part_is_damaged` (with `replication` for the damaged copy still dropped); the client's `failures.rs` (a fake server: late, wrong, cut answers and parts) and `revoked_certificates_are_dropped`; storage's `nothing_runs_once_sqlite_rolled_back` and `queries_are_stopped`; `end_to_end.rs` `queries_are_stopped`; `exports.rs` `answer_timeouts`, `codes.rs` (the bindings' codes and copied values), the NUnit `AnswerTimeouts`, PureBasic 5.73 and 6.41 by hand; `packets.rs` samples and bytes; `exports.rs`, `check_bakashrot.py`, the NUnit `Closing` | Decided 2026-11-19 | Done 2026-11-20 |
+| 18 | Fixes from a read of the code | The server requiring ALPN; retention ages capped at 100 years; `Ping` / `Pong` (protocol 8) with `BakaShrot_Ping`, Python's and C#'s `ping`, pings in the follows and the replication links; `idle_database_connections` and idle connections closed; a damaged copy told from a failed read-back; the Rust client closing a connection left out of step, `set_answer_timeout`; nothing written once SQLite rolled a batch back; `query_time_limit`, queries stopped when their client leaves, `BakaShrot_SetAnswerTimeout`; names a peer doesn't take warned about; a NUL refused by Python | `end_to_end.rs` `certificates_refused` (no ALPN: closed), `pings`, `no_idle_database_connections`; `config.rs` the cap, `retention_cutoff`, the key; the server's `pools_keep_few_and_close_the_idle` and `only_a_copy_read_whole_or_missing_a_part_is_damaged` (with `replication` for the damaged copy still dropped); the client's `failures.rs` (a fake server: late, wrong, cut answers and parts) and `revoked_certificates_are_dropped`; storage's `nothing_runs_once_sqlite_rolled_back` and `queries_are_stopped`; `end_to_end.rs` `queries_are_stopped` and `replication_not_taken_is_warned`, `heads_sent_and_not_taken`; `exports.rs` `answer_timeouts`, `codes.rs` (the bindings' codes and copied values), the NUnit `AnswerTimeouts`, PureBasic 5.73 and 6.41 by hand; `packets.rs` samples and bytes; `exports.rs`, `check_bakashrot.py`, the NUnit `Closing` | Decided 2026-11-19 | Done 2026-11-21 |
 
 Each step ends with its tests passing and its docs updated (the crate's
 docs, `docs/`, this file's status), then a commit when the owner
