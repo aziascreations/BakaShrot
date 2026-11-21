@@ -184,7 +184,8 @@ the same ids with different messages, undetected.
 | TLS, versions, welcome | 10 s (the server); the client's connect too |
 | Silence between requests | 5 min, then the server closes (a `Ping` is a request: links and follows send one every minute while they wait) |
 | A packet sent (an answer, an attachment's part, to a peer too) | 30 s (the server), then it closes: a client that stopped reading doesn't hold a connection |
-| An answer | 30 s (the client) |
+| An answer | 30 s (the client; `set_answer_timeout()`, `BakaShrot_SetAnswerTimeout()`), then it closes: the server stops the query it was running |
+| A query | 20 s (`[server] query_time_limit`), then SQLite stops it: `QueryTimedOut` |
 | An attachment's next part | 30 s (the server), then it closes |
 
 ## Requests so far
@@ -232,6 +233,10 @@ the same ids with different messages, undetected.
   refused with SQLite's message (`QueryFailed`, with a hint to add
   `is_json = 1` on "malformed JSON"), over 10,000 rows or 16 MB
   (`TooBig`), never a partial result (`storage.md`, "The query surface").
+  Stopped past `query_time_limit` (`QueryTimedOut`, "stopped after 20s,
+  the server's time limit"), or when the client closes meanwhile (it
+  gave up): its thread isn't left running. `Server::queries_running()`
+  says how many run.
 - **Sizes:** frames up to 16 MB (`MAX_PACKET_SIZE`), a bigger one drops the
   connection; messages up to `MAX_MESSAGE_SIZE` (16 MB less 4 KB), the
   server refusing bigger ones (`TooBig`); the client refuses messages and
@@ -358,6 +363,8 @@ each:
   part on, something else than a part (closed, dropped);
 - queries: not allowed, results, a non-JSON row
   refused with the hint, errors, writes and two statements refused;
+  one past `query_time_limit` refused, the connection kept; one whose
+  client gave up first stopped (`queries_are_stopped`);
 - refusals keeping the connection (not allowed, unknown topic, a bad name
   the client catches);
 - certificates refused (no known role, with why; another CA's client; a

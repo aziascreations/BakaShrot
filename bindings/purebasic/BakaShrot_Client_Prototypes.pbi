@@ -7,6 +7,7 @@
 ; ==- Compatibility -=============================
 ;  Tested compiler versions:
 ;    * PureBasic 5.73 LTS (Windows x64)
+;    * PureBasic 6.41 (Windows x64)
 ;
 ; ==- Links -=====================================
 ;  GitHub: https://github.com/aziascreations/BakaShrot
@@ -63,6 +64,8 @@ PrototypeC.i BakaShrot_Connect_Prototype(Client.q, Host.p-unicode, Port.l)
 PrototypeC.i BakaShrot_IsConnected_Prototype(Client.q)
 PrototypeC.i BakaShrot_Disconnect_Prototype(Client.q)
 PrototypeC.i BakaShrot_Ping_Prototype(Client.q)
+PrototypeC.i BakaShrot_SetAnswerTimeout_Prototype(Client.q, Milliseconds.q)
+PrototypeC.q BakaShrot_GetAnswerTimeout_Prototype(Client.q)
 PrototypeC.i BakaShrot_GetNode_Prototype(Client.q, *Buffer, BufferSize.i)
 PrototypeC.q BakaShrot_PushMessageTo_Prototype(Client.q, Topic.p-unicode, JsonData.p-unicode)
 PrototypeC.i BakaShrot_GetLatestMessageOf_Prototype(Client.q, Topic.p-unicode, Node.p-unicode)
@@ -114,6 +117,8 @@ Global BakaShrot_Connect.BakaShrot_Connect_Prototype
 Global BakaShrot_IsConnected.BakaShrot_IsConnected_Prototype
 Global BakaShrot_Disconnect.BakaShrot_Disconnect_Prototype
 Global BakaShrot_Ping.BakaShrot_Ping_Prototype
+Global BakaShrot_SetAnswerTimeout.BakaShrot_SetAnswerTimeout_Prototype
+Global BakaShrot_GetAnswerTimeout.BakaShrot_GetAnswerTimeout_Prototype
 Global BakaShrot_GetNode.BakaShrot_GetNode_Prototype
 Global BakaShrot_PushMessageTo.BakaShrot_PushMessageTo_Prototype
 Global BakaShrot_GetLatestMessageOf.BakaShrot_GetLatestMessageOf_Prototype
@@ -202,6 +207,8 @@ Procedure.i BakaShrot_LoadClient(DllPath.s)
 	BakaShrot_IsConnected              = BakaShrot_ClientFunction("BakaShrot_IsConnected")
 	BakaShrot_Disconnect               = BakaShrot_ClientFunction("BakaShrot_Disconnect")
 	BakaShrot_Ping                     = BakaShrot_ClientFunction("BakaShrot_Ping")
+	BakaShrot_SetAnswerTimeout         = BakaShrot_ClientFunction("BakaShrot_SetAnswerTimeout")
+	BakaShrot_GetAnswerTimeout         = BakaShrot_ClientFunction("BakaShrot_GetAnswerTimeout")
 	BakaShrot_GetNode                  = BakaShrot_ClientFunction("BakaShrot_GetNodeW")
 	BakaShrot_PushMessageTo            = BakaShrot_ClientFunction("BakaShrot_PushMessageToW")
 	BakaShrot_GetLatestMessageOf       = BakaShrot_ClientFunction("BakaShrot_GetLatestMessageOfW")

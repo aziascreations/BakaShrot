@@ -64,8 +64,8 @@ impl Batch<'_> {
     }
 
     /// Whether SQLite rolled the transaction back by itself: nothing more
-    /// may run in it.
-    pub fn is_rolled_back(&self) -> bool {
+    /// may run in it, every operation is refused ([`Error::RolledBack`]).
+    fn is_rolled_back(&self) -> bool {
         self.transaction.is_autocommit()
     }
 

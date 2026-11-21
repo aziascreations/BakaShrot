@@ -168,33 +168,30 @@ impl Link {
     /// Its `SyncState`, every page: the first (the lists), and the last
     /// id of each topic and node.
     async fn sync_state(&mut self) -> Result<(SyncState, HashMap<(String, String), u64>), String> {
+        let mut first = self.sync_page(None).await?;
+        let (mut heads, mut more) = (std::mem::take(&mut first.heads), first.more);
         let mut theirs = HashMap::new();
-        let mut first = None;
-        let mut after = None;
         loop {
-            let mut page = match self.ask(SyncStateRequest { after }.into()).await? {
-                Packet::SyncState(page) => page,
-                Packet::RequestRefused(refused) => {
-                    return Err(format!("refused: {}", refused.reason));
-                }
-                other => return Err(unexpected(&other)),
-            };
-            after = match page.more {
-                true => page.heads.last().map(|head| Pair {
-                    topic: head.topic.clone(),
-                    node: head.node.clone(),
-                }),
-                false => None,
-            };
+            let after = heads.last().filter(|_| more).map(Pair::from);
             theirs.extend(
-                page.heads
-                    .drain(..)
+                heads
+                    .into_iter()
                     .map(|head| (key(&head.topic, &head.node), head.last_id)),
             );
-            first.get_or_insert(page);
-            if after.is_none() {
-                return Ok((first.expect("a page came"), theirs));
-            }
+            let Some(after) = after else {
+                return Ok((first, theirs));
+            };
+            let page = self.sync_page(Some(after)).await?;
+            (heads, more) = (page.heads, page.more);
+        }
+    }
+
+    /// A page of its `SyncState`, after the pair `after`.
+    async fn sync_page(&mut self, after: Option<Pair>) -> Result<SyncState, String> {
+        match self.ask(SyncStateRequest { after }.into()).await? {
+            Packet::SyncState(page) => Ok(page),
+            Packet::RequestRefused(refused) => Err(format!("refused: {}", refused.reason)),
+            other => Err(unexpected(&other)),
         }
     }
 
@@ -323,18 +320,16 @@ impl Link {
     async fn wait(&mut self, duration: Duration) -> Result<(), String> {
         let keepalive = Duration::from_secs(KEEPALIVE_SECS);
         let mut left = duration;
-        loop {
-            let step = left.min(keepalive);
-            sleep(step).await;
-            left -= step;
-            if left.is_zero() {
-                return Ok(());
-            }
+        while left > keepalive {
+            sleep(keepalive).await;
+            left -= keepalive;
             match self.ask(Ping {}.into()).await? {
                 Packet::Pong(_) => {}
                 other => return Err(unexpected(&other)),
             }
         }
+        sleep(left).await;
+        Ok(())
     }
 
     async fn ask(&mut self, packet: Packet) -> Result<Packet, String> {
@@ -375,11 +370,10 @@ async fn check_own_copy(
         .hash_parts(attachment_id, 0..attachment.part_count())
         .await
         .map(|sha256| sha256.finish().as_ref() == attachment.sha256);
-    match judge(&read) {
+    match judge(read) {
         OwnCopy::Intact => return,
         OwnCopy::Damaged => {}
-        OwnCopy::Unknown => {
-            let why = read.err().map(|refused| refused.reason).unwrap_or_default();
+        OwnCopy::Unknown(why) => {
             warn!(
                 "{message}: this server's copy of its attachment couldn't be read back ({why}): \
                  kept, checked again when a peer refuses it again"
@@ -406,20 +400,21 @@ enum OwnCopy {
     /// Read whole and not matching, or a part missing: dropped and asked
     /// for again.
     Damaged,
-    /// The read failed (the database busy, a connection not opened...):
-    /// nothing is known, the copy is kept. Dropping it then could lose the
-    /// only one there is (this server the attachment's origin).
-    Unknown,
+    /// The read failed (the database busy, a connection not opened...),
+    /// saying why: nothing is known, the copy is kept. Dropping it then
+    /// could lose the only one there is (this server the attachment's
+    /// origin).
+    Unknown(String),
 }
 
 /// The verdict on a read-back: whether its SHA-256 matched, or why it
 /// failed.
-fn judge(read: &Result<bool, RequestRefused>) -> OwnCopy {
+fn judge(read: Result<bool, RequestRefused>) -> OwnCopy {
     match read {
         Ok(true) => OwnCopy::Intact,
         Ok(false) => OwnCopy::Damaged,
         Err(refused) if refused.code == ErrorCode::NotFound.code() => OwnCopy::Damaged,
-        Err(_) => OwnCopy::Unknown,
+        Err(refused) => OwnCopy::Unknown(refused.reason),
     }
 }
 
@@ -439,12 +434,13 @@ mod tests {
     #[test]
     fn only_a_copy_read_whole_or_missing_a_part_is_damaged() {
         let refused = |code| Err(RequestRefused::new(code, "why"));
-        assert_eq!(judge(&Ok(true)), OwnCopy::Intact);
-        assert_eq!(judge(&Ok(false)), OwnCopy::Damaged);
+        let unknown = || OwnCopy::Unknown("why".into());
+        assert_eq!(judge(Ok(true)), OwnCopy::Intact);
+        assert_eq!(judge(Ok(false)), OwnCopy::Damaged);
         // A part missing (read_part's NotFound): damaged too.
-        assert_eq!(judge(&refused(ErrorCode::NotFound)), OwnCopy::Damaged);
-        // A read that failed says nothing about the copy: kept.
-        assert_eq!(judge(&refused(ErrorCode::ServerError)), OwnCopy::Unknown);
-        assert_eq!(judge(&refused(ErrorCode::InvalidRequest)), OwnCopy::Unknown);
+        assert_eq!(judge(refused(ErrorCode::NotFound)), OwnCopy::Damaged);
+        // A read that failed says nothing about the copy: kept, saying why.
+        assert_eq!(judge(refused(ErrorCode::ServerError)), unknown());
+        assert_eq!(judge(refused(ErrorCode::InvalidRequest)), unknown());
     }
 }

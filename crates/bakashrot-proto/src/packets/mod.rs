@@ -144,6 +144,17 @@ macro_rules! packets {
                     Packet::$name(body)
                 }
             }
+
+            /// The body of a packet of this type, or the packet back.
+            impl TryFrom<Packet> for $name {
+                type Error = Packet;
+                fn try_from(packet: Packet) -> Result<$name, Packet> {
+                    match packet {
+                        Packet::$name(body) => Ok(body),
+                        other => Err(other),
+                    }
+                }
+            }
         )*
 
         impl Packet {

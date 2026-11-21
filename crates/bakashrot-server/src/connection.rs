@@ -109,7 +109,9 @@ async fn serve(shared: &Arc<Shared>, tcp: TcpStream, address: IpAddr) -> Result<
             }
             Packet::GetMessages(get) => get_messages(shared, &peer, get).await,
             Packet::ListNames(list) => list_names(shared, &peer, list).await,
-            Packet::Query(query) => self::query(shared, &peer, query).await,
+            Packet::Query(query) => self::query(shared, &peer, &mut frames, query)
+                .await
+                .map_err(failed)?,
             Packet::Ping(_) => Pong {}.into(),
             Packet::SyncStateRequest(request) => {
                 accept_from::sync_state(shared, &mut peer, request).await
@@ -546,16 +548,27 @@ async fn list_names(shared: &Arc<Shared>, peer: &Peer, list: ListNames) -> Packe
     .into()
 }
 
-async fn query(shared: &Arc<Shared>, peer: &Peer, query: Query) -> Packet {
+/// A query's answer. Nothing comes while it runs: what does (the client
+/// closing, having given up) stops it and closes the connection.
+async fn query(
+    shared: &Arc<Shared>,
+    peer: &Peer,
+    frames: &mut Frames,
+    query: Query,
+) -> Result<Packet, String> {
     if !peer.permissions.can_query() {
-        return refused(
+        return Ok(refused(
             ErrorCode::NotAllowed,
             format!("{} may not run queries", peer.node),
-        );
+        ));
     }
-    match shared.query(query.sql).await {
-        Ok(json) => QueryResult { json }.into(),
-        Err(refused) => refused.into(),
+    tokio::select! {
+        answer = shared.query(query.sql) => Ok(match answer {
+            Ok(json) => QueryResult { json }.into(),
+            Err(refused) => refused.into(),
+        }),
+        // Dropping the query stops it.
+        _ = frames.next() => Err("left while its query ran: stopped".into()),
     }
 }
 

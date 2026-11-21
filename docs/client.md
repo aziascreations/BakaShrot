@@ -37,11 +37,20 @@ works; Python and C# go through it.
 
 - `set_answer_timeout()`: how long an answer, or sending a packet, may
   take: 30 s (`ANSWER_TIMEOUT`) until changed, more than 0. Longer for a
-  slow query, say.
-- `is_open()`: false once closed; it looks at the socket without
-  blocking, then always makes it blocking again (it was left
-  non-blocking when it found the connection gone).
+  slow query, say (the server's own limit, `query_time_limit`, is 20 s
+  by default: `config.md`). Giving up closes the connection, and the
+  server stops the query it was running then.
+- `is_open()` (`&mut self`): false once closed. It reads what's waiting
+  without blocking, through TLS, then always makes the socket blocking
+  again (it was left non-blocking when it found the connection gone).
+  What TLS sends for itself (session tickets, key updates) leaves it
+  open; the socket's end or TLS's close_notify says the server closed it
+  (the next request fails with `ConnectionLost`); data sent unasked or a
+  broken TLS stream leave it out of step, so it's closed (`NotConnected`
+  after).
 - `ping()`: keeps an idle connection open (`protocol.md`, "Rules").
+  `wait()` sleeps, pinging every `KEEPALIVE_SECS` meanwhile (the
+  tool's `--follow` uses it).
 
 ## Who connects: certificates
 
@@ -102,6 +111,7 @@ a client's, or an enumeration's for the enumeration getters.
 | `Connect(Host, Port)` (`A`/`W`) | TLS with those; refused: `AuthRejected` (the server refused the certificate), `ServerNotVerified` (this client refused the server's), `NotAllowed` (none of its roles is the server's), `VersionMismatch` |
 | `IsConnected`, `Disconnect` | `IsConnected` notices a connection the server closed |
 | `Ping` | 1, or 0 if the connection is gone: keeps it open. The server closes one silent for 5 min; the DLL has no thread of its own, so an app idle longer calls it every minute or so |
+| `SetAnswerTimeout(Milliseconds)`, `GetAnswerTimeout` | how long an answer may take: 30000 until changed, more than 0 (`InvalidArgument`). Kept across connections, and applied to the current one too (unlike the other settings). Past it, `ConnectionLost`, the connection closed and the server's query stopped |
 | `GetNode` (`A`/`W`) | the node the server says this client is |
 | `PushMessageTo(Topic, Data)` (`A`/`W`) | the id, -1 on failure |
 | `GetLatestMessageOf(Topic, Node)` (`A`/`W`) | 1, or 0 with `NotFound` when there's none yet |
@@ -149,6 +159,8 @@ on 3.8), `client.node` once connected, `push(data, topic,
 attachment=None)` (the topic required; the attachment bytes or a path),
 `latest()`, `get_messages()`, `iter_messages()`, `follow()` (pinging
 every minute while it waits longer), `ping()` (`KEEPALIVE_SECONDS`),
+`answer_timeout` (seconds, `ANSWER_TIMEOUT_SECONDS` until set; before
+connecting or while connected),
 `get_attachment()` (bytes), `save_attachment()` (a file),
 `list_topics()` / `list_nodes()` (names; `topic=` and `node=`, a name or
 a pattern each, filter them: `list_topics(node="kitchen")` the topics
@@ -194,6 +206,7 @@ using (Client client = new Client("10.0.0.2", 7000, "ca.crt", "kitchen.crt", "ki
 data[, byte[]])`, `PushFile(topic, data, path)`, `Latest()` (null if
 none), `GetMessages()` (a `MessagesPage`), `IterMessages()`, `Follow()`
 (pinging every minute while it waits longer), `Ping()` (`KeepAliveMs`),
+`AnswerTimeoutMs` (`DefaultAnswerTimeoutMs` until set),
 `GetAttachment()` (bytes), `SaveAttachment()` (a file), `ListTopics()` /
 `ListNodes()` / `Query()` (the library's JSON, as a string: parsing it
 is the app's; `ListTopics(topic, node)` / `ListNodes(topic, node)`
@@ -275,8 +288,11 @@ wrong size, a refusal among the parts, a source failing mid-upload, a
 connection the server closed (each: closed, `NotConnected` after,
 nothing more sent); a refusal and an argument refused before sending
 keeping it; a longer timeout waiting for a slow answer; `is_open()`
-leaving it blocking. Each closing path broken on purpose once: the
-tests caught it.
+leaving it blocking, noticing a close_notify with the socket still open,
+closing on data sent unasked or a broken TLS stream, and staying open
+past a key update (the next request under the new keys). Each closing
+path broken on purpose once: the tests caught it (`is_open()` five ways,
+2026-11-20, the old socket peek among them).
 
 `crates/bakashrot-capi/tests/`, each against a server on a free port:
 
@@ -288,12 +304,20 @@ tests caught it.
 - `exports.rs`, `clients`: two clients at once, each with its own answers
   and errors; bad and freed handles; 4 threads on 4 clients; a client
   freed while another thread uses it.
+- `exports.rs`, `answer_timeouts`: the answer timeout refused at 0 or
+  less, kept across connections; a query past it `ConnectionLost`.
+- `codes.rs`: Python's, C#'s and PureBasic's error codes are the
+  protocol's (`error.rs`), every one by the same number and name; the
+  values Python and C# copy (the answer timeout, the keepalive,
+  `MAX_GET_MESSAGES`) are the Rust side's.
 - `python.rs`: runs `bindings/python/check_bakashrot.py` on the DLL (two
   `Client`s at once, too); skipped, saying so, without Python 3.11+.
 - PureBasic, by hand (no PureBasic in CI): run
   `BakaShrot_Client_Prototypes.pbi` directly, `ClientExample <DllPath>
   <CaFile> <CertificateFile> <KeyFile> <Host> <Port>`. Passed 2026-11-17
-  with PureBasic 5.73 LTS and 6.41 (C backend), x64.
+  with PureBasic 5.73 LTS and 6.41 (C backend), x64. 2026-11-20, both
+  again: the answer timeout exports and `QueryTimedOut` (11) through
+  the DLL against a server with `query_time_limit = "1s"`.
 - C#, by hand (not in `test.ps1`): `cargo build`, then `dotnet test
   bindings/csharp/NibblePoker.BakaShrot.Client.Tests` (NUnit). Its `[SetUpFixture]`
   makes the certificates with `target/debug`'s `bakashrot cert`
@@ -301,7 +325,8 @@ tests caught it.
   port in `target/csharp-tests/`, copies the library next to the tests.
   On `net48` (the `net35` build) and `net8.0` (`netstandard2.0`), on Linux
   `net8.0` only. Passed 2026-11-18 on both, and on `net11.0`
-  (`-p:TargetFrameworks=net11.0`).
+  (`-p:TargetFrameworks=net11.0`); 2026-11-20 on both again
+  (`AnswerTimeouts`).
 - `header.rs`: `bindings/c/bakashrot.h` matches the exports (rewritten
   when it doesn't: check it in).
 

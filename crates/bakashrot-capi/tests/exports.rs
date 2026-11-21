@@ -434,6 +434,45 @@ fn exports() {
     assert_eq!(BakaShrot_FreeClient(client), 1);
 }
 
+/// The answer timeout: set before connecting or while connected, kept
+/// across connections; past it, `ConnectionLost` and the connection closed.
+#[test]
+fn answer_timeouts() {
+    let running = common::Running::start("answer-timeouts");
+    running.issue("kitchen", &["home"]);
+    let client = BakaShrot_CreateClient();
+    assert_eq!(BakaShrot_GetAnswerTimeout(client), 30_000);
+    for refused in [0, -1, i64::MIN] {
+        assert_eq!(BakaShrot_SetAnswerTimeout(client, refused), 0);
+        assert_eq!(error(client).0, code(ErrorCode::InvalidArgument));
+    }
+    assert_eq!(BakaShrot_SetAnswerTimeout(client, 60_000), 1);
+    assert_eq!(BakaShrot_FreeClient(client), 1);
+
+    let client = connected(&running, "kitchen");
+    assert_eq!(BakaShrot_SetAnswerTimeout(client, 300), 1);
+    assert_eq!(BakaShrot_GetAnswerTimeout(client), 300);
+    let forever =
+        a("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n");
+    let started = std::time::Instant::now();
+    unsafe {
+        assert_eq!(BakaShrot_QueryA(client, forever.as_ptr()), 0);
+        assert_eq!(error(client).0, code(ErrorCode::ConnectionLost));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(BakaShrot_IsConnected(client), 0);
+        // Connected again: the timeout kept.
+        let host = a("127.0.0.1");
+        assert_eq!(
+            BakaShrot_ConnectA(client, host.as_ptr(), i32::from(running.port)),
+            1
+        );
+        assert_eq!(BakaShrot_GetAnswerTimeout(client), 300);
+        assert_eq!(BakaShrot_QueryA(client, forever.as_ptr()), 0);
+        assert_eq!(error(client).0, code(ErrorCode::ConnectionLost));
+    }
+    assert_eq!(BakaShrot_FreeClient(client), 1);
+}
+
 /// A new client, connected as `name` (its certificate and key in files).
 fn connected(running: &common::Running, name: &str) -> i64 {
     let client = BakaShrot_CreateClient();
@@ -476,6 +515,8 @@ fn clients() {
         assert!(why.contains("no client 99"), "{why}");
         assert_eq!(BakaShrot_IsConnected(99), 0);
         assert_eq!(BakaShrot_Ping(99), 0);
+        assert_eq!(BakaShrot_SetAnswerTimeout(99, 1000), 0);
+        assert_eq!(BakaShrot_GetAnswerTimeout(99), -1);
         assert_eq!(BakaShrot_GetMessageId(-5), 0);
         assert_eq!(get_w(99, BakaShrot_GetMessageDataW), "");
         assert_eq!(BakaShrot_FreeClient(99), 0);

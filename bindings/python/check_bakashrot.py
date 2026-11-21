@@ -16,7 +16,7 @@ import threading
 import time
 
 import bakashrot
-from bakashrot import AuthError, BakaShrotError, Client, ConnectionLostError, ErrorCode, RefusedError
+from bakashrot import ANSWER_TIMEOUT_SECONDS, AuthError, BakaShrotError, Client, ConnectionLostError, ErrorCode, RefusedError
 
 dll_path, folder = sys.argv[1:3]
 fails = 0
@@ -225,6 +225,26 @@ with kitchen:
     check("Still connected", kitchen.connected)
     kitchen.ping()
     check("ping(): answered, still connected", kitchen.connected)
+
+    # --- The answer timeout ----------------------------------------------------
+    check("answer_timeout: 30 s until changed", kitchen.answer_timeout == ANSWER_TIMEOUT_SECONDS, kitchen.answer_timeout)
+    ok, detail = raises(lambda: setattr(kitchen, "answer_timeout", 0), BakaShrotError, "1 ms or more", ErrorCode.INVALID_ARGUMENT)
+    check("answer_timeout = 0: refused", ok and kitchen.answer_timeout == ANSWER_TIMEOUT_SECONDS, detail)
+    slow = Client.from_file(os.path.join(folder, "kitchen.toml"), dll_path)
+    slow.answer_timeout = 0.3
+    slow.connect()
+    forever = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n"
+    started = time.perf_counter()
+    ok, detail = raises(lambda: slow.query(forever), ConnectionLostError, code=ErrorCode.CONNECTION_LOST)
+    elapsed = time.perf_counter() - started
+    check("A query past answer_timeout (0.3 s, set before connecting): ConnectionLostError, disconnected",
+          ok and elapsed < 5 and not slow.connected, f"{detail}, {elapsed * 1000:.0f} ms")
+    slow.connect()
+    slow.answer_timeout = 0.2
+    check("answer_timeout set while connected: kept, the connection too", slow.answer_timeout == 0.2 and slow.connected)
+    ok, detail = raises(lambda: slow.query(forever), ConnectionLostError, code=ErrorCode.CONNECTION_LOST)
+    check("A query past it again: ConnectionLostError", ok, detail)
+    slow.close()
 
     # --- Two Clients, two threads, at the same time --------------------------
     other = Client.from_file(os.path.join(folder, "kitchen.toml"), dll_path).connect()

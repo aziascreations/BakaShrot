@@ -148,7 +148,7 @@ impl Database {
             AuthAction::Pragma { .. } => Authorization::Deny,
             _ => Authorization::Allow,
         }))?;
-        Ok(QueryRunner::new(connection))
+        QueryRunner::new(connection)
     }
 
     /// A connection with this database's settings: WAL, `synchronous`, the

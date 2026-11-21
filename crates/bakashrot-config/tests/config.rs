@@ -60,6 +60,7 @@ fn defaults() {
     assert_eq!(server.max_attachment_size, 1 << 30);
     assert_eq!(server.retention_interval, Duration::from_secs(60));
     assert_eq!(server.idle_database_connections, 8);
+    assert_eq!(server.query_time_limit, Duration::from_secs(20));
     assert_eq!(config.retention.age("logs"), None);
     assert_eq!(config.replication.retry_delay, Duration::from_secs(10));
     assert_eq!(config.replication.sync_interval, Duration::from_secs(5));
@@ -77,6 +78,7 @@ synchronous = "NORMAL"
 max_attachment_size = 0
 retention_interval = "1h30m"
 idle_database_connections = 0
+query_time_limit = "2m"
 
 [replication]
 push_to = ["10.0.0.2:7000", "server-3.lan:7001", "[fd00::4]:7000"]
@@ -92,6 +94,7 @@ batch_size = 10000
     assert_eq!(config.server.max_attachment_size, 0);
     assert_eq!(config.server.retention_interval, Duration::from_secs(5400));
     assert_eq!(config.server.idle_database_connections, 0);
+    assert_eq!(config.server.query_time_limit, Duration::from_secs(120));
     assert_eq!(config.replication.push_to.len(), 3);
     assert_eq!(config.replication.accept_from[2], "fd00::4");
     assert_eq!(config.replication.retry_delay, Duration::from_secs(60));
@@ -305,6 +308,10 @@ fn refusals() {
         (
             &with("idle_database_connections = -1\n"),
             "invalid value: integer `-1`",
+        ),
+        (
+            &with("query_time_limit = \"0s\"\n"),
+            "'0s' isn't a duration",
         ),
         // [retention]
         (

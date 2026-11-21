@@ -33,6 +33,7 @@ synchronous = "full"
 max_attachment_size = "1G"           # bytes, or K M G T (1024-based); 0: none
 retention_interval = "1m"            # how often old messages are deleted
 idle_database_connections = 8        # kept open once idle, for reads and as many for queries; closed after 1 min unused
+query_time_limit = "20s"             # a client's query stopped (refused) past it; keep it under the clients' answer timeout (30 s)
 
 # How long each topic's messages are kept, from when they were first
 # pushed: 100 years ("36500d") at most, or "forever". A topic takes its

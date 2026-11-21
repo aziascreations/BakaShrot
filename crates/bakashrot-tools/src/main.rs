@@ -7,7 +7,7 @@ mod cert;
 
 use bakashrot_client::{Client, Error, Settings};
 use bakashrot_proto::error::{code_name, is_refusal_code};
-use bakashrot_proto::limits::{KEEPALIVE_SECS, MAX_MESSAGES_PER_PACKET};
+use bakashrot_proto::limits::MAX_MESSAGES_PER_PACKET;
 use bakashrot_proto::packets::{MessageEntry, NameKind};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
@@ -266,7 +266,10 @@ fn run(config: &Path, command: Command) -> Result<(), String> {
                     break;
                 }
                 if !batch.more {
-                    wait(&mut client, Duration::from_millis(interval))?;
+                    // Pinging meanwhile: `--interval` goes up to 1 h.
+                    client
+                        .wait(Duration::from_millis(interval))
+                        .map_err(failed)?;
                 }
             }
         }
@@ -315,22 +318,6 @@ fn run(config: &Path, command: Command) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// Waits `duration`, pinging every `KEEPALIVE_SECS` meanwhile: the server
-/// closes a connection silent for 5 min, and `--interval` goes up to 1 h.
-fn wait(client: &mut Client, duration: Duration) -> Result<(), String> {
-    let keepalive = Duration::from_secs(KEEPALIVE_SECS);
-    let mut left = duration;
-    loop {
-        let step = left.min(keepalive);
-        std::thread::sleep(step);
-        left -= step;
-        if left.is_zero() {
-            return Ok(());
-        }
-        client.ping().map_err(failed)?;
-    }
 }
 
 /// A topic and node's latest message, if any.

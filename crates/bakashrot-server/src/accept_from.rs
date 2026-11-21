@@ -9,8 +9,8 @@ use bakashrot_proto::limits::{
     ATTACHMENT_PART_SIZE, MAX_HEADS_PER_PACKET, MAX_MESSAGE_SIZE, MAX_MISSING_ATTACHMENTS,
 };
 use bakashrot_proto::packets::{
-    Attachment, Continue, Head, MessagePushed, ReplicateAttachment, ReplicateMessages, SyncState,
-    SyncStateRequest,
+    Attachment, Continue, Head, MessagePushed, Pair, ReplicateAttachment, ReplicateMessages,
+    SyncState, SyncStateRequest,
 };
 use bakashrot_proto::{ErrorCode, Packet};
 use bakashrot_storage::AttachmentState;
@@ -124,24 +124,21 @@ pub(crate) async fn sync_state(
         return refusal;
     }
     let first = request.after.is_none();
-    let mut after = request.after.map(|pair| (pair.topic, pair.node));
+    let mut after = request.after;
     let (mut heads, mut more) = (Vec::new(), false);
     // Read in pages too, those it doesn't take from this peer skipped:
     // until the page is full and one more is found, or none is left.
     'pages: loop {
-        let from = after.clone();
+        let from = after.take();
         let read = shared
-            .read(move |reader| {
-                let from = from.as_ref().map(|(t, n)| (t.as_str(), n.as_str()));
-                reader.heads_after(from, MAX_HEADS_PER_PACKET)
-            })
+            .read(move |reader| reader.heads_after(from.as_ref(), MAX_HEADS_PER_PACKET))
             .await;
         let read: Vec<Head> = match read {
             Ok(read) => read,
             Err(refusal) => return refusal.into(),
         };
         let last_page = read.len() < MAX_HEADS_PER_PACKET;
-        after = read.last().map(|h| (h.topic.clone(), h.node.clone()));
+        after = read.last().map(Pair::from);
         for head in read {
             if peer.permissions.accepts(&head.topic, &head.node) {
                 if heads.len() == MAX_HEADS_PER_PACKET {

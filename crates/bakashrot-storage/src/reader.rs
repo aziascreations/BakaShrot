@@ -6,7 +6,7 @@ use crate::{
 };
 use bakashrot_proto::limits::{ATTACHMENT_PART_SIZE, MAX_MESSAGE_ID};
 use bakashrot_proto::packets::{
-    Attachment as Sent, Head, MessageEntry, Messages, MissingAttachment, ReplicatedMessage,
+    Attachment as Sent, Head, MessageEntry, Messages, MissingAttachment, Pair, ReplicatedMessage,
     StoredAttachment,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -169,9 +169,9 @@ impl Reader {
     /// Topics and nodes' last ids, what `SyncState` compares: `limit` at
     /// most, in the order of their names (without case), those after the
     /// pair `after` (from the first without).
-    pub fn heads_after(&self, after: Option<(&str, &str)>, limit: usize) -> Result<Vec<Head>> {
+    pub fn heads_after(&self, after: Option<&Pair>, limit: usize) -> Result<Vec<Head>> {
         // No name is empty: ("", "") comes before every pair.
-        let (topic, node) = after.unwrap_or(("", ""));
+        let (topic, node) = after.map_or(("", ""), |pair| (&pair.topic, &pair.node));
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         self.connection
             .prepare_cached(

@@ -105,6 +105,16 @@ idle ones each pool keeps; more are closed as they're put back, and an
 idle one is closed after a minute unused (looked at every 10 s). 0 opens
 one per request.
 
+## Query time limit
+
+`[server] query_time_limit` (20 s by default) is how long a client's
+query may run. Past it, SQLite stops it (it looks every 10,000 steps, a
+fraction of a millisecond) and the client is refused with `QueryTimedOut` (11):
+"stopped after 20s, the server's time limit". Keep it under the clients'
+answer timeout (30 s by default; `BakaShrot_SetAnswerTimeout()`), or they
+give up first. A client that gives up closes its connection, and the
+server stops its query then too (`protocol.md`, "Rules").
+
 ## Retention
 
 A topic takes its name's line, else the first pattern matching it in the

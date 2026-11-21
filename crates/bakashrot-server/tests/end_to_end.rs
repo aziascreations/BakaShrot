@@ -265,6 +265,60 @@ fn no_idle_database_connections() {
     assert_eq!(json, r#"{"columns":["n"],"rows":[["3"]]}"#);
 }
 
+/// A query that never ends.
+const FOREVER: &str =
+    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n";
+
+/// Past `query_time_limit`, a query is stopped and refused, the connection
+/// kept; a client giving up first (its answer timeout) closes, and its
+/// query is stopped then.
+#[test]
+fn queries_are_stopped() {
+    let running = Running::start_with("query-time-limit", "query_time_limit = \"1s\"\n");
+    let analyst = running.issue("analyst-1", &["analyst"]);
+    let mut client = running.connect(&analyst).unwrap();
+    let started = Instant::now();
+    let error = client.query(FOREVER).unwrap_err();
+    let took = started.elapsed();
+    assert_eq!(error.code(), ErrorCode::QueryTimedOut.code(), "{error}");
+    assert!(
+        error
+            .message()
+            .contains("stopped after 1s, the server's time limit"),
+        "{error}"
+    );
+    assert!(
+        took >= Duration::from_secs(1) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+    assert_eq!(running.server.queries_running(), 0);
+    assert_eq!(
+        client.query("SELECT 1 AS one").unwrap(),
+        r#"{"columns":["one"],"rows":[["1"]]}"#
+    );
+
+    // The client gives up long before the server's limit.
+    let running = Running::start_with("query-left", "query_time_limit = \"1h\"\n");
+    let mut client = running
+        .connect(&running.issue("analyst-1", &["analyst"]))
+        .unwrap();
+    client
+        .set_answer_timeout(Duration::from_millis(300))
+        .unwrap();
+    let error = client.query(FOREVER).unwrap_err();
+    assert_eq!(code(error), ErrorCode::ConnectionLost.code());
+    assert!(client.is_closed());
+    wait_for("its query stopped", || {
+        running.server.queries_running() == 0
+    });
+    // Its connection is closed; the next one is answered.
+    let mut client = running
+        .connect(&running.issue("analyst-2", &["analyst"]))
+        .unwrap();
+    assert!(client.query("SELECT 1").is_ok());
+    assert_eq!(running.server.queries_running(), 0);
+}
+
 #[test]
 fn refusals_keep_the_connection() {
     let running = Running::start("refusals");
@@ -1542,14 +1596,6 @@ fn add_pairs(path: &std::path::Path, prefix: &str, count: usize) {
     .unwrap();
 }
 
-/// The pair of a head, to ask the page after it.
-fn after(head: &Head) -> Option<Pair> {
-    Some(Pair {
-        topic: head.topic.clone(),
-        node: head.node.clone(),
-    })
-}
-
 /// Heads as (topic, node, last id), to compare.
 fn triples(heads: &[Head]) -> Vec<(String, String, u64)> {
     heads
@@ -1589,7 +1635,7 @@ fn sync_state_in_pages() {
         (first.topics.as_slice(), first.nodes.as_slice()),
         (["*".to_string()].as_slice(), ["*".to_string()].as_slice())
     );
-    let second = sync_page(&mut peer, after(first.heads.last().unwrap()));
+    let second = sync_page(&mut peer, first.heads.last().map(Pair::from));
     assert!(!second.more);
     assert!(second.topics.is_empty() && second.nodes.is_empty() && second.missing.is_empty());
     let mut both = triples(&first.heads);
@@ -1613,7 +1659,7 @@ fn sync_state_in_pages() {
         "b000005"
     );
     // After the very last: nothing, nothing more.
-    let end = sync_page(&mut peer, after(second.heads.last().unwrap()));
+    let end = sync_page(&mut peer, second.heads.last().map(Pair::from));
     assert!(end.heads.is_empty() && !end.more);
 
     // A peer taking only "b": the others are skipped, not counted. Exactly
@@ -1628,7 +1674,7 @@ fn sync_state_in_pages() {
     let first = sync_page(&mut picky, None);
     assert!(first.more);
     assert_eq!(first.heads.len(), PAGE);
-    let second = sync_page(&mut picky, after(first.heads.last().unwrap()));
+    let second = sync_page(&mut picky, first.heads.last().map(Pair::from));
     assert!(!second.more);
     assert_eq!(
         triples(&second.heads),

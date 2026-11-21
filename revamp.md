@@ -244,7 +244,25 @@ Also decided (2026-11-13):
       batch back by itself; the writes after it then committed one at a
       time while all were answered `ServerError` (retried, stored twice).
       Every `Batch` operation after is refused now (`Error::RolledBack`),
-      the batch fails, nothing in it stored; the writer stops the group.
+      the batch fails, nothing in it stored; the group's later writes are
+      refused too.
+    - **Long queries stopped** (2026-11-20): `[server] query_time_limit`
+      (20 s by default, under the clients' 30 s answer timeout) stops a
+      query through SQLite's progress handler (a look every 10,000 steps)
+      and refuses it with a code of its own, `QueryTimedOut` (11), so apps
+      tell it from SQL that fails (`QueryFailed`). A client closing while its query
+      runs (having given up) stops it too: the connection's task watches
+      it meanwhile, and dropping the query stops it, so no thread keeps
+      running one nobody waits for. The answer timeout reaches the DLL
+      (`BakaShrot_SetAnswerTimeout()` / `GetAnswerTimeout()`, kept across
+      connections), Python (`answer_timeout`) and C# (`AnswerTimeoutMs`).
+    - **`is_open()` reads through TLS** (2026-11-20): it peeked at the
+      socket, so a server's close_notify (bytes waiting) looked open
+      until the next request failed. It reads what's waiting into rustls
+      now, without blocking: TLS's own records (tickets, key updates)
+      keep it open, close_notify or the socket's end say closed, data
+      sent unasked or a broken TLS stream close it (out of step).
+      `&mut self` now; the DLL's `IsConnected` unchanged.
 - **Schema v9, not compatible with v8** (2026-11-13): old databases aren't
   opened, their data isn't carried over (the real-life tests start empty).
   `docs/storage.md`:
@@ -468,7 +486,7 @@ by hand.
 | 15 | Filtered lists | `ListNames`' `topics` and `nodes` filters (protocol 8): server, client, `BakaShrot_ListNames` (`A`/`W`), Python, C#, PureBasic, `bakashrot list --topics/--nodes` | `end_to_end.rs` `names` (patterns, case, permissions), `exports.rs`, `check_bakashrot.py`, the NUnit tests | Decided 2026-11-19 | Done 2026-11-19 |
 | 16 | The DLL's enumerations | `GetNamesListAsJson`, `GetQueryResultAsJson`; `EnumerateNames` / `EnumerateQuery`, `Next...`, their getters, `CloseEnum` (`enumerations.rs`); `ListTopics` / `ListNodes` dropped; PureBasic's example on them; C#'s `EnumerateTopics` / `EnumerateNodes` / `EnumerateQuery` (`IEnumerable`, asked at each `foreach`) | `exports.rs` `enumerations` (names, query rows and nulls, several at once, bad and closed handles, freed with the client); the NUnit `Enumerations` test | Decided 2026-11-19 | Done 2026-11-19 |
 | 17 | `SyncState` in pages | `SyncStateRequest.after`, `SyncState.more`, `MAX_HEADS_PER_PACKET` (protocol 8); `heads_after` in storage; both ends of replication | `packets.rs` `the_biggest_sync_state_fits` and the page rules; `storage.rs` heads in pages; `end_to_end.rs` `sync_state_in_pages` (full and partial pages, the lists in the first only, a cursor in another case or not stored, pairs a peer doesn't take skipped, exactly a page, a pattern refused) and `replication_across_pages` (only what's after a head of the second page sent); each part broken on purpose once, every test caught it | Decided 2026-11-19 | Done 2026-11-19 |
-| 18 | Fixes from a read of the code | The server requiring ALPN; retention ages capped at 100 years; `Ping` / `Pong` (protocol 8) with `BakaShrot_Ping`, Python's and C#'s `ping`, pings in the follows and the replication links; `idle_database_connections` and idle connections closed; a damaged copy told from a failed read-back; the Rust client closing a connection left out of step, `set_answer_timeout`; nothing written once SQLite rolled a batch back | `end_to_end.rs` `certificates_refused` (no ALPN: closed), `pings`, `no_idle_database_connections`; `config.rs` the cap, `retention_cutoff`, the key; the server's `pools_keep_few_and_close_the_idle` and `only_a_copy_read_whole_or_missing_a_part_is_damaged` (with `replication` for the damaged copy still dropped); the client's `failures.rs` (a fake server: late, wrong, cut answers and parts) and `revoked_certificates_are_dropped`; storage's `nothing_runs_once_sqlite_rolled_back`; `packets.rs` samples and bytes; `exports.rs`, `check_bakashrot.py`, the NUnit `Closing` | Decided 2026-11-19 | Done 2026-11-19 |
+| 18 | Fixes from a read of the code | The server requiring ALPN; retention ages capped at 100 years; `Ping` / `Pong` (protocol 8) with `BakaShrot_Ping`, Python's and C#'s `ping`, pings in the follows and the replication links; `idle_database_connections` and idle connections closed; a damaged copy told from a failed read-back; the Rust client closing a connection left out of step, `set_answer_timeout`; nothing written once SQLite rolled a batch back; `query_time_limit`, queries stopped when their client leaves, `BakaShrot_SetAnswerTimeout` | `end_to_end.rs` `certificates_refused` (no ALPN: closed), `pings`, `no_idle_database_connections`; `config.rs` the cap, `retention_cutoff`, the key; the server's `pools_keep_few_and_close_the_idle` and `only_a_copy_read_whole_or_missing_a_part_is_damaged` (with `replication` for the damaged copy still dropped); the client's `failures.rs` (a fake server: late, wrong, cut answers and parts) and `revoked_certificates_are_dropped`; storage's `nothing_runs_once_sqlite_rolled_back` and `queries_are_stopped`; `end_to_end.rs` `queries_are_stopped`; `exports.rs` `answer_timeouts`, `codes.rs` (the bindings' codes and copied values), the NUnit `AnswerTimeouts`, PureBasic 5.73 and 6.41 by hand; `packets.rs` samples and bytes; `exports.rs`, `check_bakashrot.py`, the NUnit `Closing` | Decided 2026-11-19 | Done 2026-11-20 |
 
 Each step ends with its tests passing and its docs updated (the crate's
 docs, `docs/`, this file's status), then a commit when the owner

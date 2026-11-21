@@ -31,7 +31,7 @@ namespace NibblePoker.BakaShrot
     {
         None = 0,
         NotAllowed = 1, UnknownName = 2, NotFound = 3, NotReady = 4, TooBig = 5,
-        InvalidRequest = 7, DataMismatch = 8, QueryFailed = 9, ServerError = 10,
+        InvalidRequest = 7, DataMismatch = 8, QueryFailed = 9, ServerError = 10, QueryTimedOut = 11,
         NotConnected = 100, ConnectFailed = 101, AuthRejected = 102, ServerNotVerified = 103,
         ConnectionLost = 104, ProtocolError = 105, InvalidArgument = 106, FileError = 107,
         AttachmentMismatch = 108, AlreadyConnected = 109, Internal = 110, VersionMismatch = 111
@@ -137,6 +137,7 @@ namespace NibblePoker.BakaShrot
         public readonly int Port;
         private readonly object sync = new object();
         private string node = "";
+        private int answerTimeoutMs = DefaultAnswerTimeoutMs;
         private long handle; // its client in the library, 0 before Connect() and after Close()
 
         /// <summary>host: a name or an address. The certificates and the CRL
@@ -167,6 +168,7 @@ namespace NibblePoker.BakaShrot
                     throw new BakaShrotException("The library made no client", ErrorCode.Internal);
                 if (Native.BakaShrot_IsConnected(handle) != IntPtr.Zero)
                     return this;
+                Check(Native.BakaShrot_SetAnswerTimeout(handle, answerTimeoutMs), "AnswerTimeoutMs");
                 Check(Native.BakaShrot_SetCaCertificateW(handle, Text(Ca)), "Certificates");
                 Check(Native.BakaShrot_SetCertificateW(handle, Text(Certificate)), "Certificates");
                 Check(Native.BakaShrot_SetPrivateKeyW(handle, Text(Key)), "Certificates");
@@ -212,6 +214,30 @@ namespace NibblePoker.BakaShrot
 
         /// <summary>How often to Ping() while waiting between requests, in ms.</summary>
         public const int KeepAliveMs = 60000;
+
+        /// <summary>AnswerTimeoutMs until changed.</summary>
+        public const int DefaultAnswerTimeoutMs = 30000;
+
+        /// <summary>How long an answer may take, in ms (more than 0): longer
+        /// for a slow query, say. Past it, the request throws
+        /// ConnectionLostException and the connection is closed (the server
+        /// stops the query it was running then). Kept across connections.</summary>
+        public int AnswerTimeoutMs
+        {
+            get { lock (sync) return answerTimeoutMs; }
+            set
+            {
+                if (value <= 0)
+                    throw new BakaShrotException("An answer timeout of " + value + " ms: more than 0",
+                        ErrorCode.InvalidArgument);
+                lock (sync)
+                {
+                    if (handle != 0)
+                        Check(Native.BakaShrot_SetAnswerTimeout(handle, value), "AnswerTimeoutMs");
+                    answerTimeoutMs = value;
+                }
+            }
+        }
 
         /// <summary>Pushes data (JSON or not) to topic, as this client's node: its id.</summary>
         public long Push(string topic, string data)
@@ -592,6 +618,7 @@ namespace NibblePoker.BakaShrot
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern IntPtr BakaShrot_ConnectW(long client, string host, int port);
         [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_IsConnected(long client);
         [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_Ping(long client);
+        [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_SetAnswerTimeout(long client, long milliseconds);
         [DllImport(Dll, ExactSpelling = true)] internal static extern IntPtr BakaShrot_GetNodeW(long client, byte[] buffer, IntPtr size);
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern long BakaShrot_PushMessageToW(long client, string topic, string data);
         [DllImport(Dll, ExactSpelling = true, CharSet = Utf16)] internal static extern IntPtr BakaShrot_GetLatestMessageOfW(long client, string topic, string node);

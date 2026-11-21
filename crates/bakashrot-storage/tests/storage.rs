@@ -3,10 +3,11 @@
 
 use bakashrot_config::Synchronous;
 use bakashrot_proto::limits::{ATTACHMENT_PART_SIZE, MAX_MESSAGE_ID};
-use bakashrot_proto::packets::{Attachment as Sent, ReplicatedMessage};
-use bakashrot_storage::{AttachmentState, Database, Error, MAX_QUERY_ROWS, MAX_STREAMS};
+use bakashrot_proto::packets::{Attachment as Sent, Pair, ReplicatedMessage};
+use bakashrot_storage::{AttachmentState, Database, Error, MAX_QUERY_ROWS, MAX_STREAMS, Stop};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 const PART: usize = ATTACHMENT_PART_SIZE as usize;
 
@@ -174,9 +175,13 @@ fn pushing_and_reading() {
         ]
     );
     // In pages: after a pair (its names without case), so many at most.
-    let page = |after, limit| -> Vec<_> {
+    let page = |after: Option<(&str, &str)>, limit| -> Vec<_> {
+        let after = after.map(|(topic, node)| Pair {
+            topic: topic.into(),
+            node: node.into(),
+        });
         reader
-            .heads_after(after, limit)
+            .heads_after(after.as_ref(), limit)
             .unwrap()
             .into_iter()
             .map(|h| (h.topic, h.node))
@@ -752,6 +757,58 @@ fn queries() {
         json("SELECT count(*) FROM data")["rows"],
         serde_json::json!([["3"]])
     );
+}
+
+#[test]
+fn queries_are_stopped() {
+    let (database, _) = open("stopped-queries");
+    let _writer = database.writer().unwrap();
+    let runner = database.query_runner().unwrap();
+    let forever =
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n";
+    let refused = |result: bakashrot_storage::Result<String>| match result {
+        Err(Error::Query(why)) => why,
+        other => panic!("{other:?}"),
+    };
+
+    // Past its time limit.
+    let started = Instant::now();
+    let why = match runner.run_limited(forever, Duration::from_millis(200), &Stop::new()) {
+        Err(Error::QueryTimedOut(why)) => why,
+        other => panic!("{other:?}"),
+    };
+    let took = started.elapsed();
+    assert!(why.contains("200ms, the server's time limit"), "{why}");
+    assert!(
+        took >= Duration::from_millis(200) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+
+    // From another thread, long before its time limit.
+    let stop = Stop::new();
+    let stopping = stop.clone();
+    let started = Instant::now();
+    let thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        stopping.stop();
+    });
+    let why = refused(runner.run_limited(forever, Duration::from_secs(3600), &stop));
+    thread.join().unwrap();
+    assert_eq!(why, "stopped while it ran");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    // Stopped before it starts: at its first look.
+    refused(runner.run_limited(forever, Duration::from_secs(3600), &stop));
+
+    // The next queries aren't: the connection is as before.
+    let short = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000) SELECT count(*) FROM n";
+    let counted = r#"{"columns":["count(*)"],"rows":[["100000"]]}"#;
+    assert_eq!(
+        runner
+            .run_limited(short, Duration::from_secs(60), &Stop::new())
+            .unwrap(),
+        counted
+    );
+    assert_eq!(runner.run(short).unwrap(), counted);
 }
 
 #[test]

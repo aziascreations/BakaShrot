@@ -157,7 +157,10 @@ Keeping alive   C: Ping (every minute while idle)   S: Pong
 ## Rules
 
 - **One request at a time:** a client sends one, waits for its answer (the
-  parts of an attachment being part of its request or answer).
+  parts of an attachment being part of its request or answer). While a
+  `Query` runs, anything from the client (its closing, having given up
+  waiting) stops the query and closes the connection (2026-11-20); the
+  server's own limit stops it past `query_time_limit` (`QueryTimedOut`).
 - **Silence:** the server closes a connection with no request for
   `IDLE_TIMEOUT_SECS` (5 min). An end waiting longer between requests
   sends a `Ping` every `KEEPALIVE_SECS` (1 min) meanwhile (added

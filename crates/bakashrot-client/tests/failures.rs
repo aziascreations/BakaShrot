@@ -21,12 +21,15 @@ use std::time::Duration;
 type Stream = StreamOwned<ServerConnection, TcpStream>;
 
 /// A fake server for one connection, running its script once the client
-/// is welcomed, and the client's certificates.
+/// is connected ([`Fake::connect`] returned: what the script sends is
+/// never read while connecting), and the client's certificates.
 struct Fake {
     address: String,
     ca: String,
     client: Issued,
-    script: Option<JoinHandle<()>>,
+    /// Lets the script run.
+    connected: mpsc::Sender<()>,
+    script: JoinHandle<()>,
 }
 
 impl Fake {
@@ -49,6 +52,7 @@ impl Fake {
         .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
+        let (connected, wait_connected) = mpsc::channel();
         let script = thread::spawn(move || {
             let (tcp, _) = listener.accept().unwrap();
             tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
@@ -65,18 +69,21 @@ impl Fake {
                     node: "kitchen".into(),
                 },
             );
+            // Gone without connecting: run all the same.
+            let _ = wait_connected.recv();
             script(&mut stream);
         });
         Fake {
             address,
             ca: ca.certificate,
             client,
-            script: Some(script),
+            connected,
+            script,
         }
     }
 
     fn connect(&self) -> Client {
-        Client::connect(
+        let client = Client::connect(
             &self.address,
             &Settings {
                 ca: &self.ca,
@@ -85,12 +92,15 @@ impl Fake {
                 crl: None,
             },
         )
-        .unwrap()
+        .unwrap();
+        let _ = self.connected.send(());
+        client
     }
 
     /// Waits for the script to end (its asserts included).
-    fn finish(mut self) {
-        self.script.take().unwrap().join().unwrap();
+    fn finish(self) {
+        drop(self.connected);
+        self.script.join().unwrap();
     }
 }
 
@@ -106,20 +116,24 @@ fn answer(stream: &mut Stream, packet: impl Into<Packet>) {
 }
 
 /// Whether the client closed the connection without sending anything
-/// more: what the script reports after its answer.
+/// more: what a script asserts after its answer.
 fn nothing_more(stream: &mut Stream) -> bool {
     request(stream).is_none()
 }
 
+/// The error `result` failed with, of `code`.
 #[track_caller]
-fn fails(result: Result<impl std::fmt::Debug, bakashrot_client::Error>, code: ErrorCode) {
+fn fails(
+    result: Result<impl std::fmt::Debug, bakashrot_client::Error>,
+    code: ErrorCode,
+) -> bakashrot_client::Error {
     let error = result.unwrap_err();
     assert_eq!(error.code(), code.code(), "{error}");
+    error
 }
 
 #[test]
 fn a_late_answer_is_never_taken_for_the_next_request() {
-    let (report, reported) = mpsc::channel();
     let fake = Fake::start(move |stream| {
         assert!(matches!(request(stream), Some(Packet::PushMessage(_))));
         thread::sleep(Duration::from_millis(600));
@@ -129,14 +143,13 @@ fn a_late_answer_is_never_taken_for_the_next_request() {
             &Packet::from(MessagePushed { message_id: 1 }).encode(),
         );
         let _ = stream.flush();
-        report.send(nothing_more(stream)).unwrap();
+        assert!(nothing_more(stream), "the client sent something more");
     });
     let mut client = fake.connect();
     client
         .set_answer_timeout(Duration::from_millis(200))
         .unwrap();
-    let error = client.push("logs", "{}").unwrap_err();
-    assert_eq!(error.code(), ErrorCode::ConnectionLost.code(), "{error}");
+    let error = fails(client.push("logs", "{}"), ErrorCode::ConnectionLost);
     assert!(
         error.message().contains("no answer within 200ms"),
         "{error}"
@@ -147,40 +160,35 @@ fn a_late_answer_is_never_taken_for_the_next_request() {
     thread::sleep(Duration::from_millis(700));
     fails(client.push("logs", "{}"), ErrorCode::NotConnected);
     fails(client.ping(), ErrorCode::NotConnected);
-    assert!(reported.recv().unwrap(), "the client sent something more");
     fake.finish();
 }
 
 #[test]
 fn a_wrong_answer_closes() {
-    let (report, reported) = mpsc::channel();
     let fake = Fake::start(move |stream| {
         assert!(matches!(request(stream), Some(Packet::PushMessage(_))));
         answer(stream, Pong {});
-        report.send(nothing_more(stream)).unwrap();
+        assert!(nothing_more(stream), "the client sent something more");
     });
     let mut client = fake.connect();
     fails(client.push("logs", "{}"), ErrorCode::ProtocolError);
     assert!(!client.is_open() && client.is_closed());
     fails(client.ping(), ErrorCode::NotConnected);
-    assert!(reported.recv().unwrap());
     fake.finish();
 }
 
 #[test]
 fn a_malformed_answer_closes() {
-    let (report, reported) = mpsc::channel();
     let fake = Fake::start(move |stream| {
         assert!(matches!(request(stream), Some(Packet::Ping(_))));
         // 0xc1 is never MessagePack.
         frame::write(stream, &[0xc1]).unwrap();
         stream.flush().unwrap();
-        report.send(nothing_more(stream)).unwrap();
+        assert!(nothing_more(stream), "the client sent something more");
     });
     let mut client = fake.connect();
     fails(client.ping(), ErrorCode::ProtocolError);
     fails(client.query("SELECT 1"), ErrorCode::NotConnected);
-    assert!(reported.recv().unwrap());
     fake.finish();
 }
 
@@ -217,8 +225,7 @@ fn a_refusal_keeps_the_connection() {
         answer(stream, MessagePushed { message_id: 7 });
     });
     let mut client = fake.connect();
-    let error = client.push("logs", "{}").unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotAllowed.code());
+    let error = fails(client.push("logs", "{}"), ErrorCode::NotAllowed);
     assert_eq!(error.message(), "not this topic");
     assert!(client.is_open() && !client.is_closed());
     client.ping().unwrap();
@@ -287,19 +294,107 @@ fn a_connection_the_server_closed() {
     let mut client = fake.connect();
     let address = fake.address.clone();
     fake.finish();
-    let mut waited = 0;
-    while client.is_open() && waited < 50 {
-        thread::sleep(Duration::from_millis(20));
-        waited += 1;
-    }
-    assert!(!client.is_open(), "{address}: still open");
+    assert!(gone(&mut client), "{address}: still open");
+    assert!(!client.is_open() && !client.is_closed());
     fails(client.ping(), ErrorCode::ConnectionLost);
     fails(client.ping(), ErrorCode::NotConnected);
 }
 
+/// Whether `is_open()` says closed within a second (what the fake sent
+/// on its way).
+fn gone(client: &mut Client) -> bool {
+    for _ in 0..50 {
+        if !client.is_open() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// Sends what TLS holds, without waiting for anything back.
+fn send_tls(stream: &mut Stream) {
+    while stream.conn.wants_write() {
+        stream.conn.write_tls(&mut stream.sock).unwrap();
+    }
+}
+
+/// TLS's close_notify, the socket kept open (as a proxy closing politely
+/// might): `is_open()` notices it from TLS alone, and keeps saying so.
+/// The next request fails as lost, those after as not connected.
+#[test]
+fn a_close_notify_is_noticed() {
+    let (done, wait_done) = mpsc::channel::<()>();
+    let fake = Fake::start(move |stream| {
+        stream.conn.send_close_notify();
+        send_tls(stream);
+        // The socket open until the client looked.
+        let _ = wait_done.recv();
+    });
+    let mut client = fake.connect();
+    assert!(gone(&mut client), "still open after close_notify");
+    assert!(!client.is_open() && !client.is_open() && !client.is_closed());
+    fails(client.ping(), ErrorCode::ConnectionLost);
+    fails(client.ping(), ErrorCode::NotConnected);
+    done.send(()).unwrap();
+    fake.finish();
+}
+
+/// An answer to no request: the connection is out of step, so
+/// `is_open()` closes it, and nothing more is sent.
+#[test]
+fn data_sent_unasked_closes() {
+    let fake = Fake::start(move |stream| {
+        answer(stream, Pong {});
+        assert!(nothing_more(stream), "the client sent something more");
+    });
+    let mut client = fake.connect();
+    assert!(gone(&mut client), "still open with data sent unasked");
+    assert!(client.is_closed());
+    fails(client.ping(), ErrorCode::NotConnected);
+    fake.finish();
+}
+
+/// Bytes that aren't TLS (a record of no known type): broken, closed.
+#[test]
+fn a_broken_tls_stream_closes() {
+    let fake = Fake::start(move |stream| {
+        stream.sock.write_all(&[0x99, 3, 3, 0, 1, 0]).unwrap();
+        assert!(nothing_more(stream), "the client sent something more");
+    });
+    let mut client = fake.connect();
+    assert!(gone(&mut client), "still open with a broken TLS stream");
+    assert!(client.is_closed());
+    fails(client.ping(), ErrorCode::NotConnected);
+    fake.finish();
+}
+
+/// What TLS sends for itself (a key update here, like the session
+/// tickets after the handshake) isn't data: `is_open()` reads it, stays
+/// open, and the next request works, under the new keys.
+#[test]
+fn tls_records_of_its_own_keep_it_open() {
+    let (sent, wait_sent) = mpsc::channel();
+    let fake = Fake::start(move |stream| {
+        stream.conn.refresh_traffic_keys().unwrap();
+        send_tls(stream);
+        sent.send(()).unwrap();
+        assert!(matches!(request(stream), Some(Packet::Ping(_))));
+        answer(stream, Pong {});
+    });
+    let mut client = fake.connect();
+    wait_sent.recv().unwrap();
+    // The record on its way over loopback.
+    thread::sleep(Duration::from_millis(200));
+    for _ in 0..3 {
+        assert!(client.is_open() && !client.is_closed());
+    }
+    client.ping().unwrap();
+    fake.finish();
+}
+
 #[test]
 fn a_part_of_the_wrong_size_closes() {
-    let (report, reported) = mpsc::channel();
     let fake = Fake::start(move |stream| {
         assert!(matches!(request(stream), Some(Packet::GetAttachment(_))));
         answer(
@@ -310,7 +405,7 @@ fn a_part_of_the_wrong_size_closes() {
             },
         );
         answer(stream, AttachmentPart { data: vec![1; 5] });
-        report.send(nothing_more(stream)).unwrap();
+        assert!(nothing_more(stream), "the client sent something more");
     });
     let mut client = fake.connect();
     let mut out = Vec::new();
@@ -319,7 +414,6 @@ fn a_part_of_the_wrong_size_closes() {
         ErrorCode::ProtocolError,
     );
     fails(client.ping(), ErrorCode::NotConnected);
-    assert!(reported.recv().unwrap());
     fake.finish();
 }
 
@@ -327,7 +421,6 @@ fn a_part_of_the_wrong_size_closes() {
 /// the next request's answers.
 #[test]
 fn a_refusal_among_the_parts_closes() {
-    let (report, reported) = mpsc::channel();
     let fake = Fake::start(move |stream| {
         assert!(matches!(request(stream), Some(Packet::GetAttachment(_))));
         answer(
@@ -347,7 +440,7 @@ fn a_refusal_among_the_parts_closes() {
             stream,
             RequestRefused::new(ErrorCode::ServerError, "a disk"),
         );
-        report.send(nothing_more(stream)).unwrap();
+        assert!(nothing_more(stream), "the client sent something more");
     });
     let mut client = fake.connect();
     let mut out = Vec::new();
@@ -356,7 +449,6 @@ fn a_refusal_among_the_parts_closes() {
         ErrorCode::ServerError,
     );
     fails(client.ping(), ErrorCode::NotConnected);
-    assert!(reported.recv().unwrap());
     fake.finish();
 }
 
@@ -386,23 +478,21 @@ impl Seek for FailingSecondTime {
 /// for parts that won't come, the connection closes.
 #[test]
 fn a_source_failing_mid_upload_closes() {
-    let (report, reported) = mpsc::channel();
     let fake = Fake::start(move |stream| {
         assert!(matches!(request(stream), Some(Packet::PushMessage(_))));
         answer(stream, Continue {});
-        report.send(nothing_more(stream)).unwrap();
+        assert!(nothing_more(stream), "the client sent something more");
     });
     let mut client = fake.connect();
     let mut source = FailingSecondTime {
         data: Cursor::new(vec![7; 100]),
         rewinds: 0,
     };
-    let error = client
-        .push_with_attachment("logs", "{}", &mut source)
-        .unwrap_err();
-    assert_eq!(error.code(), ErrorCode::FileError.code(), "{error}");
+    fails(
+        client.push_with_attachment("logs", "{}", &mut source),
+        ErrorCode::FileError,
+    );
     assert!(!client.is_open() && client.is_closed());
     fails(client.ping(), ErrorCode::NotConnected);
-    assert!(reported.recv().unwrap());
     fake.finish();
 }

@@ -27,10 +27,11 @@ use bakashrot_config::Config;
 use bakashrot_pki::{Revocations, SharedRevocations, summarize, tls};
 use bakashrot_proto::ErrorCode;
 use bakashrot_proto::packets::RequestRefused;
-use bakashrot_storage::{Database, QueryRunner, Reader};
+use bakashrot_storage::{Database, QueryRunner, Reader, Stop};
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
@@ -73,6 +74,8 @@ struct Shared {
     readers: Pool<Reader>,
     /// Query connections not in use.
     queries: Pool<QueryRunner>,
+    /// Clients' queries running now.
+    queries_running: AtomicUsize,
     /// The replicated attachments being received (topic, node, message
     /// id): one peer at a time each (`accept_from.rs`).
     receiving: Mutex<HashSet<(String, String, u64)>>,
@@ -117,6 +120,7 @@ impl Server {
             pushes,
             readers: Pool::new(),
             queries: Pool::new(),
+            queries_running: AtomicUsize::new(0),
             receiving: Mutex::new(HashSet::new()),
             config,
         });
@@ -185,6 +189,13 @@ impl Server {
         self.shared.pushes.stop().await;
     }
 
+    /// How many clients' queries are running now: each until it's
+    /// answered, stopped past `query_time_limit`, or stopped as its client
+    /// leaves.
+    pub fn queries_running(&self) -> usize {
+        self.shared.queries_running.load(Ordering::Relaxed)
+    }
+
     /// Reloads the CRL file now: how many certificates it revokes.
     pub fn reload_revocations(&self) -> Result<usize, String> {
         let shared = &self.shared;
@@ -226,12 +237,21 @@ impl Shared {
         Ok(sha256)
     }
 
-    /// Runs a client's SQL on a query connection, off the async threads.
+    /// Runs a client's SQL on a query connection, off the async threads:
+    /// stopped past `query_time_limit`, or once this future is dropped
+    /// (its client left), not left running on its thread.
     async fn query(self: &Arc<Self>, sql: String) -> Result<String, RequestRefused> {
+        let stop = Stop::new();
+        let _stop_if_dropped = StopOnDrop(stop.clone());
+        let limit = self.config.server.query_time_limit;
+        let shared = self.clone();
         self.pooled(
             |shared| &shared.queries,
             Database::query_runner,
-            move |runner: &QueryRunner| runner.run(&sql),
+            move |runner: &QueryRunner| {
+                let _running = Counted::new(&shared.queries_running);
+                runner.run_limited(&sql, limit, &stop)
+            },
         )
         .await
     }
@@ -257,6 +277,31 @@ impl Shared {
         })
         .await
         .unwrap_or_else(|_| Err(server_error("a read failed")))
+    }
+}
+
+/// Stops a query when dropped: answered by then, or its client gone.
+struct StopOnDrop(Stop);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
+/// Counts one in its counter while it lives (a panic included).
+struct Counted<'a>(&'a AtomicUsize);
+
+impl<'a> Counted<'a> {
+    fn new(counter: &'a AtomicUsize) -> Counted<'a> {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Counted(counter)
+    }
+}
+
+impl Drop for Counted<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -296,14 +341,12 @@ impl<C> Pool<C> {
 
     /// Closes the connections unused for `idle_for` or more at `now`.
     fn sweep(&self, now: Instant, idle_for: Duration) {
-        let stale: Vec<(C, Instant)> = {
-            let mut idle = self.lock();
-            let (stale, fresh) = idle
-                .drain(..)
-                .partition(|(_, since)| now.saturating_duration_since(*since) >= idle_for);
-            *idle = fresh;
-            stale
-        };
+        let stale: Vec<(C, Instant)> = self
+            .lock()
+            .extract_if(.., |(_, since)| {
+                now.saturating_duration_since(*since) >= idle_for
+            })
+            .collect();
         drop(stale);
     }
 
@@ -362,6 +405,7 @@ fn refusal(error: bakashrot_storage::Error) -> RequestRefused {
         Error::UnknownName(_) => ErrorCode::UnknownName,
         Error::TooBig(_) => ErrorCode::TooBig,
         Error::Query(_) => ErrorCode::QueryFailed,
+        Error::QueryTimedOut(_) => ErrorCode::QueryTimedOut,
         Error::Sqlite(_) | Error::Unusable(_) | Error::RolledBack => {
             warn!("the database: {error}");
             return server_error("the database failed");

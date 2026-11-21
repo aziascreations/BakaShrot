@@ -63,7 +63,7 @@ __version__ = "0.4.0"
 __all__ = [
     "Client", "Message", "MessagesPage", "NamesList",
     "BakaShrotError", "RefusedError", "ConnectionLostError", "AuthError", "ErrorCode",
-    "MAX_GET_MESSAGES", "MAX_MESSAGE_SIZE", "KEEPALIVE_SECONDS",
+    "MAX_GET_MESSAGES", "MAX_MESSAGE_SIZE", "KEEPALIVE_SECONDS", "ANSWER_TIMEOUT_SECONDS",
 ]
 
 # The protocol's: crates/bakashrot-proto/src/limits.rs.
@@ -72,6 +72,8 @@ MAX_MESSAGE_SIZE = 16 * 1024 * 1024 - 4096
 # The server closes a connection silent for 5 min: ping() every minute or
 # so while waiting longer than that (follow() does it itself).
 KEEPALIVE_SECONDS = 60
+# How long an answer may take until Client.answer_timeout is changed.
+ANSWER_TIMEOUT_SECONDS = 30.0
 
 DLL_NAME = "bakashrot.dll" if sys.platform == "win32" else "libbakashrot.so"
 
@@ -90,6 +92,7 @@ class ErrorCode(enum.IntEnum):
     DATA_MISMATCH = 8        # an upload that doesn't match its SHA-256
     QUERY_FAILED = 9         # the SQL failed
     SERVER_ERROR = 10        # the server's database failed: retry later
+    QUERY_TIMED_OUT = 11     # a query past the server's time limit, stopped: narrow it or retry later
     # The client's own.
     NOT_CONNECTED = 100      # never connected, or closed or lost before
     CONNECT_FAILED = 101     # nothing answers at that host and port
@@ -254,6 +257,8 @@ class _Dll:
             "BakaShrot_IsConnected": (I, [H]),
             "BakaShrot_Disconnect": (I, [H]),
             "BakaShrot_Ping": (I, [H]),
+            "BakaShrot_SetAnswerTimeout": (I, [H, Q]),
+            "BakaShrot_GetAnswerTimeout": (Q, [H]),
             "BakaShrot_GetNodeA": (I, [H, S, I]),
             "BakaShrot_PushMessageToA": (Q, [H, P, P]),
             "BakaShrot_GetLatestMessageOfA": (I, [H, P, P]),
@@ -326,6 +331,7 @@ class Client:
         self.key = os.fspath(key)
         self.crl = os.fspath(crl) if crl else None
         self.node = ""
+        self._answer_timeout = ANSWER_TIMEOUT_SECONDS
         # Its client in the DLL, from connect() to close().
         self._handle: Optional[int] = None
 
@@ -378,6 +384,8 @@ class Client:
                     raise BakaShrotError("The DLL made no client", ErrorCode.INTERNAL)
                 self._handle = handle
             handle = self._handle
+            if not dll.SetAnswerTimeout(handle, self._milliseconds(self._answer_timeout)):
+                raise self._failed("Answer timeout")
             for setter, value in ((dll.SetCaCertificateA, self.ca), (dll.SetCertificateA, self.certificate),
                                   (dll.SetPrivateKeyA, self.key), (dll.SetCrlA, self.crl or "")):
                 if not setter(handle, value.encode("utf-8")):
@@ -400,6 +408,29 @@ class Client:
             self.close()
         except Exception:  # noqa: BLE001 - the interpreter may be shutting down
             pass
+
+    @property
+    def answer_timeout(self) -> float:
+        """How long an answer may take, in seconds (ANSWER_TIMEOUT_SECONDS
+        until changed): longer for a slow query, say. Past it, the request
+        raises ConnectionLostError and the connection is closed (the server
+        stops the query it was running then). Kept across connections."""
+        return self._answer_timeout
+
+    @answer_timeout.setter
+    def answer_timeout(self, seconds: float) -> None:
+        milliseconds = self._milliseconds(seconds)
+        with self._lock:
+            if self._handle is not None and not self._dll.SetAnswerTimeout(self._handle, milliseconds):
+                raise self._failed("Answer timeout")
+            self._answer_timeout = milliseconds / 1000
+
+    @staticmethod
+    def _milliseconds(seconds: float) -> int:
+        milliseconds = round(seconds * 1000)
+        if milliseconds < 1 or milliseconds >= 2 ** 63:
+            raise BakaShrotError(f"An answer timeout of {seconds} s: 1 ms or more", ErrorCode.INVALID_ARGUMENT)
+        return milliseconds
 
     @property
     def connected(self) -> bool:

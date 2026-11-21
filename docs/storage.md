@@ -74,7 +74,7 @@ batch goes on after one fails: the server queues pushes and stores them
 together, one disk flush for all.
 
 Except when SQLite rolls the whole transaction back by itself, which it
-may on a full disk, an I/O error or out of memory (`Batch::is_rolled_back()`).
+may on a full disk, an I/O error or out of memory.
 What came after then ran outside any transaction, each operation
 committed alone, while the batch failed and every write in it was
 answered as failed: a retried push stored twice. Since 2026-11-19 every
@@ -271,7 +271,5 @@ big), the view's plans, and readers with two writers at once. In
 - **A time index**, if time queries over big streams get slow: a v10
   migration adding an index on `(stream_id, pushed_at)` and joining the
   view on it too (measured above: twice the write cost).
-- **Interrupting long queries** (a time limit): the server's, with
-  SQLite's interrupt.
 - **Attachments as files** next to the database instead of in it, if their
   size calls for it.

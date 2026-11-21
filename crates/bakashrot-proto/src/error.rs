@@ -6,7 +6,8 @@
 //! What to do about each:
 //! - reconnect, then retry: `NotConnected`, `ConnectFailed`,
 //!   `ConnectionLost`, `ProtocolError` (the connection is closed);
-//! - retry later: `NotReady`, `ServerError`;
+//! - retry later: `NotReady`, `ServerError`, `QueryTimedOut` (or narrow
+//!   the query);
 //! - fix the configuration: `AuthRejected`, `ServerNotVerified`,
 //!   `NotAllowed`, `UnknownName`;
 //! - update one end: `VersionMismatch`;
@@ -74,6 +75,7 @@ error_codes! {
     DataMismatch = 8, "An uploaded attachment that doesn't match its SHA-256: dropped.";
     QueryFailed = 9, "The SQL of a query failed (its error in the reason).";
     ServerError = 10, "The server couldn't store or read something: its database failed.";
+    QueryTimedOut = 11, "A query ran past the server's time limit (query_time_limit) and was stopped: narrow it, or retry when the server is less busy.";
 
     // The client's own.
     NotConnected = 100, "Not connected: never, or the connection was closed or lost before.";
@@ -140,6 +142,7 @@ mod tests {
             (8, "DataMismatch"),
             (9, "QueryFailed"),
             (10, "ServerError"),
+            (11, "QueryTimedOut"),
             (100, "NotConnected"),
             (101, "ConnectFailed"),
             (102, "AuthRejected"),

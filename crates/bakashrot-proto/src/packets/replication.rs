@@ -57,6 +57,16 @@ pub struct Head {
     pub last_id: u64,
 }
 
+impl From<&Head> for Pair {
+    /// Its pair: to ask the page after it.
+    fn from(head: &Head) -> Pair {
+        Pair {
+            topic: head.topic.clone(),
+            node: head.node.clone(),
+        }
+    }
+}
+
 /// An attachment the server lacks, and where to go on from.
 ///
 /// `[topic, node, message_id, next_part]`

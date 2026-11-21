@@ -302,6 +302,26 @@ namespace NibblePoker.BakaShrot.Tests
         }
 
         [Test]
+        public void AnswerTimeouts()
+        {
+            const string forever =
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n";
+            using Client kitchen = Server.Connect("kitchen");
+            Assert.That(kitchen.AnswerTimeoutMs, Is.EqualTo(Client.DefaultAnswerTimeoutMs));
+            BakaShrotException refused = Assert.Throws<BakaShrotException>(() => kitchen.AnswerTimeoutMs = 0)!;
+            Assert.That(refused.Code, Is.EqualTo(ErrorCode.InvalidArgument));
+            kitchen.AnswerTimeoutMs = 300;
+            Assert.That(kitchen.Connected, Is.True, "set while connected");
+            ConnectionLostException lost = Assert.Throws<ConnectionLostException>(() => kitchen.Query(forever))!;
+            Assert.That(lost.Code, Is.EqualTo(ErrorCode.ConnectionLost));
+            Assert.That(kitchen.Connected, Is.False);
+            kitchen.Connect();
+            Assert.That(kitchen.AnswerTimeoutMs, Is.EqualTo(300), "kept across connections");
+            lost = Assert.Throws<ConnectionLostException>(() => kitchen.Query(forever))!;
+            Assert.That(lost.Code, Is.EqualTo(ErrorCode.ConnectionLost));
+        }
+
+        [Test]
         public void Connecting()
         {
             string ca = File.ReadAllText(Server.In("ca.crt"));

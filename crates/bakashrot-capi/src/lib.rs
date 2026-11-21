@@ -36,7 +36,7 @@ mod enumerations;
 pub use enumerations::*;
 mod text;
 
-use bakashrot_client::{Client, Error, Settings};
+use bakashrot_client::{ANSWER_TIMEOUT, Client, Error, Settings};
 use bakashrot_proto::ErrorCode;
 use bakashrot_proto::packets::{MessageEntry, NameKind, NamesList};
 use std::collections::BTreeMap;
@@ -46,6 +46,7 @@ use std::io::Cursor;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 use text::{Text, Utf8, Utf16};
 
 type Result<T> = std::result::Result<T, Error>;
@@ -81,6 +82,8 @@ struct State {
     certificate: Option<String>,
     key: Option<String>,
     crl: Option<String>,
+    /// Given to each connection, and to the current one when set.
+    answer_timeout: Duration,
     client: Option<Client>,
     /// The last call's error code, 0 if it succeeded.
     last_error: u32,
@@ -107,6 +110,7 @@ impl State {
             certificate: None,
             key: None,
             crl: None,
+            answer_timeout: ANSWER_TIMEOUT,
             client: None,
             last_error: 0,
             reason: String::new(),
@@ -124,14 +128,10 @@ impl State {
     fn fail(&mut self, error: Error) {
         self.last_error = error.code();
         self.reason = error.message().to_owned();
-        // The client closes its connection on those, and on others that
-        // leave it out of step (a file failing mid-upload): forgotten then,
-        // so connecting again works.
-        let closed = [ErrorCode::ConnectionLost, ErrorCode::ProtocolError]
-            .iter()
-            .any(|code| code.code() == error.code())
-            || self.client.as_ref().is_some_and(Client::is_closed);
-        if closed {
+        // The client closes its connection on every failure that leaves it
+        // out of step (`ConnectionLost`, `ProtocolError`, a file failing
+        // mid-upload): forgotten then, so connecting again works.
+        if self.client.as_ref().is_some_and(Client::is_closed) {
             self.client = None;
         }
     }
@@ -465,7 +465,8 @@ unsafe fn connect<T: Text>(client: i64, host: *const T::Unit, port: i32) -> isiz
             true => format!("[{host}]:{port}"),
             false => format!("{host}:{port}"),
         };
-        let client = Client::connect(&address, &settings)?;
+        let mut client = Client::connect(&address, &settings)?;
+        client.set_answer_timeout(state.answer_timeout)?;
         state.client = Some(client);
         Ok(1)
     })
@@ -492,7 +493,7 @@ pub unsafe extern "C" fn BakaShrot_ConnectW(client: i64, host: *const u16, port:
 #[unsafe(no_mangle)]
 pub extern "C" fn BakaShrot_IsConnected(client: i64) -> isize {
     get(client, 0, |state| {
-        let open = state.client.as_ref().is_some_and(Client::is_open);
+        let open = state.client.as_mut().is_some_and(Client::is_open);
         if !open {
             state.client = None;
         }
@@ -517,6 +518,39 @@ pub extern "C" fn BakaShrot_Ping(client: i64) -> isize {
     call(client, 0, |state| {
         state.client()?.ping()?;
         Ok(1)
+    })
+}
+
+/// Sets how long an answer may take, in milliseconds (more than 0; 30000
+/// until changed): longer for a slow query, say. Past it, the request
+/// fails with `ConnectionLost`, the connection closed (the server then
+/// stops the query it was running). Kept for the next connections, and
+/// applied to the current one: 1, or 0 if refused.
+#[unsafe(no_mangle)]
+pub extern "C" fn BakaShrot_SetAnswerTimeout(client: i64, milliseconds: i64) -> isize {
+    call(client, 0, |state| {
+        let timeout = u64::try_from(milliseconds)
+            .ok()
+            .filter(|ms| *ms > 0)
+            .map(Duration::from_millis)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "an answer timeout of {milliseconds} ms: more than 0"
+                ))
+            })?;
+        if let Some(connected) = state.client.as_mut() {
+            connected.set_answer_timeout(timeout)?;
+        }
+        state.answer_timeout = timeout;
+        Ok(1)
+    })
+}
+
+/// How long an answer may take, in milliseconds (`BakaShrot_SetAnswerTimeout()`).
+#[unsafe(no_mangle)]
+pub extern "C" fn BakaShrot_GetAnswerTimeout(client: i64) -> i64 {
+    get(client, -1, |state| {
+        i64::try_from(state.answer_timeout.as_millis()).unwrap_or(i64::MAX)
     })
 }
 

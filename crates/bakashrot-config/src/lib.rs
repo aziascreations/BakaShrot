@@ -108,6 +108,14 @@ pub struct Server {
         deserialize_with = "values::idle_connections"
     )]
     pub idle_database_connections: usize,
+    /// How long a client's query may run before it's stopped and refused
+    /// (`QueryTimedOut`); 20 s by default. Under the clients' answer timeout
+    /// (30 s by default), so they get the refusal rather than give up.
+    #[serde(
+        default = "defaults::query_time_limit",
+        deserialize_with = "values::duration"
+    )]
+    pub query_time_limit: Duration,
 }
 
 /// How hard the database makes sure a push is on disk before answering it
@@ -266,6 +274,9 @@ mod defaults {
     }
     pub(crate) fn idle_database_connections() -> usize {
         8
+    }
+    pub(crate) fn query_time_limit() -> Duration {
+        Duration::from_secs(20)
     }
 }
 

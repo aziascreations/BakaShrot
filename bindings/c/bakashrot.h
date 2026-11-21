@@ -126,6 +126,20 @@ ptrdiff_t BakaShrot_Disconnect(int64_t client);
 ptrdiff_t BakaShrot_Ping(int64_t client);
 
 /**
+ * Sets how long an answer may take, in milliseconds (more than 0; 30000
+ * until changed): longer for a slow query, say. Past it, the request
+ * fails with `ConnectionLost`, the connection closed (the server then
+ * stops the query it was running). Kept for the next connections, and
+ * applied to the current one: 1, or 0 if refused.
+ */
+ptrdiff_t BakaShrot_SetAnswerTimeout(int64_t client, int64_t milliseconds);
+
+/**
+ * How long an answer may take, in milliseconds (`BakaShrot_SetAnswerTimeout()`).
+ */
+int64_t BakaShrot_GetAnswerTimeout(int64_t client);
+
+/**
  * The node this client is, as the server said when connecting: its
  * certificate's name. Empty when not connected.
  */
