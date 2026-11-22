@@ -1,6 +1,6 @@
 [package]
 name = "bakashrot-capi"
-description = "BakaShrot's C DLL: the BakaShrot_* exports over bakashrot-client, one connection per process."
+description = "BakaShrot's C DLL: the BakaShrot_* exports over bakashrot-client, as many clients as needed."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

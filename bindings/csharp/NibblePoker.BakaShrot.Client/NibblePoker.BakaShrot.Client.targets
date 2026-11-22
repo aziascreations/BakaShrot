@@ -1,0 +1,13 @@
+<Project>
+  <!-- .NET Framework apps (packages.config or PackageReference): the native
+       library next to the app, as .NET Framework ignores runtimes/. It's
+       64-bit: ARM64's when the app is built for ARM64, x64's otherwise. -->
+  <PropertyGroup>
+    <BakaShrotRuntime Condition="'$(BakaShrotRuntime)' == '' And '$(PlatformTarget)' == 'ARM64'">win-arm64</BakaShrotRuntime>
+    <BakaShrotRuntime Condition="'$(BakaShrotRuntime)' == ''">win-x64</BakaShrotRuntime>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../runtimes/$(BakaShrotRuntime)/native/bakashrot.dll"
+          Link="bakashrot.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+</Project>

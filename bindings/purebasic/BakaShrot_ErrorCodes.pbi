@@ -1,12 +1,13 @@
 ;{- Code Header
 ; ==- Basic Info -================================
 ;     Name: BakaShrot_ErrorCodes.pbi
-;  Version: 0.0.1
+;  Version: 0.4.0
 ;   Author: Herwin Bozet (NibblePoker)
 ;
 ; ==- Compatibility -=============================
 ;  Tested compiler versions:
 ;    * PureBasic 5.73 LTS (Windows x64)
+;    * PureBasic 6.41 (Windows x64)
 ;
 ; ==- Links -=====================================
 ;  GitHub: https://github.com/aziascreations/BakaShrot
@@ -16,7 +17,7 @@
 ; BakaShrot error codes
 ;
 ; What BakaShrot_GetLastError() returns after a failed call of the client DLL
-; (bakashrot.dll), and the code a server sends with each refusal (protocol 7,
+; (bakashrot.dll), and the code a server sends with each refusal (protocol 8,
 ; crates/bakashrot-proto/src/error.rs).
 ; The Python client has them in bakashrot.ErrorCode. Shipped next to
 ; BakaShrot_Client_Prototypes.pbi, which includes it.
@@ -30,7 +31,8 @@
 ;   reconnect, then retry:   NotConnected, ConnectFailed, ConnectionLost,
 ;                            ProtocolError (the connection is closed)
 ;   retry later:             NotReady (an attachment still on its way),
-;                            ServerError (the server's storage failed)
+;                            ServerError (the server's storage failed),
+;                            QueryTimedOut (or narrow the query)
 ;   fix the certificates or
 ;   the server's config:     AuthRejected, ServerNotVerified, NotAllowed,
 ;                            UnknownName, VersionMismatch
@@ -67,6 +69,9 @@
 #BakaShrot_Refused_QueryFailed    = 9
 ; The server couldn't store or read something: its database failed.
 #BakaShrot_Refused_ServerError    = 10
+; A query ran past the server's time limit (query_time_limit) and was
+; stopped: narrow it, or retry when the server is less busy.
+#BakaShrot_Refused_QueryTimedOut  = 11
 
 ; The highest a refusal can have, anything above is the client's own.
 #BakaShrot_Refused_Max = 99
@@ -119,6 +124,7 @@ Procedure.s BakaShrot_ErrorName(Code.l)
 		Case #BakaShrot_Refused_DataMismatch : ProcedureReturn "DataMismatch"
 		Case #BakaShrot_Refused_QueryFailed : ProcedureReturn "QueryFailed"
 		Case #BakaShrot_Refused_ServerError : ProcedureReturn "ServerError"
+		Case #BakaShrot_Refused_QueryTimedOut : ProcedureReturn "QueryTimedOut"
 		Case #BakaShrot_Error_NotConnected : ProcedureReturn "NotConnected"
 		Case #BakaShrot_Error_ConnectFailed : ProcedureReturn "ConnectFailed"
 		Case #BakaShrot_Error_AuthRejected : ProcedureReturn "AuthRejected"

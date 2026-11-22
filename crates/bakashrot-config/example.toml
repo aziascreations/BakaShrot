@@ -11,7 +11,7 @@
 [server]
 listen = "0.0.0.0:7000"              # required: address and port
 
-# The certificates (bakashrot-cert), required. The node this server is,
+# The certificates (bakashrot cert), required. The node this server is,
 # for its peers, is its certificate's name.
 ca = "ca.crt"
 certificate = "server-1.crt"
@@ -32,10 +32,13 @@ synchronous = "full"
 # well under it (more than a few GB is a lot for this anyway).
 max_attachment_size = "1G"           # bytes, or K M G T (1024-based); 0: none
 retention_interval = "1m"            # how often old messages are deleted
+idle_database_connections = 8        # kept open once idle, for reads and as many for queries; closed after 1 min unused
+query_time_limit = "20s"             # a client's query stopped (refused) past it; keep it under the clients' answer timeout (30 s)
 
 # How long each topic's messages are kept, from when they were first
-# pushed. A topic takes its name's line, else the first pattern matching
-# it, else "*"'s; without any, it's kept forever.
+# pushed: 100 years ("36500d") at most, or "forever". A topic takes its
+# name's line, else the first pattern matching it, else "*"'s; without
+# any, it's kept forever.
 [retention]
 logs = "30d"
 "sensors.*" = "12h"
@@ -47,7 +50,7 @@ logs = "30d"
 push_to = []                         # dialed and sent to: ["10.0.0.2:7000", "server-2.lan:7000"]
 accept_from = []                     # taken from: ["10.0.0.2", "server-2.lan"], or ["*"]
 retry_delay = "10s"
-sync_interval = "5s"                 # keep it under 5 min: a link idle that long is closed
+sync_interval = "5s"                 # a link waiting longer than a minute pings meanwhile
 batch_size = 1000                    # messages per packet, 1-10000
 
 # What certificates with a role may do. A certificate gets everything its

@@ -1,6 +1,6 @@
 [package]
 name = "bakashrot-tools"
-description = "BakaShrot's command-line tools: bakashrot pushes and reads messages, bakashrot-cert issues certificates and revokes them."
+description = "BakaShrot's command-line tool: bakashrot pushes and reads messages, bakashrot cert issues certificates and revokes them."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,17 +9,21 @@ authors.workspace = true
 repository.workspace = true
 publish.workspace = true
 
-# No API to document, and its name is the DLL's library's (cargo doc would
-# collide).
+# One program, the certificates' commands in it (`bakashrot cert`): aws-lc,
+# the C runtime and clap once, not in two programs. No API to document, and
+# its name is the DLL's library's (cargo doc would collide). Released with
+# the `release-tools` profile (../../Cargo.toml).
 [[bin]]
 name = "bakashrot"
+path = "src/main.rs"
 doc = false
 
 [dependencies]
 bakashrot-client = { path = "../bakashrot-client" }
 bakashrot-pki = { path = "../bakashrot-pki" }
 bakashrot-proto = { path = "../bakashrot-proto" }
-clap = { version = "4", features = ["derive"] }
+# Without colours and "did you mean" suggestions: 40 KB less.
+clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 time = "0.3.55"

@@ -7,7 +7,7 @@ the wire: `protocol.md`.
 
 **Status:** steps 5, 6, 9, 10, 11 and 12: connecting, pushes and their
 attachments, messages, attachments, names, queries, retention,
-replication, stopping cleanly. Every request of protocol 7 is answered.
+replication, stopping cleanly. Every request of protocol 8 is answered.
 
 ## Running
 
@@ -50,12 +50,13 @@ Restart=on-failure
 
 `docker/Dockerfile` (its comments have the details), the image
 `ghcr.io/aziascreations/bakashrot-server` (amd64 and arm64, pushed by CI
-on a version tag): the server, with `bakashrot` and `bakashrot-cert`
-beside it, on `debian:trixie-slim`, as uid 10001.
+on a version tag): the server, with the `bakashrot` tool beside it
+(`bakashrot cert` for the certificates), on `debian:trixie-slim`, as
+uid 10001.
 
 - **The config** in `/etc/bakashrot`, read-only: `server.toml`, the
   certificates, the server's key (readable by uid 10001: `chown 10001`
-  it, `bakashrot-cert` writes keys for their owner only). `listen =
+  it, `bakashrot cert` writes keys for their owner only). `listen =
   "0.0.0.0:7000"`: 127.0.0.1 isn't reachable from outside.
 - **The database** in `/var/lib/bakashrot`, a volume: `database =
   "/var/lib/bakashrot/bakashrot.sqlite"`.
@@ -64,7 +65,8 @@ beside it, on `debian:trixie-slim`, as uid 10001.
   7000:7000 -v ./config:/etc/bakashrot:ro -v
   bakashrot-data:/var/lib/bakashrot <image>`. `docker stop` is SIGTERM:
   a clean stop. The logs: `docker logs`.
-- **The tools:** `docker run --rm <image> bakashrot-cert ...`.
+- **The tool:** `docker run --rm <image> bakashrot cert ...` (or
+  `bakashrot push ...`).
 - **Checked** by `docker/test.sh <image>` (CI runs it on both before
   pushing): certificates by the image's tool, its server, a push read
   back over a Docker network, `docker stop` ending it cleanly.
@@ -75,7 +77,7 @@ beside it, on `debian:trixie-slim`, as uid 10001.
 |---|---|---|
 | Connections | tokio, a task each | TLS (`tokio-rustls`, `bakashrot-pki`'s settings), the versions, the identity, then requests one at a time |
 | Writes | one writer thread | a queue of every write (pushes, uploads and their parts, replicated messages and parts, retention's deletes); the thread writes whatever is queued in one transaction (group commit, 1000 at most): the busier, the bigger the groups |
-| Reads, queries | tokio's blocking threads | a pool of read connections and one of query connections (`query_only`), reused |
+| Reads, queries | tokio's blocking threads | a pool of read connections and one of query connections (the file opened read-only, `query_only`), reused |
 | WAL checkpoints | one thread, every second | its own connection, off the writer's way (`storage.md`) |
 | The CRL file | a task, every 5 s | reloaded when its time or size changes; one that isn't the CA's is refused, the previous one stays; no file: nothing revoked, warned |
 | Retention | a task, at start then every `retention_interval` (1 min) | below |
@@ -116,18 +118,27 @@ otherwise:
 
 1. `SyncStateRequest`: the other server answers what it takes from this
    one (topics and nodes, patterns included), its last id in each topic
-   and node, and the attachments it lacks (256 at most).
+   and node, and the attachments it lacks (256 at most). The last ids
+   come in pages of 32768, each asked after the last of the previous
+   one, until none follow.
 2. **The messages:** for each topic and node here that it takes and that
    its roles here may be sent (`send_topics`, `send_nodes`), and where
    it's behind, the messages after its
    last id, `batch_size` (1000) at a time and about 1 MiB at most (a
    bigger one alone), each batch answered before the next. A refusal
-   leaves that topic and node for the next check-in.
+   leaves that topic and node for the next check-in. Those its roles
+   here may be sent but it doesn't take (not in its roles' `accept_*`
+   there) are skipped and warned about (2026-11-21), the first ten
+   named: once per link, again only when they change, and "takes
+   everything" once none are left. Not at every check-in: it would spam.
 3. **The attachments it lacks:** those this server has ready, from the
    part it needs. One it says doesn't match its SHA-256 is read back
    here: damaged (a disk, a bug), this server's copy is dropped and asked
    for again from its own peers (`replicating`, not served meanwhile),
-   instead of sent again at every check-in.
+   instead of sent again at every check-in. Damaged means read whole and
+   not matching, or a part missing; a read-back that fails otherwise (the
+   database busy, a connection not opened) says nothing, so the copy is
+   kept and warned about (2026-11-19): it may be the only one there is.
 
 **Receiving** (`accept_from.rs`): replication requests are answered only
 if the connection comes from `accept_from` (a hostname looked up at its
@@ -155,7 +166,8 @@ the same ids with different messages, undetected.
 ## A connection
 
 1. **TLS:** the client's certificate must be the CA's, valid, not revoked,
-   with an identity (`certificates.md`). A refused one gets TLS's alert,
+   with an identity (`certificates.md`), and ALPN `bakashrot` agreed on
+   (a client offering none is closed at once). A refused one gets TLS's alert,
    then a gentle close: the server shuts down and reads until the client
    closes (1 s at most). Closing at once reset the connection (the
    client's version bytes unread), which could beat the alert to the
@@ -174,9 +186,10 @@ the same ids with different messages, undetected.
 | Timeout | |
 |---|---|
 | TLS, versions, welcome | 10 s (the server); the client's connect too |
-| Silence between requests | 5 min, then the server closes |
+| Silence between requests | 5 min, then the server closes (a `Ping` is a request: links and follows send one every minute while they wait) |
 | A packet sent (an answer, an attachment's part, to a peer too) | 30 s (the server), then it closes: a client that stopped reading doesn't hold a connection |
-| An answer | 30 s (the client) |
+| An answer | 30 s (the client; `set_answer_timeout()`, `BakaShrot_SetAnswerTimeout()`), then it closes: the server stops the query it was running |
+| A query | 20 s (`[server] query_time_limit`), then SQLite stops it: `QueryTimedOut` |
 | An attachment's next part | 30 s (the server), then it closes |
 
 ## Requests so far
@@ -211,10 +224,23 @@ the same ids with different messages, undetected.
   replicated), those the roles may push to or read (every one with
   `list_topics` or `query`); nodes are those with messages in the
   topics the roles may read (every one with `list_nodes` or `query`). `truncated` past 65,536.
+  The filters (`topics`, `nodes`: a name or a pattern each) keep the
+  topics or nodes of the topic and node pairs they match, out of
+  `reader.heads()`: the topics a node pushed to, the nodes that pushed to
+  a topic (a pair counts once it had messages, retention's deletions
+  included). A pair's topic must be one the roles may see when the
+  answer is topics or `topics` filters it; its node, when the answer is
+  nodes or `nodes` filters it (`connection.rs`, `list_names`). So a
+  node filter doesn't tell a client which nodes pushed to a topic it may
+  only push to.
 - **`Query`:** the roles must allow it (`NotAllowed`); read-only SQL,
   refused with SQLite's message (`QueryFailed`, with a hint to add
   `is_json = 1` on "malformed JSON"), over 10,000 rows or 16 MB
   (`TooBig`), never a partial result (`storage.md`, "The query surface").
+  Stopped past `query_time_limit` (`QueryTimedOut`, "stopped after 20s,
+  the server's time limit"), or when the client closes meanwhile (it
+  gave up): its thread isn't left running. `Server::queries_running()`
+  says how many run.
 - **Sizes:** frames up to 16 MB (`MAX_PACKET_SIZE`), a bigger one drops the
   connection; messages up to `MAX_MESSAGE_SIZE` (16 MB less 4 KB), the
   server refusing bigger ones (`TooBig`); the client refuses messages and
@@ -224,8 +250,8 @@ the same ids with different messages, undetected.
 
 `Client::connect(address, settings)` (`host:port`, the CA's certificate,
 the client's certificate and key, the CRL if any), then `push(topic,
-data)`, `get_messages(topic, node, after, limit)`, `list_names(kind)`,
-`query(sql)`. Blocking, no runtime. The DLL and the bindings over it:
+data)`, `get_messages(topic, node, after, limit)`, `list_names(kind,
+topics, nodes)`, `query(sql)`. Blocking, no runtime. The DLL and the bindings over it:
 `client.md`.
 
 Attachments: `push_with_attachment(topic, data, source)`, the source any
@@ -330,7 +356,7 @@ each:
   isn't one line of JSON;
 - big messages: five of 600 KB and one of the largest size, one per answer, read back whole; one byte
   over refused; a query result over 16 MB refused;
-- names: topics by role, nodes;
+- names: topics by role, nodes, filtered by names and patterns;
 - attachments: 100 KB, 5 MB + 123 bytes, exactly 2 MB, 1 byte, 1 MB, read back and saved; the
   messages saying theirs; none, or no such message, refused leaving no
   file; another reader, one not allowed; over the server's limit, 0 for
@@ -341,10 +367,16 @@ each:
   part on, something else than a part (closed, dropped);
 - queries: not allowed, results, a non-JSON row
   refused with the hint, errors, writes and two statements refused;
+  one past `query_time_limit` refused, the connection kept; one whose
+  client gave up first stopped (`queries_are_stopped`);
 - refusals keeping the connection (not allowed, unknown topic, a bad name
   the client catches);
 - certificates refused (no known role, with why; another CA's client; a
-  client trusting another CA; nothing listening);
+  client trusting another CA; a client offering no ALPN; nothing
+  listening);
+- pings (answered with no permission needed, a `Pong` sent to the server
+  closing it, a revoked certificate's ping dropped); a server keeping no
+  idle database connection still serving reads and queries;
 - revoked certificates (an open connection dropped at its next request, a
   new one refused, others going on, a bad CRL refused);
 - six connections pushing at once (one id stream per node, none lost or
@@ -366,6 +398,11 @@ each:
   first part going on from the second (the first read back for the
   SHA-256), one not matching refused and asked for from the start, a
   certificate whose roles take nothing refused;
+- replication not taken (the server's log captured): a topic the peer
+  doesn't take warned about once over several check-ins and not sent,
+  warned again, both named, when another node pushes to it
+  (`replication_not_taken_is_warned`; `push_to.rs`'s
+  `heads_sent_and_not_taken` for what's sent and what's named);
 - two peers, one attachment (two raw connections): the second refused
   while the first sends it (names in any case), the first finishing it;
   one gone partway, the other going on from there; one whole but never

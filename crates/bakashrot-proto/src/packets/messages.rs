@@ -201,16 +201,36 @@ impl TryFrom<u8> for NameKind {
     }
 }
 
-/// Every topic or node the client may see.
+/// The topics or nodes the client may see, of the topic and node pairs
+/// with messages that the filters match: the topics a node pushed to, the
+/// nodes that pushed to a topic.
 ///
-/// `[11, [kind]]`
+/// `[11, [kind, topics, nodes]]`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListNames {
     /// Topics or nodes.
     pub kind: NameKind,
+    /// Only the pairs whose topic is this name or matches this pattern;
+    /// nil for any.
+    pub topics: Option<String>,
+    /// Only the pairs whose node is this name or matches this pattern;
+    /// nil for any.
+    pub nodes: Option<String>,
 }
 
-impl Check for ListNames {}
+impl Check for ListNames {
+    fn check(&self) -> Result<(), DecodeError> {
+        for (filter, field) in [
+            (&self.topics, "ListNames.topics"),
+            (&self.nodes, "ListNames.nodes"),
+        ] {
+            if let Some(filter) = filter {
+                rules::name_or_pattern(filter, field)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Topics or nodes.
 ///

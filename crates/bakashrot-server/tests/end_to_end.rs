@@ -6,11 +6,13 @@
 use bakashrot_client::{Client, Settings};
 use bakashrot_config::Config;
 use bakashrot_pki::{Ca, Identity, Issued, Revocations, Usage, summarize, tls};
-use bakashrot_proto::limits::{ATTACHMENT_PART_SIZE, MAX_MESSAGE_SIZE, MAX_PACKET_SIZE};
+use bakashrot_proto::limits::{
+    ATTACHMENT_PART_SIZE, MAX_HEADS_PER_PACKET, MAX_MESSAGE_SIZE, MAX_PACKET_SIZE,
+};
 use bakashrot_proto::packets::{
-    Attachment, AttachmentPart, GetAttachment, MessagePushed, Messages, NameKind, PushMessage,
-    ReplicateAttachment, ReplicateMessages, ReplicatedMessage, StoredAttachment, SyncState,
-    SyncStateRequest,
+    Attachment, AttachmentPart, GetAttachment, Head, MessagePushed, Messages, NameKind, Pair, Ping,
+    Pong, PushMessage, ReplicateAttachment, ReplicateMessages, ReplicatedMessage, StoredAttachment,
+    SyncState, SyncStateRequest,
 };
 use bakashrot_proto::{ErrorCode, Packet, frame};
 use bakashrot_server::Server;
@@ -18,8 +20,9 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Once, PoisonError};
 use std::time::{Duration, Instant};
-use tokio_rustls::rustls::{ClientConnection, StreamOwned};
+use tokio_rustls::rustls::{ClientConfig, ClientConnection, StreamOwned};
 
 const CONFIG: &str = r#"
 [server]
@@ -219,6 +222,103 @@ fn push_and_read_back() {
     );
 }
 
+/// A ping is answered, needs no permission, and the connection goes on;
+/// a revoked certificate's ping drops it, as any request.
+#[test]
+fn pings() {
+    let running = Running::start("pings");
+    // No role allows anything here but being known.
+    let nobody = running.issue("idle", &["explorer"]);
+    let mut client = running.connect(&nobody).unwrap();
+    client.ping().unwrap();
+    client.ping().unwrap();
+    assert!(client.list_names(NameKind::Topic, None, None).is_ok());
+
+    let mut raw = Raw::connect(&running, &nobody);
+    raw.send(Ping {});
+    assert!(matches!(raw.receive(), Some(Packet::Pong(_))));
+    // An answer, not a request: the server closes.
+    raw.send(Pong {});
+    assert!(raw.receive().is_none());
+
+    let serial = summarize(&nobody.certificate).unwrap().serial;
+    let crl = running.ca.revocation_list(&[serial], 30).unwrap();
+    std::fs::write(running.folder.join("ca.crl"), crl).unwrap();
+    running.server.reload_revocations().unwrap();
+    let error = client.ping().unwrap_err();
+    assert_eq!(error.code(), ErrorCode::ConnectionLost.code(), "{error}");
+}
+
+/// No idle database connection kept: each read and query opens its own.
+#[test]
+fn no_idle_database_connections() {
+    let running = Running::start_with("no-idle", "idle_database_connections = 0\n");
+    let mut client = running
+        .connect(&running.issue("kitchen", &["sensor", "reader", "analyst"]))
+        .unwrap();
+    for n in 1..=3 {
+        assert_eq!(client.push("logs", &format!("{{\"n\":{n}}}")).unwrap(), n);
+        let latest = client.get_messages("logs", "kitchen", None, 1).unwrap();
+        assert_eq!(latest.messages[0].id, n);
+    }
+    let json = client.query("SELECT count(*) AS n FROM messages").unwrap();
+    assert_eq!(json, r#"{"columns":["n"],"rows":[["3"]]}"#);
+}
+
+/// A query that never ends.
+const FOREVER: &str =
+    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n";
+
+/// Past `query_time_limit`, a query is stopped and refused, the connection
+/// kept; a client giving up first (its answer timeout) closes, and its
+/// query is stopped then.
+#[test]
+fn queries_are_stopped() {
+    let running = Running::start_with("query-time-limit", "query_time_limit = \"1s\"\n");
+    let analyst = running.issue("analyst-1", &["analyst"]);
+    let mut client = running.connect(&analyst).unwrap();
+    let started = Instant::now();
+    let error = client.query(FOREVER).unwrap_err();
+    let took = started.elapsed();
+    assert_eq!(error.code(), ErrorCode::QueryTimedOut.code(), "{error}");
+    assert!(
+        error
+            .message()
+            .contains("stopped after 1s, the server's time limit"),
+        "{error}"
+    );
+    assert!(
+        took >= Duration::from_secs(1) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+    assert_eq!(running.server.queries_running(), 0);
+    assert_eq!(
+        client.query("SELECT 1 AS one").unwrap(),
+        r#"{"columns":["one"],"rows":[["1"]]}"#
+    );
+
+    // The client gives up long before the server's limit.
+    let running = Running::start_with("query-left", "query_time_limit = \"1h\"\n");
+    let mut client = running
+        .connect(&running.issue("analyst-1", &["analyst"]))
+        .unwrap();
+    client
+        .set_answer_timeout(Duration::from_millis(300))
+        .unwrap();
+    let error = client.query(FOREVER).unwrap_err();
+    assert_eq!(code(error), ErrorCode::ConnectionLost.code());
+    assert!(client.is_closed());
+    wait_for("its query stopped", || {
+        running.server.queries_running() == 0
+    });
+    // Its connection is closed; the next one is answered.
+    let mut client = running
+        .connect(&running.issue("analyst-2", &["analyst"]))
+        .unwrap();
+    assert!(client.query("SELECT 1").is_ok());
+    assert_eq!(running.server.queries_running(), 0);
+}
+
 #[test]
 fn refusals_keep_the_connection() {
     let running = Running::start("refusals");
@@ -298,6 +398,20 @@ fn certificates_refused() {
     .unwrap_err();
     assert_eq!(error.code(), ErrorCode::ServerNotVerified.code(), "{error}");
 
+    // A client of the CA offering no ALPN: TLS goes through (rustls only
+    // refuses other protocols), then the server closes before its version.
+    let kitchen = running.issue("kitchen", &["sensor"]);
+    let mut silent = Raw::open(&running, &kitchen, |config| config.alpn_protocols.clear());
+    frame::write_version(&mut silent.0).unwrap();
+    let _ = silent.0.flush();
+    assert!(frame::read_version(&mut silent.0).is_err());
+    // Offering it, the same client gets in.
+    let mut offering = Raw::open(&running, &kitchen, |_| {});
+    frame::write_version(&mut offering.0).unwrap();
+    offering.0.flush().unwrap();
+    frame::read_version(&mut offering.0).unwrap();
+    assert!(matches!(offering.receive(), Some(Packet::Welcome(_))));
+
     // Nothing listening.
     let error = Client::connect(
         "127.0.0.1:1",
@@ -329,6 +443,10 @@ fn revoked_certificates_are_dropped() {
     // Its open connection goes at its next request, a new one is refused.
     let error = connected.push("logs", "{}").unwrap_err();
     assert_eq!(error.code(), ErrorCode::ConnectionLost.code(), "{error}");
+    // Closed by the client too: the next one isn't even sent.
+    let error = connected.push("logs", "{}").unwrap_err();
+    assert_eq!(error.code(), ErrorCode::NotConnected.code(), "{error}");
+    assert!(!connected.is_open());
     let error = running.connect(&kitchen).unwrap_err();
     assert_eq!(error.code(), ErrorCode::AuthRejected.code(), "{error}");
     // Others go on.
@@ -596,12 +714,13 @@ fn names() {
         .connect(&running.issue("analyst-1", &["analyst"]))
         .unwrap();
 
-    let names = |client: &mut Client, kind| {
-        let list = client.list_names(kind).unwrap();
+    let filtered = |client: &mut Client, kind, topics, nodes| {
+        let list = client.list_names(kind, topics, nodes).unwrap();
         assert_eq!(list.kind, kind);
         assert!(!list.truncated);
         list.names
     };
+    let names = |client: &mut Client, kind| filtered(client, kind, None, None);
     // Topics: those it may push to or read; every one for a query role.
     assert_eq!(names(&mut sensor, NameKind::Topic), ["logs", "sensors"]);
     assert_eq!(names(&mut screen, NameKind::Topic), ["logs"]);
@@ -624,6 +743,55 @@ fn names() {
         ),
         ErrorCode::NotAllowed.code()
     );
+
+    // Filtered: the topics a node pushed to, the nodes that pushed to a
+    // topic; names (without case) or patterns.
+    sensor.push("sensors", "{}").unwrap();
+    let (topic, node) = (NameKind::Topic, NameKind::Node);
+    let every = &mut analyst;
+    assert_eq!(
+        filtered(every, topic, None, Some("kitchen")),
+        ["logs", "sensors"]
+    );
+    assert_eq!(
+        filtered(every, topic, None, Some("KITCHEN")),
+        ["logs", "sensors"]
+    );
+    assert_eq!(filtered(every, topic, None, Some("g*")), ["sensors"]);
+    assert!(filtered(every, topic, None, Some("nobody")).is_empty());
+    assert_eq!(
+        filtered(every, node, Some("sensors"), None),
+        ["garage", "kitchen"]
+    );
+    assert_eq!(filtered(every, node, Some("l?gs"), None), ["kitchen"]);
+    assert_eq!(filtered(every, node, Some("*"), Some("k*")), ["kitchen"]);
+    assert_eq!(
+        filtered(every, topic, Some("s*"), Some("kitchen")),
+        ["sensors"]
+    );
+    // Only what it may see: the nodes of the topics it may read...
+    assert_eq!(
+        filtered(&mut screen, topic, None, Some("kitchen")),
+        ["logs"]
+    );
+    assert!(filtered(&mut screen, topic, None, Some("garage")).is_empty());
+    assert_eq!(filtered(&mut screen, node, Some("*"), None), ["kitchen"]);
+    // ...not of those it may only push to, the topics of those it may.
+    assert!(filtered(&mut sensor, topic, None, Some("garage")).is_empty());
+    assert_eq!(filtered(&mut sensor, topic, Some("s*"), None), ["sensors"]);
+    assert_eq!(
+        filtered(&mut explorer, topic, None, Some("garage")),
+        ["sensors"]
+    );
+    assert_eq!(
+        filtered(&mut explorer, node, Some("logs"), None),
+        ["kitchen"]
+    );
+    // Neither a name nor a pattern: refused before it's sent.
+    let error = analyst
+        .list_names(NameKind::Node, Some("a b"), None)
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument.code(), "{error}");
 }
 
 /// Queries: allowed or not, results, refusals.
@@ -872,22 +1040,30 @@ struct Raw(StreamOwned<ClientConnection, TcpStream>);
 
 impl Raw {
     fn connect(running: &Running, issued: &Issued) -> Raw {
-        let config = tls::client_config(
-            &running.ca_certificate,
-            &issued.certificate,
-            &issued.key,
-            Revocations::none().shared(),
-        )
-        .unwrap();
-        let tcp = TcpStream::connect(&running.address).unwrap();
-        tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let connection = ClientConnection::new(config, tls::server_name()).unwrap();
-        let mut raw = Raw(StreamOwned::new(connection, tcp));
+        let mut raw = Raw::open(running, issued, |_| {});
         frame::write_version(&mut raw.0).unwrap();
         raw.0.flush().unwrap();
         frame::read_version(&mut raw.0).unwrap();
         assert!(matches!(raw.receive(), Some(Packet::Welcome(_))));
         raw
+    }
+
+    /// TLS only, its client config changed by `change` first: the
+    /// versions and the welcome are the caller's.
+    fn open(running: &Running, issued: &Issued, change: impl FnOnce(&mut ClientConfig)) -> Raw {
+        let mut config = (*tls::client_config(
+            &running.ca_certificate,
+            &issued.certificate,
+            &issued.key,
+            Revocations::none().shared(),
+        )
+        .unwrap())
+        .clone();
+        change(&mut config);
+        let tcp = TcpStream::connect(&running.address).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let connection = ClientConnection::new(Arc::new(config), tls::server_name()).unwrap();
+        Raw(StreamOwned::new(connection, tcp))
     }
 
     fn send(&mut self, packet: impl Into<Packet>) {
@@ -980,7 +1156,7 @@ fn attachment_edges() {
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::FileError.code(), "{error}");
     let error = kitchen.push("logs", "{}").unwrap_err();
-    assert_eq!(error.code(), ErrorCode::ConnectionLost.code(), "{error}");
+    assert_eq!(error.code(), ErrorCode::NotConnected.code(), "{error}");
     let started = Instant::now();
     while uploads(&mut analyst) != none_left {
         assert!(
@@ -1392,13 +1568,260 @@ fn replication() {
     );
 }
 
-/// A server's `SyncState`, asked over `raw`.
+/// A server's `SyncState`, asked over `raw`: its first page.
 fn sync_state(raw: &mut Raw) -> SyncState {
-    raw.send(SyncStateRequest {});
+    sync_page(raw, None)
+}
+
+/// A page of a server's `SyncState`, the heads after `after`.
+fn sync_page(raw: &mut Raw, after: Option<Pair>) -> SyncState {
+    raw.send(SyncStateRequest { after });
     match raw.receive() {
         Some(Packet::SyncState(state)) => state,
         other => panic!("expected a SyncState, got {other:?}"),
     }
+}
+
+/// Adds `count` topic and node pairs to the database at `path`, topics
+/// `{prefix}000001` and on, node "far", each pair's last id its number:
+/// faster than pushing.
+fn add_pairs(path: &std::path::Path, prefix: &str, count: usize) {
+    let raw = rusqlite::Connection::open(path).unwrap();
+    raw.execute(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2) \
+         INSERT INTO streams (topic, node, last_id) \
+         SELECT printf('%s%06d', ?1, i), 'far', i FROM n",
+        rusqlite::params![prefix, count],
+    )
+    .unwrap();
+}
+
+/// Heads as (topic, node, last id), to compare.
+fn triples(heads: &[Head]) -> Vec<(String, String, u64)> {
+    heads
+        .iter()
+        .map(|head| (head.topic.clone(), head.node.clone(), head.last_id))
+        .collect()
+}
+
+#[test]
+fn sync_state_in_pages() {
+    const PAGE: usize = MAX_HEADS_PER_PACKET;
+    // "picky" takes only topics starting with "b".
+    let b = Running::start_with(
+        "pages",
+        "\n[replication]\naccept_from = [\"127.0.0.1\"]\n\n\
+         [roles.picky]\naccept_topics = [\"b*\"]\n",
+    );
+    // A page of "b" pairs, between 1000 "a" and 1000 "c" ones.
+    let database = b.folder.join("bakashrot.sqlite");
+    let b = b.restart_after(|| {
+        add_pairs(&database, "a", 1000);
+        add_pairs(&database, "b", PAGE);
+        add_pairs(&database, "c", 1000);
+    });
+    let mut every: Vec<(String, String, u64)> = Vec::new();
+    for (prefix, count) in [("a", 1000), ("b", PAGE), ("c", 1000)] {
+        every.extend((1..=count as u64).map(|n| (format!("{prefix}{n:06}"), "far".into(), n)));
+    }
+
+    // A peer taking everything: a full first page with the lists, then the
+    // rest after its last head, without them; every pair once, in order.
+    let mut peer = Raw::connect(&b, &b.issue("server-x", &["peer"]));
+    let first = sync_page(&mut peer, None);
+    assert!(first.more);
+    assert_eq!(first.heads.len(), PAGE);
+    assert_eq!(
+        (first.topics.as_slice(), first.nodes.as_slice()),
+        (["*".to_string()].as_slice(), ["*".to_string()].as_slice())
+    );
+    let second = sync_page(&mut peer, first.heads.last().map(Pair::from));
+    assert!(!second.more);
+    assert!(second.topics.is_empty() && second.nodes.is_empty() && second.missing.is_empty());
+    let mut both = triples(&first.heads);
+    both.extend(triples(&second.heads));
+    assert_eq!(both, every);
+
+    // The pair asked after, its names in another case: the same page.
+    let last = first.heads.last().unwrap();
+    let shouted = Pair {
+        topic: last.topic.to_uppercase(),
+        node: last.node.to_uppercase(),
+    };
+    assert_eq!(sync_page(&mut peer, Some(shouted)).heads, second.heads);
+    // A pair it doesn't have: from the next one after it.
+    let between = Pair {
+        topic: "b000005".into(),
+        node: "a".into(),
+    };
+    assert_eq!(
+        sync_page(&mut peer, Some(between)).heads[0].topic,
+        "b000005"
+    );
+    // After the very last: nothing, nothing more.
+    let end = sync_page(&mut peer, second.heads.last().map(Pair::from));
+    assert!(end.heads.is_empty() && !end.more);
+
+    // A peer taking only "b": the others are skipped, not counted. Exactly
+    // a page of its own: one page, no empty one after it.
+    let mut picky = Raw::connect(&b, &b.issue("server-y", &["picky"]));
+    let only = sync_page(&mut picky, None);
+    assert!(!only.more);
+    assert_eq!(only.topics, ["b*"]);
+    assert_eq!(triples(&only.heads), every[1000..1000 + PAGE]);
+    // One more "b" (made while it runs): two pages, the second just it.
+    add_pairs(&database, "bz", 1);
+    let first = sync_page(&mut picky, None);
+    assert!(first.more);
+    assert_eq!(first.heads.len(), PAGE);
+    let second = sync_page(&mut picky, first.heads.last().map(Pair::from));
+    assert!(!second.more);
+    assert_eq!(
+        triples(&second.heads),
+        [("bz000001".into(), "far".into(), 1)]
+    );
+
+    // A pattern to ask after is malformed: the connection is dropped.
+    let pattern = Pair {
+        topic: "b*".into(),
+        node: "far".into(),
+    };
+    picky.send(SyncStateRequest {
+        after: Some(pattern),
+    });
+    assert_eq!(picky.receive(), None);
+}
+
+/// The servers' log, every test's (tracing's subscriber is global): from
+/// the first call on.
+fn log() -> String {
+    static LOG: Mutex<String> = Mutex::new(String::new());
+    struct Writer;
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let mut log = LOG.lock().unwrap_or_else(PoisonError::into_inner);
+            log.push_str(&String::from_utf8_lossy(bytes));
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    static START: Once = Once::new();
+    START.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(|| Writer)
+            .with_ansi(false)
+            .try_init();
+    });
+    LOG.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// What a peer doesn't take of what it may be sent is warned about once,
+/// again when it changes, and not sent.
+#[test]
+fn replication_not_taken_is_warned() {
+    log();
+    // b takes only "logs" from its peers.
+    let b = Running::start_with(
+        "not-taken-b",
+        "\n[replication]\naccept_from = [\"127.0.0.1\"]\n",
+    );
+    let config = b.folder.join("server.toml");
+    let b = b.restart_after(|| {
+        let text = std::fs::read_to_string(&config).unwrap();
+        let picky = text.replacen("accept_topics = [\"*\"]", "accept_topics = [\"logs\"]", 1);
+        assert_ne!(text, picky);
+        std::fs::write(&config, picky).unwrap();
+    });
+    let a = b.peer(
+        "not-taken-a",
+        "server-a",
+        &format!(
+            "\n[replication]\npush_to = [\"{}\"]\nsync_interval = \"1s\"\n",
+            b.address
+        ),
+    );
+    let mut kitchen = a.connect(&a.issue("kitchen", &["sensor"])).unwrap();
+    kitchen.push("logs", "{}").unwrap();
+    kitchen.push("sensors", "{}").unwrap();
+
+    let mut on_b = b.connect(&b.issue("watcher", &["reader"])).unwrap();
+    let mut on_b_has = |topic: &str| {
+        on_b.get_messages(topic, "kitchen", Some(0), 10)
+            .map(|answer| answer.messages.len())
+            .unwrap_or(0)
+    };
+    wait_for("logs on b", || on_b_has("logs") == 1);
+    let warnings = |names: &str| {
+        let line = format!("({}): doesn't take {names}, which", b.address);
+        log()
+            .lines()
+            .filter(|logged| logged.contains(&line))
+            .count()
+    };
+    wait_for("the warning", || warnings("sensors:kitchen") == 1);
+    // Checked in again and again (every second): not warned again.
+    std::thread::sleep(Duration::from_millis(3500));
+    assert_eq!(warnings("sensors:kitchen"), 1, "{}", log());
+    assert_eq!(on_b_has("sensors"), 0);
+
+    // Another pair it doesn't take: warned again, both named.
+    let mut garage = a.connect(&a.issue("garage", &["sensor"])).unwrap();
+    garage.push("sensors", "{}").unwrap();
+    wait_for("the new warning", || {
+        warnings("sensors:garage, sensors:kitchen") == 1
+    });
+    assert_eq!(warnings("sensors:kitchen"), 1);
+    assert!(!log().contains(&format!("({}): doesn't take logs", b.address)));
+}
+
+#[test]
+fn replication_across_pages() {
+    // b with a page and more of pairs before "logs", and kitchen's last id
+    // in "logs" 5 (its messages gone): that head is on the second page.
+    let b = Running::start_with(
+        "across-pages-b",
+        "\n[replication]\naccept_from = [\"127.0.0.1\"]\n",
+    );
+    let database = b.folder.join("bakashrot.sqlite");
+    let b = b.restart_after(|| {
+        add_pairs(&database, "a", MAX_HEADS_PER_PACKET + 1000);
+        let raw = rusqlite::Connection::open(&database).unwrap();
+        raw.execute(
+            "INSERT INTO streams (topic, node, last_id) VALUES ('logs', 'kitchen', 5)",
+            [],
+        )
+        .unwrap();
+    });
+    let a = b.peer(
+        "across-pages-a",
+        "server-a",
+        &format!(
+            "\n[replication]\npush_to = [\"{}\"]\nsync_interval = \"1s\"\n\
+             retry_delay = \"1s\"\n",
+            b.address
+        ),
+    );
+    let mut on_a = a.connect(&a.issue("kitchen", &["sensor"])).unwrap();
+    let mut on_b = b.connect(&b.issue("watcher", &["reader"])).unwrap();
+    let ids = |client: &mut Client| {
+        client
+            .get_messages("logs", "kitchen", Some(0), 10)
+            .map(|messages| messages.messages.iter().map(|m| m.id).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    // a sends only what's after b's 5: the second page was read. (Without
+    // it, a would take b to be at 0 and send all 6.)
+    for n in 1..=6 {
+        on_a.push("logs", &format!("{{\"n\":{n}}}")).unwrap();
+    }
+    wait_for("#6 on b", || ids(&mut on_b) == [6]);
+    on_a.push("logs", "{\"n\":7}").unwrap();
+    wait_for("#7 on b", || ids(&mut on_b) == [6, 7]);
+    // Check-ins after that send nothing more.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(ids(&mut on_b), [6, 7]);
 }
 
 #[test]
@@ -1549,14 +1972,20 @@ fn replication_edges() {
     assert_eq!(got.messages[0].data, "m1");
     // (`old` had a message, past its age.)
     assert_eq!(
-        reader.list_names(NameKind::Topic).unwrap().names,
+        reader
+            .list_names(NameKind::Topic, None, None)
+            .unwrap()
+            .names,
         ["elsewhere", "logs", "old"]
     );
     let mut logs_only = running
         .connect(&running.issue("lounge", &["logs"]))
         .unwrap();
     assert_eq!(
-        logs_only.list_names(NameKind::Topic).unwrap().names,
+        logs_only
+            .list_names(NameKind::Topic, None, None)
+            .unwrap()
+            .names,
         ["logs"]
     );
     assert_eq!(

@@ -18,67 +18,79 @@ extern "C" {
 #endif // __cplusplus
 
 /**
- * Why the last call failed: a protocol error code (1-99 a server's
- * refusal, the connection still open; 100 and up the client's own), 0 if
- * it succeeded. Getters don't change it.
+ * Makes a client: its handle (1 and up, never reused), 0 if it failed.
  */
-int32_t BakaShrot_GetLastError(void);
+int64_t BakaShrot_CreateClient(void);
 
 /**
- * Why the last call failed, in words: the server's reason for a refusal,
- * the client's otherwise. Empty if it succeeded.
+ * Frees a client and closes its connection (once a call on it in another
+ * thread ends), its enumerations closed too: 1, or 0 if it wasn't one.
  */
-ptrdiff_t BakaShrot_GetRefusalReasonA(char *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_FreeClient(int64_t client);
+
+/**
+ * Why the client's last call failed: a protocol error code (1-99 a
+ * server's refusal, the connection still open; 100 and up the client's
+ * own), 0 if it succeeded. Getters don't change it. `InvalidArgument` for
+ * a bad handle.
+ */
+int32_t BakaShrot_GetLastError(int64_t client);
+
+/**
+ * Why the client's last call failed, in words: the server's reason for a
+ * refusal, the client's otherwise. Empty if it succeeded.
+ */
+ptrdiff_t BakaShrot_GetRefusalReasonA(int64_t client, char *buffer, ptrdiff_t size);
 
 /**
  * The same as `BakaShrot_GetRefusalReasonA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_GetRefusalReasonW(uint16_t *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetRefusalReasonW(int64_t client, uint16_t *buffer, ptrdiff_t size);
 
 /**
  * Sets the CA's certificate, which the server's must be issued by: PEM
  * text, or the path of a file holding it. Before connecting.
  */
-ptrdiff_t BakaShrot_SetCaCertificateA(const char *certificate);
+ptrdiff_t BakaShrot_SetCaCertificateA(int64_t client, const char *certificate);
 
 /**
  * The same as `BakaShrot_SetCaCertificateA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_SetCaCertificateW(const uint16_t *certificate);
+ptrdiff_t BakaShrot_SetCaCertificateW(int64_t client, const uint16_t *certificate);
 
 /**
- * Sets this client's certificate, which says its node and its roles: PEM
+ * Sets the client's certificate, which says its node and its roles: PEM
  * text, or the path of a file holding it. Before connecting.
  */
-ptrdiff_t BakaShrot_SetCertificateA(const char *certificate);
+ptrdiff_t BakaShrot_SetCertificateA(int64_t client, const char *certificate);
 
 /**
  * The same as `BakaShrot_SetCertificateA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_SetCertificateW(const uint16_t *certificate);
+ptrdiff_t BakaShrot_SetCertificateW(int64_t client, const uint16_t *certificate);
 
 /**
- * Sets this client's private key, its certificate's: PEM text, or the path
+ * Sets the client's private key, its certificate's: PEM text, or the path
  * of a file holding it. Before connecting.
  */
-ptrdiff_t BakaShrot_SetPrivateKeyA(const char *key);
+ptrdiff_t BakaShrot_SetPrivateKeyA(int64_t client, const char *key);
 
 /**
  * The same as `BakaShrot_SetPrivateKeyA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_SetPrivateKeyW(const uint16_t *key);
+ptrdiff_t BakaShrot_SetPrivateKeyW(int64_t client, const uint16_t *key);
 
 /**
  * Sets the CA's CRL, optional: servers it revokes are refused. PEM text,
  * or the path of a file holding it (one that isn't there is a
  * `FileError`); null or empty for none. Before connecting.
  */
-ptrdiff_t BakaShrot_SetCrlA(const char *crl);
+ptrdiff_t BakaShrot_SetCrlA(int64_t client, const char *crl);
 
 /**
  * The same as `BakaShrot_SetCrlA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_SetCrlW(const uint16_t *crl);
+ptrdiff_t BakaShrot_SetCrlW(int64_t client, const uint16_t *crl);
 
 /**
  * Connects to the server at `host` (a name or an address) and `port`:
@@ -87,57 +99,81 @@ ptrdiff_t BakaShrot_SetCrlW(const uint16_t *crl);
  * the server refused the certificate, `ServerNotVerified` this client
  * refused the server's, `NotAllowed` none of its roles is the server's).
  */
-ptrdiff_t BakaShrot_ConnectA(const char *host, int32_t port);
+ptrdiff_t BakaShrot_ConnectA(int64_t client, const char *host, int32_t port);
 
 /**
  * The same as `BakaShrot_ConnectA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_ConnectW(const uint16_t *host, int32_t port);
+ptrdiff_t BakaShrot_ConnectW(int64_t client, const uint16_t *host, int32_t port);
 
 /**
  * 1 while connected: notices when the server closed the connection
  * (forgotten then: connect again).
  */
-ptrdiff_t BakaShrot_IsConnected(void);
+ptrdiff_t BakaShrot_IsConnected(int64_t client);
 
 /**
  * Closes the connection: 0 if there was none. The settings stay.
  */
-ptrdiff_t BakaShrot_Disconnect(void);
+ptrdiff_t BakaShrot_Disconnect(int64_t client);
+
+/**
+ * Keeps the connection open: 1, or 0 if it failed (`ConnectionLost`:
+ * connect again). The server closes a connection silent for 5 min; an
+ * app waiting longer between requests calls this every minute or so
+ * (the DLL has no thread of its own to do it).
+ */
+ptrdiff_t BakaShrot_Ping(int64_t client);
+
+/**
+ * Sets how long an answer may take, in milliseconds (more than 0; 30000
+ * until changed): longer for a slow query, say. Past it, the request
+ * fails with `ConnectionLost`, the connection closed (the server then
+ * stops the query it was running). Kept for the next connections, and
+ * applied to the current one: 1, or 0 if refused.
+ */
+ptrdiff_t BakaShrot_SetAnswerTimeout(int64_t client, int64_t milliseconds);
+
+/**
+ * How long an answer may take, in milliseconds (`BakaShrot_SetAnswerTimeout()`).
+ */
+int64_t BakaShrot_GetAnswerTimeout(int64_t client);
 
 /**
  * The node this client is, as the server said when connecting: its
  * certificate's name. Empty when not connected.
  */
-ptrdiff_t BakaShrot_GetNodeA(char *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetNodeA(int64_t client, char *buffer, ptrdiff_t size);
 
 /**
  * The same as `BakaShrot_GetNodeA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_GetNodeW(uint16_t *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetNodeW(int64_t client, uint16_t *buffer, ptrdiff_t size);
 
 /**
  * Pushes a message (JSON or not) to `topic`, as this client's node: its
  * id (1 and up), -1 on failure. A push whose answer was lost
  * (`ConnectionLost`) may have been stored all the same.
  */
-int64_t BakaShrot_PushMessageToA(const char *topic, const char *data);
+int64_t BakaShrot_PushMessageToA(int64_t client, const char *topic, const char *data);
 
 /**
  * The same as `BakaShrot_PushMessageToA`, in UTF-16.
  */
-int64_t BakaShrot_PushMessageToW(const uint16_t *topic, const uint16_t *data);
+int64_t BakaShrot_PushMessageToW(int64_t client, const uint16_t *topic, const uint16_t *data);
 
 /**
  * Gets the latest message of `topic` and `node`, then read with the
  * `BakaShrot_GetMessage*()` getters. `NotFound` if there's none yet.
  */
-ptrdiff_t BakaShrot_GetLatestMessageOfA(const char *topic, const char *node);
+ptrdiff_t BakaShrot_GetLatestMessageOfA(int64_t client, const char *topic, const char *node);
 
 /**
  * The same as `BakaShrot_GetLatestMessageOfA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_GetLatestMessageOfW(const uint16_t *topic, const uint16_t *node);
+ptrdiff_t BakaShrot_GetLatestMessageOfW(int64_t client,
+                                        const uint16_t *topic,
+                                        const uint16_t *node);
 
 /**
  * Gets the messages of `topic` and `node` after id `after` (0 for the
@@ -146,12 +182,17 @@ ptrdiff_t BakaShrot_GetLatestMessageOfW(const uint16_t *topic, const uint16_t *n
  * first is selected; `BakaShrot_SelectMessage()` selects the others,
  * `BakaShrot_HasMoreMessages()` says whether more follow the last one.
  */
-int32_t BakaShrot_GetMessagesA(const char *topic, const char *node, int64_t after, int32_t limit);
+int32_t BakaShrot_GetMessagesA(int64_t client,
+                               const char *topic,
+                               const char *node,
+                               int64_t after,
+                               int32_t limit);
 
 /**
  * The same as `BakaShrot_GetMessagesA`, in UTF-16.
  */
-int32_t BakaShrot_GetMessagesW(const uint16_t *topic,
+int32_t BakaShrot_GetMessagesW(int64_t client,
+                               const uint16_t *topic,
                                const uint16_t *node,
                                int64_t after,
                                int32_t limit);
@@ -159,119 +200,128 @@ int32_t BakaShrot_GetMessagesW(const uint16_t *topic,
 /**
  * How many messages the last `GetMessages` or `GetLatestMessageOf` got.
  */
-int32_t BakaShrot_GetMessageCount(void);
+int32_t BakaShrot_GetMessageCount(int64_t client);
 
 /**
  * Selects the message at `index` (0 to the count - 1) for the getters: 0
  * if there's none there (`InvalidArgument`), the selection unchanged.
  */
-ptrdiff_t BakaShrot_SelectMessage(int32_t index);
+ptrdiff_t BakaShrot_SelectMessage(int64_t client, int32_t index);
 
 /**
  * 1 if more messages follow the last one the last `GetMessages` got: ask
  * again after its id.
  */
-ptrdiff_t BakaShrot_HasMoreMessages(void);
+ptrdiff_t BakaShrot_HasMoreMessages(int64_t client);
 
 /**
  * The selected message's id, 0 if none.
  */
-int64_t BakaShrot_GetMessageId(void);
+int64_t BakaShrot_GetMessageId(int64_t client);
 
 /**
  * When the selected message was pushed, by the server it was pushed to:
  * milliseconds since 1970-01-01 UTC, 0 if none.
  */
-int64_t BakaShrot_GetMessagePushedAt(void);
+int64_t BakaShrot_GetMessagePushedAt(int64_t client);
 
 /**
  * The selected message's attachment's size, 0 without one.
  */
-int64_t BakaShrot_GetMessageAttachmentSize(void);
+int64_t BakaShrot_GetMessageAttachmentSize(int64_t client);
 
 /**
  * 1 if the selected message's attachment is all on this server (a
  * replicated one may still be on its way).
  */
-ptrdiff_t BakaShrot_IsMessageAttachmentReady(void);
+ptrdiff_t BakaShrot_IsMessageAttachmentReady(int64_t client);
 
 /**
  * The selected message's data, as pushed (JSON or not).
  */
-ptrdiff_t BakaShrot_GetMessageDataA(char *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetMessageDataA(int64_t client, char *buffer, ptrdiff_t size);
 
 /**
  * The same as `BakaShrot_GetMessageDataA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_GetMessageDataW(uint16_t *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetMessageDataW(int64_t client, uint16_t *buffer, ptrdiff_t size);
 
 /**
  * The topic the last `GetMessages` or `GetLatestMessageOf` asked for.
  */
-ptrdiff_t BakaShrot_GetMessageTopicA(char *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetMessageTopicA(int64_t client, char *buffer, ptrdiff_t size);
 
 /**
  * The same as `BakaShrot_GetMessageTopicA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_GetMessageTopicW(uint16_t *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetMessageTopicW(int64_t client, uint16_t *buffer, ptrdiff_t size);
 
 /**
  * The node the last `GetMessages` or `GetLatestMessageOf` asked for.
  */
-ptrdiff_t BakaShrot_GetMessageNodeA(char *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetMessageNodeA(int64_t client, char *buffer, ptrdiff_t size);
 
 /**
  * The same as `BakaShrot_GetMessageNodeA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_GetMessageNodeW(uint16_t *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetMessageNodeW(int64_t client, uint16_t *buffer, ptrdiff_t size);
 
 /**
- * Lists the topics with messages that this client may push to or read
- * (every one if its roles have `list_topics` or `query`): how many, -1 on
- * failure. Then `BakaShrot_GetNamesList()`.
+ * Lists topics (`kind` 1) or nodes (`kind` 2): the topics with messages
+ * that this client may push to or read (every one if its roles have
+ * `list_topics` or `query`), the nodes with messages in the topics it may
+ * read (every one with `list_nodes` or `query`). Only those of the topic
+ * and node pairs that `topics` and `nodes` match: each a name or a
+ * pattern (`sensors.*`), null for any. Every topic: 1, null, null; the
+ * topics a node pushed to: 1, null, the node; the nodes that pushed to a
+ * topic: 2, the topic, null. How many, -1 on failure. Then
+ * `BakaShrot_GetNamesListAsJson()`, or `BakaShrot_EnumerateNames()`
+ * instead.
  */
-int32_t BakaShrot_ListTopics(void);
+int32_t BakaShrot_ListNamesA(int64_t client, int32_t kind, const char *topics, const char *nodes);
 
 /**
- * Lists the nodes with messages in the topics this client may read (every
- * one if its roles have `list_nodes` or `query`): how many, -1 on failure. Then
- * `BakaShrot_GetNamesList()`.
+ * The same as `BakaShrot_ListNamesA`, in UTF-16.
  */
-int32_t BakaShrot_ListNodes(void);
+int32_t BakaShrot_ListNamesW(int64_t client,
+                             int32_t kind,
+                             const uint16_t *topics,
+                             const uint16_t *nodes);
 
 /**
  * The last list, as JSON:
  * `{"kind":"topic","truncated":false,"names":["logs",...]}`, `truncated`
  * if some didn't fit.
  */
-ptrdiff_t BakaShrot_GetNamesListA(char *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetNamesListAsJsonA(int64_t client, char *buffer, ptrdiff_t size);
 
 /**
- * The same as `BakaShrot_GetNamesListA`, in UTF-16.
+ * The same as `BakaShrot_GetNamesListAsJsonA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_GetNamesListW(uint16_t *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetNamesListAsJsonW(int64_t client, uint16_t *buffer, ptrdiff_t size);
 
 /**
  * Runs read-only SQL on the server (one SELECT or WITH), if this client
- * may query. Then `BakaShrot_GetQueryResult()`.
+ * may query. Then `BakaShrot_GetQueryResultAsJson()`, or
+ * `BakaShrot_EnumerateQuery()` instead.
  */
-ptrdiff_t BakaShrot_QueryA(const char *sql);
+ptrdiff_t BakaShrot_QueryA(int64_t client, const char *sql);
 
 /**
  * The same as `BakaShrot_QueryA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_QueryW(const uint16_t *sql);
+ptrdiff_t BakaShrot_QueryW(int64_t client, const uint16_t *sql);
 
 /**
  * The last query's result, as JSON:
  * `{"columns":[...],"rows":[[...],...]}`, every value a string or null.
  */
-ptrdiff_t BakaShrot_GetQueryResultA(char *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetQueryResultAsJsonA(int64_t client, char *buffer, ptrdiff_t size);
 
 /**
- * The same as `BakaShrot_GetQueryResultA`, in UTF-16.
+ * The same as `BakaShrot_GetQueryResultAsJsonA`, in UTF-16.
  */
-ptrdiff_t BakaShrot_GetQueryResultW(uint16_t *buffer, ptrdiff_t size);
+ptrdiff_t BakaShrot_GetQueryResultAsJsonW(int64_t client, uint16_t *buffer, ptrdiff_t size);
 
 /**
  * Pushes a message with the file at `FilePath` as its attachment (1 byte
@@ -280,12 +330,16 @@ ptrdiff_t BakaShrot_GetQueryResultW(uint16_t *buffer, ptrdiff_t size);
  * read twice (its SHA-256 first): one changed in between is refused
  * (`DataMismatch`).
  */
-int64_t BakaShrot_PushMessageWithFileA(const char *topic, const char *data, const char *file_path);
+int64_t BakaShrot_PushMessageWithFileA(int64_t client,
+                                       const char *topic,
+                                       const char *data,
+                                       const char *file_path);
 
 /**
  * The same as `BakaShrot_PushMessageWithFileA`, in UTF-16.
  */
-int64_t BakaShrot_PushMessageWithFileW(const uint16_t *topic,
+int64_t BakaShrot_PushMessageWithFileW(int64_t client,
+                                       const uint16_t *topic,
                                        const uint16_t *data,
                                        const uint16_t *file_path);
 
@@ -293,7 +347,8 @@ int64_t BakaShrot_PushMessageWithFileW(const uint16_t *topic,
  * Pushes a message with the `Size` bytes at `Data` as its attachment, as
  * `BakaShrot_PushMessageWithFileA` does.
  */
-int64_t BakaShrot_PushMessageWithDataA(const char *topic,
+int64_t BakaShrot_PushMessageWithDataA(int64_t client,
+                                       const char *topic,
                                        const char *data,
                                        const void *attachment,
                                        int64_t size);
@@ -301,7 +356,8 @@ int64_t BakaShrot_PushMessageWithDataA(const char *topic,
 /**
  * The same as `BakaShrot_PushMessageWithDataA`, in UTF-16.
  */
-int64_t BakaShrot_PushMessageWithDataW(const uint16_t *topic,
+int64_t BakaShrot_PushMessageWithDataW(int64_t client,
+                                       const uint16_t *topic,
                                        const uint16_t *data,
                                        const void *attachment,
                                        int64_t size);
@@ -313,7 +369,8 @@ int64_t BakaShrot_PushMessageWithDataW(const uint16_t *topic,
  * `NotReady` if it isn't on this server yet, `AttachmentMismatch`). A
  * failed one leaves no file.
  */
-int64_t BakaShrot_SaveAttachmentA(const char *topic,
+int64_t BakaShrot_SaveAttachmentA(int64_t client,
+                                  const char *topic,
                                   const char *node,
                                   int64_t message_id,
                                   const char *file_path);
@@ -321,7 +378,8 @@ int64_t BakaShrot_SaveAttachmentA(const char *topic,
 /**
  * The same as `BakaShrot_SaveAttachmentA`, in UTF-16.
  */
-int64_t BakaShrot_SaveAttachmentW(const uint16_t *topic,
+int64_t BakaShrot_SaveAttachmentW(int64_t client,
+                                  const uint16_t *topic,
                                   const uint16_t *node,
                                   int64_t message_id,
                                   const uint16_t *file_path);
@@ -331,24 +389,150 @@ int64_t BakaShrot_SaveAttachmentW(const uint16_t *topic,
  * memory, checked with its SHA-256 (`BakaShrot_SaveAttachmentA` for big
  * ones): its size, -1 on failure. Then `BakaShrot_GetAttachmentData()`.
  */
-int64_t BakaShrot_LoadAttachmentA(const char *topic, const char *node, int64_t message_id);
+int64_t BakaShrot_LoadAttachmentA(int64_t client,
+                                  const char *topic,
+                                  const char *node,
+                                  int64_t message_id);
 
 /**
  * The same as `BakaShrot_LoadAttachmentA`, in UTF-16.
  */
-int64_t BakaShrot_LoadAttachmentW(const uint16_t *topic, const uint16_t *node, int64_t message_id);
+int64_t BakaShrot_LoadAttachmentW(int64_t client,
+                                  const uint16_t *topic,
+                                  const uint16_t *node,
+                                  int64_t message_id);
 
 /**
  * Copies what the last `BakaShrot_LoadAttachment()` read into `Buffer`, if
  * `BufferSize` is enough: returns its size (0 if none), copies nothing if
  * it doesn't fit (a null `Buffer` asks for the size).
  */
-int64_t BakaShrot_GetAttachmentData(void *buffer, int64_t buffer_size);
+int64_t BakaShrot_GetAttachmentData(int64_t client, void *buffer, int64_t buffer_size);
 
 /**
  * Frees what `BakaShrot_LoadAttachment()` read: 1.
  */
-ptrdiff_t BakaShrot_FreeAttachmentData(void);
+ptrdiff_t BakaShrot_FreeAttachmentData(int64_t client);
+
+/**
+ * Closes an enumeration: 1, or 0 if it wasn't one.
+ */
+ptrdiff_t BakaShrot_CloseEnum(int64_t enumeration);
+
+/**
+ * Lists names as `BakaShrot_ListNames()` does (the same arguments), into
+ * an enumeration: its handle, 0 on failure (`BakaShrot_GetLastError(client)`).
+ * Then `BakaShrot_NextName()` and `BakaShrot_GetEnumName()`, and
+ * `BakaShrot_CloseEnum()`. Closed with its client by
+ * `BakaShrot_FreeClient()`.
+ */
+int64_t BakaShrot_EnumerateNamesA(int64_t client,
+                                  int32_t kind,
+                                  const char *topics,
+                                  const char *nodes);
+
+/**
+ * The same as `BakaShrot_EnumerateNamesA`, in UTF-16.
+ */
+int64_t BakaShrot_EnumerateNamesW(int64_t client,
+                                  int32_t kind,
+                                  const uint16_t *topics,
+                                  const uint16_t *nodes);
+
+/**
+ * Moves to the next name (the first, the first time): 1, 0 if there are
+ * no more, -1 if it isn't a names enumeration.
+ */
+ptrdiff_t BakaShrot_NextName(int64_t enumeration);
+
+/**
+ * The current name: the bytes it needs, 0 if there's none (before the
+ * first, past the last) or it isn't a names enumeration.
+ */
+ptrdiff_t BakaShrot_GetEnumNameA(int64_t enumeration, char *buffer, ptrdiff_t size);
+
+/**
+ * The same as `BakaShrot_GetEnumNameA`, in UTF-16.
+ */
+ptrdiff_t BakaShrot_GetEnumNameW(int64_t enumeration, uint16_t *buffer, ptrdiff_t size);
+
+/**
+ * How many names, -1 if it isn't a names enumeration.
+ */
+int32_t BakaShrot_GetNameCount(int64_t enumeration);
+
+/**
+ * Whether some names didn't fit in the server's answer: 1 or 0, -1 if it
+ * isn't a names enumeration.
+ */
+ptrdiff_t BakaShrot_IsNamesListTruncated(int64_t enumeration);
+
+/**
+ * Runs a query as `BakaShrot_Query()` does, into an enumeration: its
+ * handle, 0 on failure (`BakaShrot_GetLastError(client)`). Then
+ * `BakaShrot_GetQueryColumnCount()` and `GetQueryColumnName()`,
+ * `BakaShrot_NextQueryRow()` and `GetQueryValue()` / `IsQueryValueNull()`,
+ * and `BakaShrot_CloseEnum()`. Closed with its client by
+ * `BakaShrot_FreeClient()`.
+ */
+int64_t BakaShrot_EnumerateQueryA(int64_t client, const char *sql);
+
+/**
+ * The same as `BakaShrot_EnumerateQueryA`, in UTF-16.
+ */
+int64_t BakaShrot_EnumerateQueryW(int64_t client, const uint16_t *sql);
+
+/**
+ * How many columns, -1 if it isn't a query enumeration.
+ */
+int32_t BakaShrot_GetQueryColumnCount(int64_t enumeration);
+
+/**
+ * A column's name (`index` 0 to the count - 1): the bytes it needs, 0 if
+ * there's no such column or it isn't a query enumeration.
+ */
+ptrdiff_t BakaShrot_GetQueryColumnNameA(int64_t enumeration,
+                                        int32_t index,
+                                        char *buffer,
+                                        ptrdiff_t size);
+
+/**
+ * The same as `BakaShrot_GetQueryColumnNameA`, in UTF-16.
+ */
+ptrdiff_t BakaShrot_GetQueryColumnNameW(int64_t enumeration,
+                                        int32_t index,
+                                        uint16_t *buffer,
+                                        ptrdiff_t size);
+
+/**
+ * Moves to the next row (the first, the first time): 1, 0 if there are
+ * no more, -1 if it isn't a query enumeration.
+ */
+ptrdiff_t BakaShrot_NextQueryRow(int64_t enumeration);
+
+/**
+ * The current row's value in a column (`index` 0 to the count - 1): the
+ * bytes it needs, 0 if it's null (`BakaShrot_IsQueryValueNull()`), there's
+ * no current row or such column, or it isn't a query enumeration.
+ */
+ptrdiff_t BakaShrot_GetQueryValueA(int64_t enumeration,
+                                   int32_t index,
+                                   char *buffer,
+                                   ptrdiff_t size);
+
+/**
+ * The same as `BakaShrot_GetQueryValueA`, in UTF-16.
+ */
+ptrdiff_t BakaShrot_GetQueryValueW(int64_t enumeration,
+                                   int32_t index,
+                                   uint16_t *buffer,
+                                   ptrdiff_t size);
+
+/**
+ * Whether the current row's value in a column is null: 1 or 0, -1 if
+ * there's no current row or such column, or it isn't a query enumeration.
+ */
+ptrdiff_t BakaShrot_IsQueryValueNull(int64_t enumeration, int32_t index);
 
 #ifdef __cplusplus
 }  // extern "C"

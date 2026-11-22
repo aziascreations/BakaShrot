@@ -1,4 +1,4 @@
-//! Every packet of protocol 7.
+//! Every packet of protocol 8.
 //!
 //! A packet is a MessagePack array of two: its type, then its fields as an
 //! array, `[type, [field, field, ...]]`. Structs inside are arrays of their
@@ -33,10 +33,10 @@ pub use messages::{
     PushMessage, Query, QueryResult, StoredAttachment,
 };
 pub use replication::{
-    Head, MissingAttachment, ReplicateAttachment, ReplicateMessages, ReplicatedMessage, SyncState,
-    SyncStateRequest,
+    Head, MissingAttachment, Pair, ReplicateAttachment, ReplicateMessages, ReplicatedMessage,
+    SyncState, SyncStateRequest,
 };
-pub use session::{Continue, RequestRefused, Welcome};
+pub use session::{Continue, Ping, Pong, RequestRefused, Welcome};
 
 use serde::de::{self, DeserializeOwned, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -144,6 +144,17 @@ macro_rules! packets {
                     Packet::$name(body)
                 }
             }
+
+            /// The body of a packet of this type, or the packet back.
+            impl TryFrom<Packet> for $name {
+                type Error = Packet;
+                fn try_from(packet: Packet) -> Result<$name, Packet> {
+                    match packet {
+                        Packet::$name(body) => Ok(body),
+                        other => Err(other),
+                    }
+                }
+            }
         )*
 
         impl Packet {
@@ -244,6 +255,10 @@ packets! {
     ReplicateMessages = 17,
     /// P→S: an attachment the server is missing, its parts after it (`Continue`, then `MessagePushed` / `RequestRefused`).
     ReplicateAttachment = 18,
+    /// C→S, P→S: keeps an idle connection open (`Pong`).
+    Ping = 19,
+    /// S→C, S→P: the answer to a `Ping`.
+    Pong = 20,
 }
 
 impl Packet {
@@ -296,6 +311,15 @@ pub(crate) mod rules {
     /// A topic or node name.
     pub fn name(value: &str, field: &'static str) -> Result<(), DecodeError> {
         require(names::is_valid_name(value), field, "must be a name")
+    }
+
+    /// A topic or node name, or a pattern.
+    pub fn name_or_pattern(value: &str, field: &'static str) -> Result<(), DecodeError> {
+        require(
+            names::is_valid_name_or_pattern(value),
+            field,
+            "must be a name or a pattern",
+        )
     }
 
     /// A message id: 1 and up.

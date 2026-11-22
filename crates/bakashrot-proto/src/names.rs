@@ -45,6 +45,12 @@ pub fn is_valid_name_or_pattern(text: &str) -> bool {
     is_valid_name(text) || is_valid_pattern(text)
 }
 
+/// Whether `name` is `filter` (a name) or matches it (a pattern), without
+/// case: what a list of names and patterns holds, one entry.
+pub fn name_matches(filter: &str, name: &str) -> bool {
+    names_equal(filter, name) || pattern_matches(filter, name)
+}
+
 /// Whether the name `name` matches `pattern` (without case). Anything that
 /// isn't a valid name never matches.
 pub fn pattern_matches(pattern: &str, name: &str) -> bool {
@@ -143,5 +149,13 @@ mod tests {
                 "{pattern} / {name}"
             );
         }
+    }
+
+    #[test]
+    fn filters() {
+        assert!(name_matches("Logs", "logs"));
+        assert!(name_matches("sensors.*", "Sensors.kitchen"));
+        assert!(!name_matches("logs", "logs-1"));
+        assert!(!name_matches("sensors.*", "sensor.x"));
     }
 }

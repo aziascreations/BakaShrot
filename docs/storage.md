@@ -73,6 +73,17 @@ operation of a `Batch` is all or nothing on its own (a savepoint), so a
 batch goes on after one fails: the server queues pushes and stores them
 together, one disk flush for all.
 
+Except when SQLite rolls the whole transaction back by itself, which it
+may on a full disk, an I/O error or out of memory.
+What came after then ran outside any transaction, each operation
+committed alone, while the batch failed and every write in it was
+answered as failed: a retried push stored twice. Since 2026-11-19 every
+operation after is refused (`Error::RolledBack`) and so is the batch:
+nothing in it is stored, every write answered `ServerError`
+(`nothing_runs_once_sqlite_rolled_back` in `batch.rs`, a `ROLLBACK`
+standing in for SQLite's). The server's writer stops running the group
+there.
+
 | Operation | What |
 |---|---|
 | `push(topic, node, pushed_at, data)` | the next id of its stream, which it returns; the stream is made if new |
@@ -97,8 +108,8 @@ read while the writer writes. Answers are the protocol's own types:
 | Reader | Gives | How |
 |---|---|---|
 | `messages(topic, node, after, limit)` | `Messages`: after an id in order, or the last ones; about 1 MiB at most (a bigger message alone), `more` if others follow | a range of keys |
-| `topics()`, `nodes()` | the names with messages | `streams` |
-| `heads()`, `last_id(topic, node)` | each stream's last id: `SyncState` | `streams` |
+| `topics()` | the topics with messages | `streams` |
+| `heads()`, `heads_after(after, limit)`, `last_id(topic, node)` | each stream's last id, all or a page after a pair (names without case): `SyncState` | `streams` (its `(topic, node)` index) |
 | `to_replicate(topic, node, after, limit)` | messages after an id as replication sends them (attachments' SHA-256s), about 1 MiB at most | a range of keys |
 | `missing_attachments(limit)` | replicated attachments not all here, from which part | `attachments` (index on states) |
 | `attachment(topic, node, id)`, `read_part(id, part)` | an attachment, its parts | the message's key; a part's key |
@@ -133,9 +144,11 @@ afterwards, `purge_attachments(max_parts)` a batch at a time.
 
 ## The query surface
 
-Clients' `Query` runs on `Database::query_runner()`, read-only three ways:
-the connection is `query_only`, the statement must be one SQLite says only
-reads, and one statement only (more is refused, not ignored). PRAGMAs are
+Clients' `Query` runs on `Database::query_runner()`, read-only four ways:
+the file is opened read-only (`SQLITE_OPEN_READONLY`, 2026-11-19: the
+handle itself can't write), the connection is `query_only`, the statement
+must be one SQLite says only reads, and one statement only (more is
+refused, not ignored). PRAGMAs are
 refused as they're prepared ("not authorized", SQLite's authorizer), the
 `pragma_*` table functions too: some take effect at that point, and
 `PRAGMA query_only = 0`, though refused, turned `query_only` off for the
@@ -158,6 +171,9 @@ The `messages` view, by name:
 SELECT * FROM messages WHERE topic = 'logs' AND node = 'kitchen'
 SELECT message_data ->> '$.temp' FROM messages WHERE topic = 'sensors' AND is_json = 1
 ```
+
+SQLite's functions are there, JSON's included; not `soundex()` nor the
+`dbstat` table (left out of the build, "The file").
 
 - **By topic, or topic and node:** ranges of the table, read in order (a
   test checks the plans).
@@ -182,7 +198,11 @@ SELECT message_data ->> '$.temp' FROM messages WHERE topic = 'sensors' AND is_js
   foreign keys: one writer keeps the tables consistent, `CHECK`s keep the
   values valid.
 - SQLite is compiled in (`rusqlite`'s `bundled`): the same version
-  everywhere, no system library.
+  everywhere, no system library. Without full-text search (FTS3, FTS5),
+  R-Tree, `dbstat`, STAT4, `soundex()`, extension loading and column
+  metadata, which libsqlite3-sys turns on and nothing here uses: 310 KB
+  less in the server (`LIBSQLITE3_FLAGS` in `../.cargo/config.toml`; a
+  test checks they're out). JSON is SQLite's own, always there.
 
 ## Measured
 
@@ -251,7 +271,5 @@ big), the view's plans, and readers with two writers at once. In
 - **A time index**, if time queries over big streams get slow: a v10
   migration adding an index on `(stream_id, pushed_at)` and joining the
   view on it too (measured above: twice the write cost).
-- **Interrupting long queries** (a time limit): the server's, with
-  SQLite's interrupt.
 - **Attachments as files** next to the database instead of in it, if their
   size calls for it.

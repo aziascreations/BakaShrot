@@ -1,4 +1,4 @@
-//! `bakashrot-cert` end to end, in a folder of the build's.
+//! `bakashrot cert` end to end, in a folder of the build's.
 
 use bakashrot_pki::{Revocations, summarize};
 use std::fs;
@@ -12,9 +12,11 @@ fn folder(name: &str) -> PathBuf {
     folder
 }
 
-/// Runs the tool in `folder`: whether it succeeded, and what it printed.
+/// Runs `bakashrot cert` in `folder`: whether it succeeded, and what it
+/// printed.
 fn cert(folder: &Path, args: &[&str]) -> (bool, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_bakashrot-cert"))
+    let output = Command::new(env!("CARGO_BIN_EXE_bakashrot"))
+        .arg("cert")
         .args(args)
         .current_dir(folder)
         .output()

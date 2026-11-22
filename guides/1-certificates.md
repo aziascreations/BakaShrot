@@ -2,13 +2,14 @@
 
 [Index](readme.md) · Next: [Server](2-server.md)
 
-More options: `bakashrot-cert.exe <command> --help`.
+Made by `bakashrot.exe`'s `cert` commands, with no server needed.
+More options: `bakashrot.exe cert <command> --help`.
 
 
 ## The root certificate
 
 ```shell
-bakashrot-cert.exe ca --name bakashrot-test
+bakashrot.exe cert ca --name bakashrot-test
 ```
 
 Resulting files:
@@ -19,7 +20,7 @@ Resulting files:
 ## A server certificate
 
 ```shell
-bakashrot-cert.exe issue --server --name server-lan1
+bakashrot.exe cert issue --server --name server-lan1
 Wrote .\server-lan1.crt
 Wrote .\server-lan1.key
 ```
@@ -31,11 +32,11 @@ See [???]().
 ## Node certificates
 
 ```shell
-bakashrot-cert.exe issue --name node-sensor --role sensor
+bakashrot.exe cert issue --name node-sensor --role sensor
 Wrote .\node-sensor.crt
 Wrote .\node-sensor.key
 
-bakashrot-cert.exe issue --name node-viewer --role viewer
+bakashrot.exe cert issue --name node-viewer --role viewer
 Wrote .\node-viewer.crt
 Wrote .\node-viewer.key
 ```
@@ -48,7 +49,7 @@ Wrote .\node-viewer.key
 ## Checking one
 
 ```shell
-bakashrot-cert.exe show node-sensor.crt
+bakashrot.exe cert show node-sensor.crt
 node-sensor.crt
   name:    node-sensor
   roles:   sensor
@@ -62,7 +63,7 @@ node-sensor.crt
 ## Revoking one
 
 ```shell
-bakashrot-cert.exe revoke node-sensor.crt
+bakashrot.exe cert revoke node-sensor.crt
 ```
 
 * Writes `ca.crl` (every certificate revoked so far).

@@ -49,7 +49,7 @@ that browses a server: reading a topic is still `read_topics`. `query`
 gives both, it reads everything anyway.
 
 No `AllowRead` / `AllowWrite`: a list that's empty allows nothing. No
-default topic: a push always names its topic (protocol 7 has none).
+default topic: a push always names its topic (protocol 8 has none).
 
 **The roles are the only lists of topics** (decided 2026-11-16): no
 `[server] topics`, no `[replication] replicated_topics`, both refused as
@@ -89,9 +89,31 @@ peers' `send_topics`.
   `[roles."site.reader"]`. Unquoted, TOML reads dots as tables: refused,
   `[retention]` says to quote.
 - **Durations:** numbers with a unit (`s m h d w`), added up: `"30s"`,
-  `"1d12h"`. Ages in `[retention]` can also be `"forever"`.
+  `"1d12h"`. Ages in `[retention]` can also be `"forever"`, and are 100
+  years (`"36500d"`) at most (2026-11-19): longer ones once overflowed
+  when turned into milliseconds, a huge age wrapping around to almost
+  nothing.
 - **Sizes:** bytes, or `"500M"` with `K M G T` (1024-based), up to 1T.
 - **Paths:** relative ones are from the config file's folder.
+
+## Database connections
+
+Reads and queries each have a pool of SQLite connections: one is opened
+when none is idle, then kept for the next request.
+`[server] idle_database_connections` (8 by default, 0 to 512) is how many
+idle ones each pool keeps; more are closed as they're put back, and an
+idle one is closed after a minute unused (looked at every 10 s). 0 opens
+one per request.
+
+## Query time limit
+
+`[server] query_time_limit` (20 s by default) is how long a client's
+query may run. Past it, SQLite stops it (it looks every 10,000 steps, a
+fraction of a millisecond) and the client is refused with `QueryTimedOut` (11):
+"stopped after 20s, the server's time limit". Keep it under the clients'
+answer timeout (30 s by default; `BakaShrot_SetAnswerTimeout()`), or they
+give up first. A client that gives up closes its connection, and the
+server stops its query then too (`protocol.md`, "Rules").
 
 ## Retention
 

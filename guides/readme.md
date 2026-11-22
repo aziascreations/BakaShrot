@@ -15,12 +15,12 @@ Who gets which files:
 
 | Machine | Files                                                                                 |
 |---------|---------------------------------------------------------------------------------------|
-| admin   | `bakashrot-cert.exe`, `ca.crt`, `ca.key` (never copied)                               |
+| admin   | `bakashrot.exe` (its `cert` commands), `ca.crt`, `ca.key` (never copied)              |
 | server  | `bakashrot-server.exe`, `ca.crt`, `server-lan1.crt`, `server-lan1.key`, `server.toml` |
 | sensor  | `bakashrot.exe`, `ca.crt`, `node-sensor.crt`, `node-sensor.key`, `client.toml`        |
 | viewer  | `bakashrot.exe`, `ca.crt`, `node-viewer.crt`, `node-viewer.key`, `viewer.toml`        |
 
 More:
-* `bakashrot <command> --help`, `bakashrot-cert <command> --help`.
+* `bakashrot <command> --help`, `bakashrot cert <command> --help`.
 * Two replicating servers, Python, Docker: `docs/lab.md`.
 * Every setting: `docs/config.md`.

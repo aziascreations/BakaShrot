@@ -59,6 +59,8 @@ fn defaults() {
     assert_eq!(server.synchronous, Synchronous::Full);
     assert_eq!(server.max_attachment_size, 1 << 30);
     assert_eq!(server.retention_interval, Duration::from_secs(60));
+    assert_eq!(server.idle_database_connections, 8);
+    assert_eq!(server.query_time_limit, Duration::from_secs(20));
     assert_eq!(config.retention.age("logs"), None);
     assert_eq!(config.replication.retry_delay, Duration::from_secs(10));
     assert_eq!(config.replication.sync_interval, Duration::from_secs(5));
@@ -75,6 +77,8 @@ database = "data/messages.sqlite"
 synchronous = "NORMAL"
 max_attachment_size = 0
 retention_interval = "1h30m"
+idle_database_connections = 0
+query_time_limit = "2m"
 
 [replication]
 push_to = ["10.0.0.2:7000", "server-3.lan:7001", "[fd00::4]:7000"]
@@ -89,6 +93,8 @@ batch_size = 10000
     assert_eq!(config.server.synchronous, Synchronous::Normal);
     assert_eq!(config.server.max_attachment_size, 0);
     assert_eq!(config.server.retention_interval, Duration::from_secs(5400));
+    assert_eq!(config.server.idle_database_connections, 0);
+    assert_eq!(config.server.query_time_limit, Duration::from_secs(120));
     assert_eq!(config.replication.push_to.len(), 3);
     assert_eq!(config.replication.accept_from[2], "fd00::4");
     assert_eq!(config.replication.retry_delay, Duration::from_secs(60));
@@ -120,6 +126,24 @@ logs = "30d"
     assert_eq!(age("sensors.kettle"), hours(12));
     // "*" last, though it's first.
     assert_eq!(age("other"), days(365));
+}
+
+/// Ages go up to 100 years, and the cutoff never wraps around.
+#[test]
+fn retention_cutoff() {
+    let config = Config::parse(&with(
+        "[retention]\nlogs = \"36500d\"\nsensors = \"1h\"\n\"*\" = \"forever\"\n",
+    ))
+    .unwrap();
+    assert_eq!(config.retention.age("logs"), days(36_500));
+    let now = 2_000_000_000_000;
+    assert_eq!(
+        config.retention.cutoff("sensors", now),
+        Some(now - 3_600_000)
+    );
+    // Longer than the clock is old: nothing is past it yet.
+    assert_eq!(config.retention.cutoff("logs", now), Some(0));
+    assert_eq!(config.retention.cutoff("other", now), None);
 }
 
 #[test]
@@ -164,19 +188,23 @@ accept_nodes = ["garage"]
     assert!(both.can_read("Logs"));
     assert!(!both.can_read("sensors.garage"));
     assert!(!both.can_query());
-    assert!(!both.lists_every_topic() && !both.lists_every_node());
+    // Listing: the topics it may push to or read, the nodes of those it reads.
+    assert!(both.may_list_topic("sensors.garage") && both.may_list_topic("logs"));
+    assert!(!both.may_list_topic("other"));
+    assert!(both.may_list_nodes_of("logs") && !both.may_list_nodes_of("sensors.garage"));
     let admin = config.permissions(&["admin"]).unwrap();
     assert!(admin.can_query());
-    // A query reads them all anyway.
-    assert!(admin.lists_every_topic() && admin.lists_every_node());
+    // A query reads them all anyway; reading messages is still read_topics.
+    assert!(admin.may_list_topic("other") && admin.may_list_nodes_of("other"));
+    assert!(!admin.can_read("logs"));
     let listing = Config::parse(&with(
         "[roles.a]\nlist_topics = true\n[roles.b]\nlist_nodes = true\n",
     ))
     .unwrap();
     let a = listing.permissions(&["a"]).unwrap();
-    assert!(a.lists_every_topic() && !a.lists_every_node() && !a.can_query());
+    assert!(a.may_list_topic("other") && !a.may_list_nodes_of("other") && !a.can_query());
     let b = listing.permissions(&["b", "a"]).unwrap();
-    assert!(b.lists_every_topic() && b.lists_every_node());
+    assert!(b.may_list_topic("other") && b.may_list_nodes_of("other"));
 
     // Replication: each role's topics with that role's nodes, not mixed.
     let peer = config.permissions(&["peer", "backup"]).unwrap();
@@ -273,6 +301,18 @@ fn refusals() {
             &with("retention_interval = \"0s\"\n"),
             "'0s' isn't a duration",
         ),
+        (
+            &with("idle_database_connections = 513\n"),
+            "513 idle database connections: 0 to 512",
+        ),
+        (
+            &with("idle_database_connections = -1\n"),
+            "invalid value: integer `-1`",
+        ),
+        (
+            &with("query_time_limit = \"0s\"\n"),
+            "'0s' isn't a duration",
+        ),
         // [retention]
         (
             &with("[retention]\nlogs = \"30\"\n"),
@@ -290,6 +330,16 @@ fn refusals() {
         (
             &with("[retention]\nsensors.kitchen = \"1d\"\n"),
             "quote names with dots",
+        ),
+        // 100 years at most: past 2^64 ms an age once wrapped around to
+        // almost nothing ("18446744073709552s" was 384 ms).
+        (
+            &with("[retention]\nlogs = \"36501d\"\n"),
+            "100 years (36500d) at most",
+        ),
+        (
+            &with("[retention]\nlogs = \"18446744073709552s\"\n"),
+            "100 years (36500d) at most",
         ),
         // [replication]
         (
@@ -337,6 +387,10 @@ fn refusals() {
         (
             &with("[roles.r]\naccept_nodes = [\"x\", \"X\"]\n"),
             "'X' is given twice",
+        ),
+        (
+            &with("[roles.r]\nlist_topics = 1\n"),
+            "invalid type: integer",
         ),
         (&with("[roles.r]\nquery = 1\n"), "invalid type: integer"),
         (&with("[roles.site.reader]\n"), "unknown field `reader`"),

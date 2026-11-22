@@ -16,7 +16,7 @@ import threading
 import time
 
 import bakashrot
-from bakashrot import AuthError, BakaShrotError, Client, ConnectionLostError, ErrorCode, RefusedError
+from bakashrot import ANSWER_TIMEOUT_SECONDS, AuthError, BakaShrotError, Client, ConnectionLostError, ErrorCode, RefusedError
 
 dll_path, folder = sys.argv[1:3]
 fails = 0
@@ -138,15 +138,32 @@ with kitchen:
     ok, detail = raises(lambda: kitchen.push("x" * (bakashrot.MAX_MESSAGE_SIZE + 1), "logs"), BakaShrotError, "too big",
                         ErrorCode.INVALID_ARGUMENT)
     check("A message over the limit: refused before sending", ok, detail)
+    ok, detail = raises(lambda: kitchen.push("a\0b", "logs"), BakaShrotError, "NUL", ErrorCode.INVALID_ARGUMENT)
+    check("A message with a NUL: refused rather than cut", ok, detail)
+    ok, detail = raises(lambda: kitchen.query("SELECT 1\0; DELETE"), BakaShrotError, "NUL", ErrorCode.INVALID_ARGUMENT)
+    check("SQL with a NUL: refused too", ok and kitchen.connected, detail)
     secret_id = kitchen.push({"s": 1}, "secret")
     check("Push to another allowed topic", secret_id == 1, secret_id)
-    ok, detail = raises(lambda: lounge.connect(), BakaShrotError, "one connection", ErrorCode.ALREADY_CONNECTED)
-    check("A second Client can't connect while one is", ok and not lounge.connected, detail)
+    with lounge:
+        page = lounge.get_messages("logs", "kitchen", after=0, limit=2)
+        check("A second Client connected at the same time: both work",
+              lounge.connected and lounge.node == "lounge" and [m.id for m in page] == [1, 2]
+              and kitchen.connected and kitchen.latest("secret", "kitchen").id == secret_id,
+              f"{lounge.node}, {[m.id for m in page]}")
+    check("Closing one leaves the other connected", kitchen.connected and not lounge.connected)
 
     topics = kitchen.list_topics()
     check("list_topics()", topics.kind == "topic" and topics.names == ["logs", "secret"] and not topics.truncated, topics)
     nodes = kitchen.list_nodes()
     check("list_nodes()", nodes.kind == "node" and nodes.names == ["kitchen"], nodes)
+    topics = kitchen.list_topics(node="KITCHEN")
+    check("list_topics(node=...): the topics it pushed to", topics.names == ["logs", "secret"], topics)
+    nodes = kitchen.list_nodes(topic="s*")
+    check("list_nodes(topic=pattern): the nodes that pushed to those", nodes.names == ["kitchen"], nodes)
+    check("list_topics(node=...) of a node without messages: none", kitchen.list_topics(node="nobody").names == [])
+    ok, detail = raises(lambda: kitchen.list_nodes(topic="a b"), BakaShrotError, "isn't a topic name or pattern",
+                        ErrorCode.INVALID_ARGUMENT)
+    check("list_nodes(topic=...) neither a name nor a pattern: INVALID_ARGUMENT", ok, detail)
 
     # --- follow() ------------------------------------------------------------
     followed = []
@@ -210,10 +227,54 @@ with kitchen:
                         "missing.bin", ErrorCode.FILE_ERROR)
     check("A missing file: refused before sending", ok, detail)
     check("Still connected", kitchen.connected)
+    kitchen.ping()
+    check("ping(): answered, still connected", kitchen.connected)
+
+    # --- The answer timeout ----------------------------------------------------
+    check("answer_timeout: 30 s until changed", kitchen.answer_timeout == ANSWER_TIMEOUT_SECONDS, kitchen.answer_timeout)
+    ok, detail = raises(lambda: setattr(kitchen, "answer_timeout", 0), BakaShrotError, "1 ms or more", ErrorCode.INVALID_ARGUMENT)
+    check("answer_timeout = 0: refused", ok and kitchen.answer_timeout == ANSWER_TIMEOUT_SECONDS, detail)
+    slow = Client.from_file(os.path.join(folder, "kitchen.toml"), dll_path)
+    slow.answer_timeout = 0.3
+    slow.connect()
+    forever = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n"
+    started = time.perf_counter()
+    ok, detail = raises(lambda: slow.query(forever), ConnectionLostError, code=ErrorCode.CONNECTION_LOST)
+    elapsed = time.perf_counter() - started
+    check("A query past answer_timeout (0.3 s, set before connecting): ConnectionLostError, disconnected",
+          ok and elapsed < 5 and not slow.connected, f"{detail}, {elapsed * 1000:.0f} ms")
+    slow.connect()
+    slow.answer_timeout = 0.2
+    check("answer_timeout set while connected: kept, the connection too", slow.answer_timeout == 0.2 and slow.connected)
+    ok, detail = raises(lambda: slow.query(forever), ConnectionLostError, code=ErrorCode.CONNECTION_LOST)
+    check("A query past it again: ConnectionLostError", ok, detail)
+    slow.close()
+
+    # --- Two Clients, two threads, at the same time --------------------------
+    other = Client.from_file(os.path.join(folder, "kitchen.toml"), dll_path).connect()
+    pushed = {}
+
+    def pusher(name, client):
+        pushed[name] = [client.push({"thread": name, "n": n}, "secret") for n in range(30)]
+
+    threads = [threading.Thread(target=pusher, args=("a", kitchen)), threading.Thread(target=pusher, args=("b", other))]
+    started = time.perf_counter()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    elapsed = time.perf_counter() - started
+    every = sorted(pushed.get("a", []) + pushed.get("b", []))
+    check("Two Clients pushing from two threads at once: every push stored, each id once",
+          len(every) == 60 and every == list(range(every[0], every[0] + 60)),
+          f"{len(every)} pushes in {elapsed * 1000:.0f} ms")
+    other.close()
 
 check("close(): disconnected", not kitchen.connected)
 ok, detail = raises(lambda: kitchen.push("x", "logs"), ConnectionLostError, code=ErrorCode.NOT_CONNECTED)
 check("A request once closed: ConnectionLostError, NOT_CONNECTED", ok, detail)
+ok, detail = raises(kitchen.ping, ConnectionLostError, code=ErrorCode.NOT_CONNECTED)
+check("ping() once closed: ConnectionLostError, NOT_CONNECTED", ok, detail)
 
 # --- Connecting: unreachable, refused, PEM text ----------------------------------
 with open(kitchen.ca) as ca, open(kitchen.certificate) as certificate, open(kitchen.key) as key:

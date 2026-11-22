@@ -6,20 +6,43 @@
 use super::rules;
 use super::{Attachment, Check, DecodeError};
 use crate::limits::{
-    MAX_ATTACHMENT_PARTS, MAX_MESSAGE_ID, MAX_MESSAGES_PER_PACKET, MAX_MISSING_ATTACHMENTS,
-    MAX_NAMES_LIST_ENTRIES,
+    MAX_ATTACHMENT_PARTS, MAX_HEADS_PER_PACKET, MAX_MESSAGE_ID, MAX_MESSAGES_PER_PACKET,
+    MAX_MISSING_ATTACHMENTS, MAX_NAMES_LIST_ENTRIES,
 };
-use crate::names;
 use serde::{Deserialize, Serialize};
 
 /// What the server takes from this peer, how far it is, and the
-/// attachments it lacks.
+/// attachments it lacks: a page of its `SyncState`, the first without
+/// `after`.
 ///
-/// `[15, []]`
+/// `[15, [after]]`
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SyncStateRequest {}
+pub struct SyncStateRequest {
+    /// The heads after this pair (the last of the previous page), or none
+    /// for the first page.
+    pub after: Option<Pair>,
+}
 
-impl Check for SyncStateRequest {}
+impl Check for SyncStateRequest {
+    fn check(&self) -> Result<(), DecodeError> {
+        if let Some(after) = &self.after {
+            rules::name(&after.topic, "SyncStateRequest.after.topic")?;
+            rules::name(&after.node, "SyncStateRequest.after.node")?;
+        }
+        Ok(())
+    }
+}
+
+/// A topic/node pair, by name.
+///
+/// `[topic, node]`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pair {
+    /// The topic.
+    pub topic: String,
+    /// The node.
+    pub node: String,
+}
 
 /// How far the server is in a topic/node pair.
 ///
@@ -32,6 +55,16 @@ pub struct Head {
     pub node: String,
     /// The highest message id it has (deleted ones included).
     pub last_id: u64,
+}
+
+impl From<&Head> for Pair {
+    /// Its pair: to ask the page after it.
+    fn from(head: &Head) -> Pair {
+        Pair {
+            topic: head.topic.clone(),
+            node: head.node.clone(),
+        }
+    }
 }
 
 /// An attachment the server lacks, and where to go on from.
@@ -50,36 +83,45 @@ pub struct MissingAttachment {
 }
 
 /// What the server takes from this peer, how far it is, and the
-/// attachments it lacks: all a check-in needs.
+/// attachments it lacks: all a check-in needs, in pages of
+/// `MAX_HEADS_PER_PACKET` heads. The first page has the lists; the next
+/// ones, asked `after` the last head of the previous one, only heads.
 ///
-/// `[16, [[topic...], [node...], [head...], [missing...]]]`
+/// `[16, [more, [topic...], [node...], [head...], [missing...]]]`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncState {
+    /// Whether other heads follow: ask again `after` the last one here.
+    pub more: bool,
     /// The topics it takes from this peer: names, and wildcards (it takes
-    /// the names they match, even those it doesn't have yet).
+    /// the names they match, even those it doesn't have yet). Empty after
+    /// the first page.
     pub topics: Vec<String>,
     /// The nodes it takes from this peer, the same way.
     pub nodes: Vec<String>,
-    /// Its highest message id in each topic/node pair of those.
+    /// Its highest message id in each topic/node pair of those, in the
+    /// order of their names (without case), `MAX_HEADS_PER_PACKET` at
+    /// most.
     pub heads: Vec<Head>,
     /// The attachments it lacks among those, `MAX_MISSING_ATTACHMENTS` at
-    /// most.
+    /// most. Empty after the first page.
     pub missing: Vec<MissingAttachment>,
 }
 
 impl Check for SyncState {
     fn check(&self) -> Result<(), DecodeError> {
+        rules::most(self.heads.len(), MAX_HEADS_PER_PACKET, "SyncState.heads")?;
+        rules::require(
+            !self.more || !self.heads.is_empty(),
+            "SyncState.heads",
+            "one at least when more follow",
+        )?;
         for (list, field) in [
             (&self.topics, "SyncState.topics"),
             (&self.nodes, "SyncState.nodes"),
         ] {
             rules::most(list.len(), MAX_NAMES_LIST_ENTRIES, field)?;
             for item in list {
-                rules::require(
-                    names::is_valid_name_or_pattern(item),
-                    field,
-                    "must be a name or a pattern",
-                )?;
+                rules::name_or_pattern(item, field)?;
             }
         }
         for head in &self.heads {

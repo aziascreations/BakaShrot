@@ -1,6 +1,6 @@
 #!/bin/sh
 # Smoke-tests a server image, as CI does before pushing it: certificates by
-# its bakashrot-cert, its server started with them, its bakashrot pushing
+# its bakashrot cert, its server started with them, its bakashrot pushing
 # and reading back over a Docker network, then `docker stop`, which must
 # end it cleanly (exit code 0, "stopped").
 # Usage: docker/test.sh <image>
@@ -27,9 +27,9 @@ tool() {
 }
 
 docker network create "$name" >/dev/null
-tool bakashrot-cert ca --name "Image test CA"
-tool bakashrot-cert issue --name server-1 --server
-tool bakashrot-cert issue --name tester --role tester
+tool bakashrot cert ca --name "Image test CA"
+tool bakashrot cert issue --name server-1 --server
+tool bakashrot cert issue --name tester --role tester
 cat >"$work/server.toml" <<EOF
 [server]
 listen = "0.0.0.0:7000"

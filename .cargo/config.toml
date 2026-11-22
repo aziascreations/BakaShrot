@@ -9,3 +9,8 @@ rustflags = ["-C", "target-feature=+crt-static"]
 # 2026-11-14 (../revamp.md, "Randomness from the OS"; ../docs/certificates.md).
 [env]
 AWS_LC_SYS_NO_JITTER_ENTROPY = "1"
+# SQLite (rusqlite's `bundled`) without what libsqlite3-sys turns on and
+# nothing here uses: full-text search, R-Tree, dbstat, STAT4, soundex(),
+# extension loading, column metadata. 310 KB less in the server (6.6%).
+# Decided 2026-11-17 (../revamp.md, "One tool, smaller"; ../docs/storage.md).
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_FTS5 -USQLITE_ENABLE_RTREE -USQLITE_ENABLE_DBSTAT_VTAB -USQLITE_ENABLE_STAT4 -USQLITE_SOUNDEX -USQLITE_ENABLE_LOAD_EXTENSION -USQLITE_ENABLE_COLUMN_METADATA"

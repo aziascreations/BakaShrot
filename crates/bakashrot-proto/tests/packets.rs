@@ -2,8 +2,9 @@
 //! refuses, and that no input makes it panic.
 
 use bakashrot_proto::limits::{
-    ATTACHMENT_PART_SIZE, MAX_ATTACHMENT_SIZE, MAX_MESSAGE_ID, MAX_MESSAGES_PER_PACKET,
-    MAX_TIMESTAMP,
+    ATTACHMENT_PART_SIZE, MAX_ATTACHMENT_PARTS, MAX_ATTACHMENT_SIZE, MAX_HEADS_PER_PACKET,
+    MAX_MESSAGE_ID, MAX_MESSAGES_PER_PACKET, MAX_MISSING_ATTACHMENTS, MAX_NAMES_LIST_ENTRIES,
+    MAX_PACKET_SIZE, MAX_TIMESTAMP,
 };
 use bakashrot_proto::packets::*;
 use bakashrot_proto::{Body, DecodeError, ErrorCode, Packet, PacketType};
@@ -35,6 +36,8 @@ fn samples() -> Vec<Packet> {
         .into(),
         RequestRefused::new(ErrorCode::UnknownName, "Unknown topic 'nope'").into(),
         Continue {}.into(),
+        Ping {}.into(),
+        Pong {}.into(),
         PushMessage {
             topic: "logs".into(),
             data: "é€ \u{1F600} {\"a\":[1,2]}".into(),
@@ -98,6 +101,14 @@ fn samples() -> Vec<Packet> {
         AttachmentPart { data: vec![1] }.into(),
         ListNames {
             kind: NameKind::Topic,
+            topics: None,
+            nodes: None,
+        }
+        .into(),
+        ListNames {
+            kind: NameKind::Node,
+            topics: Some("sensors.*".into()),
+            nodes: Some("kitchen".into()),
         }
         .into(),
         NamesList {
@@ -114,8 +125,16 @@ fn samples() -> Vec<Packet> {
             json: r#"{"columns":["a"],"rows":[[1],[null]]}"#.into(),
         }
         .into(),
-        SyncStateRequest {}.into(),
+        SyncStateRequest { after: None }.into(),
+        SyncStateRequest {
+            after: Some(Pair {
+                topic: "logs".into(),
+                node: "kitchen".into(),
+            }),
+        }
+        .into(),
         SyncState {
+            more: true,
             topics: vec!["logs".into(), "sensors.*".into()],
             nodes: vec!["*".into()],
             heads: vec![
@@ -237,6 +256,8 @@ fn golden_bytes() {
         ]
     );
     assert_eq!(Continue {}.encode(), [0x92, 0x03, 0x90]);
+    assert_eq!(Ping {}.encode(), [0x92, 0x13, 0x90]);
+    assert_eq!(Pong {}.encode(), [0x92, 0x14, 0x90]);
     assert_eq!(
         MessagePushed { message_id: 300 }.encode(),
         [0x92, 0x05, 0x91, 0xcd, 0x01, 0x2c]
@@ -290,6 +311,7 @@ fn shapes() {
     assert!(malformed(&raw(PacketType::MessagePushed, ((),))));
     assert!(malformed(&raw(PacketType::MessagePushed, (1u64, 2u64))));
     assert!(malformed(&raw(PacketType::Continue, (1u64,))));
+    assert!(malformed(&raw(PacketType::Ping, (1u64,))));
     // The wrong types.
     assert!(malformed(&raw(PacketType::MessagePushed, ("1",))));
     assert!(malformed(&raw(PacketType::MessagePushed, (-1i64,))));
@@ -297,8 +319,18 @@ fn shapes() {
         PacketType::Messages,
         (1u8, Vec::<u8>::new())
     )));
-    assert!(malformed(&raw(PacketType::ListNames, (3u8,))), "kind 3");
-    assert!(malformed(&raw(PacketType::ListNames, (0u8,))), "kind 0");
+    assert!(
+        malformed(&raw(PacketType::ListNames, (3u8, (), ()))),
+        "kind 3"
+    );
+    assert!(
+        malformed(&raw(PacketType::ListNames, (0u8, (), ()))),
+        "kind 0"
+    );
+    assert!(
+        malformed(&raw(PacketType::ListNames, (1u8,))),
+        "protocol 7's, no filters"
+    );
     assert!(
         malformed(&raw(
             PacketType::Attachment,
@@ -364,6 +396,19 @@ fn ranges() {
     assert!(invalid(&get(Some(1 << 63), 1)));
     assert!(Packet::decode(&get(Some(MAX_MESSAGE_ID), 1)).is_ok());
     assert!(invalid(&get(Some(MAX_MESSAGE_ID + 1), 1)));
+
+    let list = |topics: Option<&str>, nodes: Option<&str>| {
+        ListNames {
+            kind: NameKind::Node,
+            topics: topics.map(Into::into),
+            nodes: nodes.map(Into::into),
+        }
+        .encode()
+    };
+    assert!(Packet::decode(&list(Some("sensors.*"), Some("kitchen"))).is_ok());
+    assert!(invalid(&list(Some("a b"), None)));
+    assert!(invalid(&list(None, Some(""))));
+    assert!(invalid(&list(None, Some("12"))));
 
     let times = |pushed_at| {
         Messages {
@@ -448,7 +493,26 @@ fn too_many_items() {
     };
     assert!(invalid(&too_many.encode()));
 
+    let head = |n: usize| Head {
+        topic: "t".into(),
+        node: format!("n{n}"),
+        last_id: 1,
+    };
+    let heads = |count: usize, more: bool| SyncState {
+        more,
+        topics: vec![],
+        nodes: vec![],
+        heads: (0..count).map(head).collect(),
+        missing: vec![],
+    };
+    assert!(Packet::decode(&heads(MAX_HEADS_PER_PACKET, true).encode()).is_ok());
+    assert!(invalid(&heads(MAX_HEADS_PER_PACKET + 1, false).encode()));
+    assert!(Packet::decode(&heads(0, false).encode()).is_ok());
+    // More to come, but no head to ask after.
+    assert!(invalid(&heads(0, true).encode()));
+
     let missing = SyncState {
+        more: false,
         topics: vec![],
         nodes: vec![],
         heads: vec![],
@@ -501,6 +565,7 @@ fn names_everywhere() {
 
     let state = |topic: &str| {
         SyncState {
+            more: false,
             topics: vec![topic.into()],
             nodes: vec![],
             heads: vec![],
@@ -512,12 +577,60 @@ fn names_everywhere() {
     assert!(Packet::decode(&state("logs")).is_ok());
     assert!(invalid(&state("12")));
     assert!(invalid(&state("a b*")));
+    let after = |topic: &str, node: &str| {
+        SyncStateRequest {
+            after: Some(Pair {
+                topic: topic.into(),
+                node: node.into(),
+            }),
+        }
+        .encode()
+    };
+    assert!(Packet::decode(&after("logs", "kitchen")).is_ok());
+    assert!(invalid(&after("logs*", "kitchen")));
+    assert!(invalid(&after("logs", "*")));
+    assert!(invalid(&after("", "kitchen")));
+    assert!(invalid(&after("logs", "12")));
 
     let welcome = Welcome {
         server: "s".into(),
         node: "7".into(),
     };
     assert!(invalid(&welcome.encode()));
+}
+
+/// The biggest `SyncState` there can be still fits in a packet: every list
+/// full, every name 64 characters, every number its largest.
+#[test]
+fn the_biggest_sync_state_fits() {
+    let name = |prefix: char, n: usize| format!("{prefix}{n:0>63}");
+    let state = SyncState {
+        more: true,
+        topics: (0..MAX_NAMES_LIST_ENTRIES).map(|n| name('t', n)).collect(),
+        nodes: (0..MAX_NAMES_LIST_ENTRIES).map(|n| name('n', n)).collect(),
+        heads: (0..MAX_HEADS_PER_PACKET)
+            .map(|n| Head {
+                topic: name('t', n),
+                node: name('n', n),
+                last_id: MAX_MESSAGE_ID,
+            })
+            .collect(),
+        missing: (0..MAX_MISSING_ATTACHMENTS)
+            .map(|n| MissingAttachment {
+                topic: name('t', n),
+                node: name('n', n),
+                message_id: MAX_MESSAGE_ID,
+                next_part: MAX_ATTACHMENT_PARTS - 1,
+            })
+            .collect(),
+    };
+    let bytes = state.encode();
+    assert!(
+        bytes.len() <= MAX_PACKET_SIZE,
+        "{} bytes, {MAX_PACKET_SIZE} at most",
+        bytes.len()
+    );
+    assert_eq!(Packet::decode(&bytes), Ok(state.into()));
 }
 
 /// xorshift64*, enough to make bytes that look like anything.
@@ -541,7 +654,7 @@ fn nothing_makes_it_panic() {
         let mut bytes: Vec<u8> = (0..len).map(|_| random.next() as u8).collect();
         if round % 2 == 0 && bytes.len() > 2 {
             bytes[0] = 0x92;
-            bytes[1] = 1 + (bytes[1] % 18);
+            bytes[1] = 1 + (bytes[1] % PacketType::ALL.len() as u8);
             bytes[2] = 0x90 | (bytes[2] & 0x0f);
         }
         let _ = Packet::decode(&bytes);

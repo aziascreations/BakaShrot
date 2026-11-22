@@ -51,6 +51,21 @@ E:\BakaShrot>bakashrot -c viewer.toml query "SELECT node, message_id, message_da
 ```
 
 
+## Names
+
+The topics a node pushed to, the nodes that pushed to some topics (a name
+or a pattern):
+```shell
+E:\BakaShrot>bakashrot -c viewer.toml list topics --nodes node-sensor
+Topics (1):
+  sensors
+
+E:\BakaShrot>bakashrot -c viewer.toml list nodes --topics "sens*"
+Nodes (1):
+  node-sensor
+```
+
+
 ## Refused
 
 ```shell

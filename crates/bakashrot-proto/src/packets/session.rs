@@ -74,3 +74,21 @@ impl Check for RequestRefused {
 pub struct Continue {}
 
 impl Check for Continue {}
+
+/// Keeps an idle connection open: the server answers `Pong`, and counts
+/// it as a request (`IDLE_TIMEOUT_SECS`). For a client or a peer waiting
+/// longer than that between requests.
+///
+/// `[19, []]`
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ping {}
+
+impl Check for Ping {}
+
+/// The answer to a `Ping`.
+///
+/// `[20, []]`
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pong {}
+
+impl Check for Pong {}

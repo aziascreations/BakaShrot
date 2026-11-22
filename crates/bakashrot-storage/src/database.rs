@@ -4,7 +4,7 @@
 use crate::{Error, QueryRunner, Reader, Result, SCHEMA_VERSION, Writer};
 use bakashrot_config::Synchronous;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -129,19 +129,26 @@ impl Database {
         Ok(Reader::new(self.connect()?))
     }
 
-    /// A connection for clients' queries: read-only (`query_only`), and
-    /// every PRAGMA refused from then on (SQLite's authorizer). Some take
-    /// effect when they're prepared, before a statement can be refused
-    /// for what it is: `PRAGMA query_only = 0` turned `query_only` off
-    /// for the connection's next queries.
+    /// A connection for clients' queries: the file opened read-only
+    /// (`SQLITE_OPEN_READONLY`: the file handle can't write), `query_only`,
+    /// and every PRAGMA refused from then on (SQLite's authorizer). Some
+    /// take effect when they're prepared, before a statement can be
+    /// refused for what it is: `PRAGMA query_only = 0` turned
+    /// `query_only` off for the connection's next queries. The database is
+    /// in WAL mode already (the writer made it so), which a read-only
+    /// connection can't change and doesn't need to.
     pub fn query_runner(&self) -> Result<QueryRunner> {
-        let mut connection = self.connect()?;
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let mut connection = Connection::open_with_flags(&self.path, flags)?;
+        connection.busy_timeout(BUSY_TIMEOUT)?;
         connection.pragma_update(None, "query_only", true)?;
         connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
             AuthAction::Pragma { .. } => Authorization::Deny,
             _ => Authorization::Allow,
         }))?;
-        Ok(QueryRunner::new(connection))
+        QueryRunner::new(connection)
     }
 
     /// A connection with this database's settings: WAL, `synchronous`, the

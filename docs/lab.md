@@ -10,7 +10,7 @@ example configs.
 
 | Machine | What runs there | Files it gets |
 |---|---|---|
-| admin (any) | `bakashrot-cert` | `ca.key` stays here, never copied |
+| admin (any) | `bakashrot cert` | `ca.key` stays here, never copied |
 | server-1 | `bakashrot-server` | `ca.crt`, `server-1.crt`, `server-1.key`, `server.toml` |
 | server-2 | `bakashrot-server` | `ca.crt`, `server-2.crt`, `server-2.key`, `server.toml` |
 | kitchen | `bakashrot` (pushes to server-1) | `ca.crt`, `kitchen.crt`, `kitchen.key`, `client.toml` |
@@ -23,12 +23,12 @@ their hostnames or IPs. The clients can be on the servers' machines.
 ## 1. The certificates (admin)
 
 ```
-bakashrot-cert ca --name "Lab CA"
-bakashrot-cert issue --name server-1 --role peer --server
-bakashrot-cert issue --name server-2 --role peer --server
-bakashrot-cert issue --name kitchen --role sensor
-bakashrot-cert issue --name dashboard --role dashboard
-bakashrot-cert issue --name lab-py --role sensor --role dashboard
+bakashrot cert ca --name "Lab CA"
+bakashrot cert issue --name server-1 --role peer --server
+bakashrot cert issue --name server-2 --role peer --server
+bakashrot cert issue --name kitchen --role sensor
+bakashrot cert issue --name dashboard --role dashboard
+bakashrot cert issue --name lab-py --role sensor --role dashboard
 ```
 
 A certificate is its name (the node) and its roles; the servers' configs
@@ -154,7 +154,7 @@ Failed to connect to server-1.lab:7000 (NotAllowed): none of visitor's roles (gu
 takes them; it logs once that server-2 refused), start server-2: within
 about 10 s every one is on dashboard, in order.
 
-**Revoking.** On admin, `bakashrot-cert revoke dashboard.crt` writes
+**Revoking.** On admin, `bakashrot cert revoke dashboard.crt` writes
 `ca.crl`; copy it next to each server's `server.toml` (the `crl` above).
 Within 5 s they reload it (`INFO ca.crl: reloaded, 1 revoked`), and the
 certificate is refused, at its next connection or request:
@@ -163,7 +163,7 @@ certificate is refused, at its next connection or request:
 Failed to connect to server-2.lab:7000 (AuthRejected): the server refused this client's certificate (CertificateRevoked)
 ```
 
-**Python.** `pip install bakashrot-0.3.0-py3-none-<platform>.whl` (from the
+**Python.** `pip install bakashrot-0.4.0-py3-none-<platform>.whl` (from the
 release's `python/`), then, next to lab-py's `client.toml` (it may push and
 read: `sensor` and `dashboard`):
 

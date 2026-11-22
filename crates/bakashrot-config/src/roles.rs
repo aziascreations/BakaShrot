@@ -1,7 +1,7 @@
 //! Roles, and what a certificate's roles allow together.
 
 use crate::values::check_names;
-use bakashrot_proto::names::{names_equal, pattern_matches};
+use bakashrot_proto::names::{name_matches, names_equal};
 use serde::Deserialize;
 
 /// Topic or node names and patterns (`sensors.*`, `*` for all), none twice.
@@ -27,9 +27,7 @@ impl NameList {
     /// Whether `name` is in it: one of its names, or matched by one of its
     /// patterns (without case).
     pub fn matches(&self, name: &str) -> bool {
-        self.0
-            .iter()
-            .any(|entry| names_equal(entry, name) || pattern_matches(entry, name))
+        self.0.iter().any(|entry| name_matches(entry, name))
     }
 
     /// Whether it has nothing: matches nothing.
@@ -117,15 +115,24 @@ impl Permissions {
         self.roles.iter().any(|role| role.query)
     }
 
-    /// Whether listing topics answers every one: `list_topics`, or
-    /// `query` (which reads them all anyway).
-    pub fn lists_every_topic(&self) -> bool {
-        self.roles.iter().any(|role| role.list_topics || role.query)
+    /// Whether listing names may show `topic`: one it may push to or
+    /// read, any with `list_topics` or `query` (which reads them all
+    /// anyway).
+    pub fn may_list_topic(&self, topic: &str) -> bool {
+        self.roles.iter().any(|role| {
+            role.list_topics
+                || role.query
+                || role.push_topics.matches(topic)
+                || role.read_topics.matches(topic)
+        })
     }
 
-    /// Whether listing nodes answers every one: `list_nodes`, or `query`.
-    pub fn lists_every_node(&self) -> bool {
-        self.roles.iter().any(|role| role.list_nodes || role.query)
+    /// Whether listing names may show the nodes with messages in `topic`:
+    /// one it may read, any with `list_nodes` or `query`.
+    pub fn may_list_nodes_of(&self, topic: &str) -> bool {
+        self.roles
+            .iter()
+            .any(|role| role.list_nodes || role.query || role.read_topics.matches(topic))
     }
 
     /// Whether `node`'s messages in `topic` are sent to it.

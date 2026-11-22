@@ -6,7 +6,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.100"
 license = "CC0-1.0"
@@ -34,5 +34,14 @@ lto = true
 codegen-units = 1
 strip = true
 # Kept on purpose: the C DLL catches panics at every export (catch_unwind),
-# which "abort" would make impossible.
+# which "abort" would make impossible, and the server loses only the
+# connection that panicked (tokio catches it), not every one.
 panic = "unwind"
+
+# The tool (bakashrot), released with this (build.ps1, release.py, the
+# Dockerfile): a panic ends its command either way, and without unwinding
+# it's about 15% smaller (measured 2026-11-17 on Windows: 2.53 MB, its
+# certificates' commands in it). Its own folder, target/release-tools/.
+[profile.release-tools]
+inherits = "release"
+panic = "abort"

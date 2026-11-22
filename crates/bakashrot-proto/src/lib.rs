@@ -1,4 +1,4 @@
-//! BakaShrot's protocol, version 7: what the server, the clients and the
+//! BakaShrot's protocol, version 8: what the server, the clients and the
 //! tools share, and nothing else.
 //!
 //! No I/O of its own beyond reading and writing frames on a stream it's

@@ -22,7 +22,7 @@ mod reader;
 
 pub use batch::{Batch, Writer};
 pub use database::{Checkpointer, Database, WRITER_CHECKPOINT_PAGES};
-pub use query::{MAX_QUERY_BYTES, MAX_QUERY_ROWS, QueryRunner};
+pub use query::{MAX_QUERY_BYTES, MAX_QUERY_ROWS, QueryRunner, Stop};
 pub use reader::{Attachment, MESSAGES_BYTES, Reader};
 
 use bakashrot_proto::limits::{MAX_ATTACHMENT_PARTS, MAX_MESSAGE_ID};
@@ -55,18 +55,28 @@ pub enum Error {
     TooBig(String),
     /// A client's query that failed or isn't read-only: `QueryFailed`.
     Query(String),
+    /// A client's query stopped past its time limit: `QueryTimedOut`.
+    QueryTimedOut(String),
+    /// SQLite rolled the batch's transaction back by itself (disk full,
+    /// an I/O error...): nothing in it is stored, and nothing more runs in
+    /// it (it would be written outside the transaction): `ServerError`.
+    RolledBack,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Sqlite(error) => write!(f, "database: {error}"),
+            Error::RolledBack => f.write_str(
+                "database: the transaction was rolled back after a failure, nothing in it stored",
+            ),
             Error::Unusable(what)
             | Error::Invalid(what)
             | Error::NotFound(what)
             | Error::UnknownName(what)
             | Error::TooBig(what)
-            | Error::Query(what) => f.write_str(what),
+            | Error::Query(what)
+            | Error::QueryTimedOut(what) => f.write_str(what),
         }
     }
 }

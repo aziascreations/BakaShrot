@@ -1,5 +1,6 @@
-# The BakaShrot server's image: bakashrot-server, with the bakashrot and
-# bakashrot-cert tools beside it. Built from the repository's root:
+# The BakaShrot server's image: bakashrot-server, with the bakashrot tool
+# beside it (bakashrot cert for the certificates). Built from the
+# repository's root:
 #   docker build -f docker/Dockerfile -t bakashrot-server .
 # CI builds it for amd64 and arm64 on a version tag, checks it
 # (docker/test.sh) and pushes it to ghcr.io/aziascreations/bakashrot-server
@@ -12,7 +13,7 @@
 #                                from outside the container
 #   database = "/var/lib/bakashrot/bakashrot.sqlite"
 # and the certificates relative to it (ca = "ca.crt", ...). The server runs
-# as uid 10001, which must be able to read its key (bakashrot-cert writes
+# as uid 10001, which must be able to read its key (bakashrot cert writes
 # keys readable by their owner only): chown 10001:10001 config/server-1.key
 #
 #   docker run -d --name bakashrot -p 7000:7000 \
@@ -20,7 +21,7 @@
 #     ghcr.io/aziascreations/bakashrot-server
 #
 # Or docker/compose.yml. `docker stop` stops it cleanly (SIGTERM).
-# The tools: docker run --rm <image> bakashrot-cert ... (or bakashrot ...).
+# The tool: docker run --rm <image> bakashrot cert ... (or bakashrot push ...).
 
 
 # --- Build ---------------------------------------------------------------------
@@ -30,11 +31,13 @@ FROM rust:1-slim-trixie AS build
 WORKDIR /src
 # Only what the programs are built from (Dockerfile.dockerignore).
 COPY . .
-# The toolchain rust-toolchain.toml pins, then the release build.
+# The toolchain rust-toolchain.toml pins, then the release build, the tool
+# with its own profile (release-tools, Cargo.toml).
 RUN rustup toolchain install \
-	&& cargo build --release --locked -p bakashrot-server -p bakashrot-tools \
+	&& cargo build --release --locked -p bakashrot-server \
+	&& cargo build --profile release-tools --locked -p bakashrot-tools \
 	&& mkdir /out \
-	&& cp target/release/bakashrot-server target/release/bakashrot target/release/bakashrot-cert /out/
+	&& cp target/release/bakashrot-server target/release-tools/bakashrot /out/
 
 
 # --- Runtime -------------------------------------------------------------------

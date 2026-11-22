@@ -2,10 +2,10 @@
 
 Started 2026-11-13: what it should change, what's decided, what's still
 open, and the plan. Every step of the plan is done (the workspace,
-`bakashrot-proto`, `bakashrot-pki` and `bakashrot-cert`,
+`bakashrot-proto`, `bakashrot-pki` and the certificate tool,
 `bakashrot-config`, `bakashrot-storage`, `bakashrot-server` and
 `bakashrot-client` answering every request, attachments included, the C
-DLL with its C, PureBasic and Python bindings, the `bakashrot` tool,
+DLL with its C, PureBasic, Python and C# bindings, the `bakashrot` tool,
 retention, replication, operations and releases, then the finish: one
 test runner, CI, Docker, `bench.ps1`), see "Plan".
 
@@ -30,7 +30,12 @@ test runner, CI, Docker, `bench.ps1`), see "Plan".
      unloaded (`BakaShrot_UnloadClient()`) and Windows' loader lock is
      never in the way;
    - the C runtime linked statically on Windows (`+crt-static`), built
-     against an old glibc on Linux (manylinux);
+     against an old glibc on Linux (manylinux); a switch for the hybrid
+     one, not the default (2026-11-17): `build.ps1` / `release.ps1
+     -HybridCrt`, `.cargo/hybrid-crt.toml`, the UCRT from Windows (10
+     and up), VCRuntime still linked in, about 180 KB less per program,
+     still nothing to install (fully dynamic: 21 KB less again, but
+     `vcruntime140.dll`, the redistributable's);
    - `W` exports take UTF-16 everywhere (PureBasic's strings; `wchar_t` is
      32 bits on Linux);
    - the toolchain pinned (`rust-toolchain.toml`), a C header generated
@@ -112,7 +117,7 @@ Also decided (2026-11-13):
     config (warned in its log: a CRL deleted by mistake) and
     `client.toml` (the tool, Python's `from_file()`). A path given
     to the DLL's `SetCrl` or Python's `Client(crl=...)` is asked for
-    explicitly: missing, it's a `FileError`. `bakashrot-cert revoke`
+    explicitly: missing, it's a `FileError`. `bakashrot cert revoke`
     needs no file to start from (it writes the first one). A file
     that's there but can't be read or isn't the CA's is refused;
   - clients check it too when given one (`client_config()` takes the
@@ -120,7 +125,7 @@ Also decided (2026-11-13):
     block each other whichever end dials;
   - revoked by certificate, not by name: each certificate has its own key
     and serial number, so two servers of the same name each have theirs,
-    revoked one at a time (`bakashrot-cert issue --file`).
+    revoked one at a time (`bakashrot cert issue --file`).
 - **The server's config is TOML** (2026-11-13), `docs/config.md`:
   - `[server]`, `[retention]`, `[replication]`, `[roles.<name>]`; unknown
     keys refused; names only (no ids, pins or ranges);
@@ -152,6 +157,121 @@ Also decided (2026-11-13):
     both): the topics it may push to or read, the nodes of the topics
     it may read (every node until then). Names only, reading is still
     `read_topics`.
+  - **Filtered lists** (2026-11-19, protocol 8): `ListNames` takes
+    `topics` and `nodes`, a name or a pattern each (nil for any), and
+    answers the topics or nodes of the topic and node pairs they match:
+    the topics a node pushed to, the nodes that pushed to a topic. Out
+    of the pairs the database has (`reader.heads()`), so replicated
+    messages count, and so do pairs whose messages retention deleted:
+    no new storage query. The same permissions as the lists, applied to
+    what the answer reveals: a pair's topic must be one the roles may
+    see when the answer is topics or `topics` filters it, its node when
+    the answer is nodes or `nodes` filters it. Without filters, the
+    lists as they were. In the DLL one export, `BakaShrot_ListNames`
+    (`kind`, `topics`, `nodes`); `ListTopics` and `ListNodes` went with
+    the enumerations (`ListNames(1 or 2, null, null)`).
+  - **The DLL's lists without JSON** (2026-11-19): the JSON getters are
+    `GetNamesListAsJson` and `GetQueryResultAsJson`; beside them,
+    enumerations like Win32's `FindFirstFile` / `FindNextFile` /
+    `FindClose`: `EnumerateNames` / `EnumerateQuery` keep a whole answer,
+    `NextName` / `NextQueryRow` move to the next item (before the first
+    at first), getters read it, `CloseEnum` closes it. They don't outlive
+    their client (`FreeClient` closes them); their handles are numbered
+    with the clients'. The query result is parsed in the DLL, the
+    protocol unchanged. Python keeps the JSON; C# has both (`List...()`
+    / `Query()` the JSON, `Enumerate...()` an `IEnumerable` over the
+    enumerations, `QueryRow`s for a query).
+  - **Queries stay** (2026-11-19): removing them (the `query` permission,
+    the packets, the runner, every binding) was done and undone the same
+    day, the owner's second thoughts; a filtered "field equals value"
+    request instead was weighed and not wanted. A fifth guard against
+    writes, asked by the owner: the query connection opens the file
+    read-only (`SQLITE_OPEN_READONLY`), beside `query_only`, the
+    read-only statement check, one statement only and no PRAGMAs.
+  - **The 16 MiB frame limit stays** (2026-11-19): it was the limit once
+    authenticated (2026-11-08, 4 KB before); since TLS authenticates
+    both ends before any frame, it's the only one left. Not lifted: a
+    buggy peer announcing gigabytes would make the other end hold them.
+  - **`SyncState` in pages** (2026-11-19, protocol 8, asked by the owner
+    for the worst case): `SyncStateRequest` takes `after` (the last head
+    received, a `Pair`), `SyncState` has `more` and 32768 heads at most
+    (`MAX_HEADS_PER_PACKET`), the lists and missing attachments in the
+    first page only. The biggest first page (every list full, every name
+    64 characters) is about 13.3 MB, tested. A cursor by names, like
+    `GetMessages`' `after`, rather than several answers to one request
+    (one request, one answer) or ids (each server's own). The receiver
+    reads its heads in pages too (`heads_after`, on the `(topic, node)`
+    index); the sender gathers every page before comparing.
+  - **Fixes from a read of the code** (2026-11-19, asked by the owner):
+    - **ALPN required by the server too:** rustls only refuses a client
+      offering other protocols; one offering none is now closed right
+      after TLS, before the versions.
+    - **Retention ages, 100 years at most** (`MAX_RETENTION_AGE`,
+      `"36500d"`): turning a huge one into milliseconds wrapped around
+      (`"18446744073709552s"` was 384 ms). The cutoff is computed in one
+      place (`Retention::cutoff`), saturating.
+    - **`Ping` / `Pong`** (19, 20; protocol 8, not released yet): the
+      server closes a connection silent for 5 min
+      (`IDLE_TIMEOUT_SECS`). A ping every minute (`KEEPALIVE_SECS`) keeps
+      one open: the tool's `--follow`, Python's `follow()`, C#'s
+      `Follow()` and the replication links send it while waiting longer
+      (so `sync_interval` over 5 min works now). The DLL has no thread of
+      its own, so it can't on its own: `BakaShrot_Ping()` for apps, with
+      `ping()` / `Ping()` in Python and C#. Preferred to a longer idle
+      timeout (connections of dead clients would linger) or to
+      reconnecting by itself (nothing does, on purpose).
+    - **`[server] idle_database_connections`** (8 by default, 0-512): the
+      idle read and query connections each pool keeps (they were all
+      kept, as many as ever ran at once); one idle for a minute is
+      closed (a thread looks every 10 s).
+    - **An attachment dropped as damaged only when it is:** a peer
+      refusing it (`DataMismatch`) has the sender read its own copy
+      back; read whole and not matching, or a part missing, it's
+      dropped and asked for again as before. A read-back that failed
+      otherwise (a busy database, a connection not opened) dropped it
+      too, the only copy if this server was its origin: now it's kept
+      and warned about (`push_to.rs`, `judge`).
+    - **The Rust client closes a connection left out of step**
+      (`client.md`, "The Rust client"): an I/O error, a timeout, an
+      answer that isn't the request's, parts cut short or interrupted, a
+      source failing mid-upload. Requests after fail with `NotConnected`
+      without reading: a late answer was read as the next request's (a
+      push returning the previous one's id). `set_answer_timeout()` /
+      `answer_timeout()` (30 s by default); `is_open()` always blocking
+      again. The DLL already dropped its client on those.
+    - **Nothing written outside a transaction SQLite rolled back:** on a
+      full disk, an I/O error or out of memory, SQLite may roll a whole
+      batch back by itself; the writes after it then committed one at a
+      time while all were answered `ServerError` (retried, stored twice).
+      Every `Batch` operation after is refused now (`Error::RolledBack`),
+      the batch fails, nothing in it stored; the group's later writes are
+      refused too.
+    - **Long queries stopped** (2026-11-20): `[server] query_time_limit`
+      (20 s by default, under the clients' 30 s answer timeout) stops a
+      query through SQLite's progress handler (a look every 10,000 steps)
+      and refuses it with a code of its own, `QueryTimedOut` (11), so apps
+      tell it from SQL that fails (`QueryFailed`). A client closing while its query
+      runs (having given up) stops it too: the connection's task watches
+      it meanwhile, and dropping the query stops it, so no thread keeps
+      running one nobody waits for. The answer timeout reaches the DLL
+      (`BakaShrot_SetAnswerTimeout()` / `GetAnswerTimeout()`, kept across
+      connections), Python (`answer_timeout`) and C# (`AnswerTimeoutMs`).
+    - **`is_open()` reads through TLS** (2026-11-20): it peeked at the
+      socket, so a server's close_notify (bytes waiting) looked open
+      until the next request failed. It reads what's waiting into rustls
+      now, without blocking: TLS's own records (tickets, key updates)
+      keep it open, close_notify or the socket's end say closed, data
+      sent unasked or a broken TLS stream close it (out of step).
+      `&mut self` now; the DLL's `IsConnected` unchanged.
+    - **Names not taken by a peer warned about** (2026-11-21, old open
+      item): what a link's roles here may send but the peer doesn't
+      take is skipped as before, and logged to the console (a warning,
+      the first ten "topic:node" named) once per link, again only when
+      that changes; not at every check-in.
+    - **A NUL refused by Python** (2026-11-21, old item 23): every
+      string going to the DLL as a C string (a message, a name, SQL, a
+      path) with a NUL is refused (`INVALID_ARGUMENT`) rather than cut
+      there, as C# already did.
 - **Schema v9, not compatible with v8** (2026-11-13): old databases aren't
   opened, their data isn't carried over (the real-life tests start empty).
   `docs/storage.md`:
@@ -184,13 +304,14 @@ Also decided (2026-11-13):
   - **the old exports that don't fit any more are dropped**, not kept
     failing: the keys and node setters, the id-based ones, the default
     topic's `PushMessage()`;
-  - **one connection per process**, as before (handles maybe later);
+  - **one connection per process**, as before (replaced by handles
+    2026-11-17, below);
   - **`client.toml`** (server, ca, certificate, key, crl) replaces
     `client.ini`: Python's `Client.from_file()`, the tools at step 8.
 - **The tools** (2026-11-14), `docs/client.md`, "The tools": one
   `bakashrot` program with subcommands (`push`, `latest`, `messages`,
   `query`, `list`) over `bakashrot-client`, `bakashrot-cert` kept apart
-  (the CA's key); `-c/--config`, `client.toml` by default; the old tools'
+  (the CA's key; folded in as `bakashrot cert` on 2026-11-17, below); `-c/--config`, `client.toml` by default; the old tools'
   output; messages and SQL inline, `@file` or `-` (standard input); exit
   codes 0, 1, and 2 for bad arguments.
 - **Attachments** (2026-11-14), `docs/server.md` and `client.md`:
@@ -241,7 +362,9 @@ Also decided (2026-11-13):
   - **the Python wheel has the library in it**, for a simple install;
   - **version 0.2.0**; **0.3.0** on 2026-11-16 (the identity OID under
     NibblePoker's PEN, the roles as the only lists of topics,
-    `list_topics` / `list_nodes`).
+    `list_topics` / `list_nodes`); **0.4.0** on 2026-11-19 (protocol 8:
+    filtered lists, `SyncState` in pages; the DLL's enumerations; the C#
+    binding).
 - **The PureBasic version removed** (2026-11-15): `OldSource/` deleted,
   kept in git history (up to `68966a8`). What of its notes and designs
   still holds went to `docs/known-issues.md`; the rest was already
@@ -270,6 +393,36 @@ Also decided (2026-11-13):
   manual runs only, a read-only token but where images are pushed (after
   they're built and checked), no token left on disk by checkout, actions
   pinned to commits, `--locked` builds.
+- **One tool, smaller** (2026-11-17), `docs/certificates.md`, "The
+  tool", and `docs/storage.md`, "The file": `bakashrot-cert` folded
+  into `bakashrot` as `bakashrot cert` (`ca`, `issue`, `revoke`, `show`,
+  the same options): aws-lc, the C runtime and clap once, 2.53 MB
+  instead of 2.85 + 1.73 MB on Windows.
+  The tool is built with its own profile, `release-tools` (`panic =
+  "abort"`, about 15% smaller); the DLL keeps `unwind` (it catches
+  panics), the server too (a panic loses one connection, not all).
+  clap without colours and "did you mean" suggestions (40 KB). SQLite
+  without what libsqlite3-sys turns on and nothing uses (FTS3, FTS5,
+  R-Tree, `dbstat`, STAT4, `soundex()`, extension loading, column
+  metadata; `LIBSQLITE3_FLAGS` in `.cargo/config.toml`): the server 4.68
+  to 4.37 MB. Weighed and left: UPX (antivirus), the C runtime as a DLL
+  (Decided 2), a nightly `build-std` or `trim-paths`, `opt-level = "z"`
+  (5% for slower code), SQLite's `OMIT_*` options (7 KB), a TLS setup
+  naming P-384 only (25 KB: aws-lc links its other algorithms anyway).
+  **aws-lc kept** (the owner, 2026-11-17), the others measured with the
+  same TLS setup: Graviola (rustls-graviola 0.4.0, X25519MLKEM768 too)
+  490 KB bigger, its P-256 and P-384 tables in it, and very new; ring
+  410 KB smaller per program but without ML-KEM, which protects what's
+  recorded today from a quantum computer later; RustCrypto's provider
+  not for production. Worth another look if rustls-graviola lets a
+  provider name its algorithms one by one, or ring gets ML-KEM.
+
+- **Several clients per process in the DLL** (2026-11-17, the owner;
+  old open item 10): `BakaShrot_CreateClient()` returns a handle, the
+  first argument of every other export (same names as before);
+  `BakaShrot_FreeClient()` frees it. No default client and no exports
+  without a handle ("keep something clean"): apps built for the old DLL
+  need updating. A bad handle fails (`InvalidArgument`).
 
 ## Proposed, to confirm
 
@@ -283,24 +436,17 @@ Also decided (2026-11-13):
 
 ## Open questions
 
-- **A handle-based DLL API** (several connections per process, old open item
-  10): later maybe, the owner's call (one connection per process for now).
+None right now.
 
 ## The old open items
 
 The PureBasic version's, still not fixed:
 
-- **Gaps in a topic and node's ids** aren't detected on replication (6),
-  and **`SyncState` is one packet** (9): `docs/known-issues.md`.
+- **Gaps in a topic and node's ids** aren't detected on replication (6):
+  `docs/known-issues.md`. (**`SyncState` in one packet**, 9, fixed
+  2026-11-19: its pages.)
 - **Peers are trusted with what they replicate** (12), unless messages
   get signed by their node: `docs/known-issues.md`.
-- **Names left out of replication aren't warned about:** a topic or
-  node one side doesn't take is skipped silently. Warn once per peer
-  and name, again only when that changes (a log line at every check-in
-  would spam).
-- **A NUL cuts a message from Python** (23): `push()` passes it to
-  `PushMessageToA` as a C string, `"a\x00b"` is stored as `a`. Refuse
-  it in `push()`, or pass a length.
 
 ## Plan
 
@@ -338,6 +484,11 @@ by hand.
 | 11 | Replication | Peer links, sync state, batches by name, wildcards, attachments, skipping on arrival | Three servers end to end, a restart; the corrupted-attachment fix | Decided 2026-11-14 | Done 2026-11-14 |
 | 12 | Operations | Signals and a clean stop, logs, release, wheel | Runs unattended, stops cleanly, the release's smoke test | Decided 2026-11-14 | Done 2026-11-14 |
 | 13 | Finish | One test runner (the Rust tests, decided 2026-11-15), end-to-end tests in CI, the bench, Docker | Push speed with 4 servers replicating (`docs/server.md`, "Measured") | | Done 2026-11-16 (`bench.ps1`) |
+| 14 | C# binding | `bindings/csharp`: `Client` over the `W` exports, C# 2 and .NET 2.0's library only (net35, netstandard2.0); the NuGet package `NibblePoker.BakaShrot.Client` with the four platforms' libraries, packed by CI after the releases (an artifact) | Its NUnit tests pass on net48 and net8.0 (by hand, not in `test.ps1`); the package loads the library on net8.0 and net48 | Asked by the owner 2026-11-18 (the name too) | Done 2026-11-18 |
+| 15 | Filtered lists | `ListNames`' `topics` and `nodes` filters (protocol 8): server, client, `BakaShrot_ListNames` (`A`/`W`), Python, C#, PureBasic, `bakashrot list --topics/--nodes` | `end_to_end.rs` `names` (patterns, case, permissions), `exports.rs`, `check_bakashrot.py`, the NUnit tests | Decided 2026-11-19 | Done 2026-11-19 |
+| 16 | The DLL's enumerations | `GetNamesListAsJson`, `GetQueryResultAsJson`; `EnumerateNames` / `EnumerateQuery`, `Next...`, their getters, `CloseEnum` (`enumerations.rs`); `ListTopics` / `ListNodes` dropped; PureBasic's example on them; C#'s `EnumerateTopics` / `EnumerateNodes` / `EnumerateQuery` (`IEnumerable`, asked at each `foreach`) | `exports.rs` `enumerations` (names, query rows and nulls, several at once, bad and closed handles, freed with the client); the NUnit `Enumerations` test | Decided 2026-11-19 | Done 2026-11-19 |
+| 17 | `SyncState` in pages | `SyncStateRequest.after`, `SyncState.more`, `MAX_HEADS_PER_PACKET` (protocol 8); `heads_after` in storage; both ends of replication | `packets.rs` `the_biggest_sync_state_fits` and the page rules; `storage.rs` heads in pages; `end_to_end.rs` `sync_state_in_pages` (full and partial pages, the lists in the first only, a cursor in another case or not stored, pairs a peer doesn't take skipped, exactly a page, a pattern refused) and `replication_across_pages` (only what's after a head of the second page sent); each part broken on purpose once, every test caught it | Decided 2026-11-19 | Done 2026-11-19 |
+| 18 | Fixes from a read of the code | The server requiring ALPN; retention ages capped at 100 years; `Ping` / `Pong` (protocol 8) with `BakaShrot_Ping`, Python's and C#'s `ping`, pings in the follows and the replication links; `idle_database_connections` and idle connections closed; a damaged copy told from a failed read-back; the Rust client closing a connection left out of step, `set_answer_timeout`; nothing written once SQLite rolled a batch back; `query_time_limit`, queries stopped when their client leaves, `BakaShrot_SetAnswerTimeout`; names a peer doesn't take warned about; a NUL refused by Python | `end_to_end.rs` `certificates_refused` (no ALPN: closed), `pings`, `no_idle_database_connections`; `config.rs` the cap, `retention_cutoff`, the key; the server's `pools_keep_few_and_close_the_idle` and `only_a_copy_read_whole_or_missing_a_part_is_damaged` (with `replication` for the damaged copy still dropped); the client's `failures.rs` (a fake server: late, wrong, cut answers and parts) and `revoked_certificates_are_dropped`; storage's `nothing_runs_once_sqlite_rolled_back` and `queries_are_stopped`; `end_to_end.rs` `queries_are_stopped` and `replication_not_taken_is_warned`, `heads_sent_and_not_taken`; `exports.rs` `answer_timeouts`, `codes.rs` (the bindings' codes and copied values), the NUnit `AnswerTimeouts`, PureBasic 5.73 and 6.41 by hand; `packets.rs` samples and bytes; `exports.rs`, `check_bakashrot.py`, the NUnit `Closing` | Decided 2026-11-19 | Done 2026-11-21 |
 
 Each step ends with its tests passing and its docs updated (the crate's
 docs, `docs/`, this file's status), then a commit when the owner

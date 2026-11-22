@@ -5,29 +5,64 @@ What apps connect with, in layers:
 | Layer | Where | For |
 |---|---|---|
 | `bakashrot-client` | `crates/bakashrot-client` | Rust: blocking, one connection per `Client` |
-| The DLL | `crates/bakashrot-capi`: `bakashrot.dll`, `libbakashrot.so` | C and anything that loads a DLL: the `BakaShrot_*` exports, one connection per process |
+| The DLL | `crates/bakashrot-capi`: `bakashrot.dll`, `libbakashrot.so` | C and anything that loads a DLL: the `BakaShrot_*` exports, as many clients as needed |
 | C header | `bindings/c/bakashrot.h` | generated from the DLL (cbindgen) |
 | PureBasic | `bindings/purebasic/` | the prototypes and the error codes |
 | Python | `bindings/python/bakashrot.py` | `Client` over the DLL (ctypes), standard library only |
-| The tools | `crates/bakashrot-tools`: `bakashrot` | the command line, over `bakashrot-client` |
+| C# | `bindings/csharp/NibblePoker.BakaShrot.Client/` | `Client` over the DLL (P/Invoke), .NET Framework 2.0 and up, .NET Core, .NET; a NuGet package with every platform's library |
+| The tool | `crates/bakashrot-tools`: `bakashrot` | the command line, over `bakashrot-client`; `bakashrot cert`, the certificates |
 
 Decided in `../revamp.md`, "Decided" (2026-11-13). What goes over the
 wire: `protocol.md`; the server's side: `server.md`.
 
 **Status:** steps 7 to 9: connecting, pushes, messages, attachments,
-names, queries.
+names, queries, several clients.
+
+## The Rust client
+
+`bakashrot_client::Client`, blocking, one request at a time. A refusal
+(1-99), or an argument refused before anything is sent
+(`InvalidArgument`), keeps the connection. **Anything that leaves it out
+of step closes it** (2026-11-19): an I/O error, no answer within
+`answer_timeout()` (`ConnectionLost`), an answer that isn't the
+request's or doesn't decode (`ProtocolError`), an attachment's parts cut
+short or of the wrong size, a refusal among them, a source failing
+mid-upload (`FileError`). Every request after fails with `NotConnected`
+without reading anything: before, the socket stayed open, and a late
+answer could be read as the next request's (a push returning the
+previous push's id). `is_closed()` says so. The DLL forgets its client
+whenever it's closed so (it did on `ConnectionLost` and `ProtocolError`
+already; now on a file failing mid-upload too), so connecting again
+works; Python and C# go through it.
+
+- `set_answer_timeout()`: how long an answer, or sending a packet, may
+  take: 30 s (`ANSWER_TIMEOUT`) until changed, more than 0. Longer for a
+  slow query, say (the server's own limit, `query_time_limit`, is 20 s
+  by default: `config.md`). Giving up closes the connection, and the
+  server stops the query it was running then.
+- `is_open()` (`&mut self`): false once closed. It reads what's waiting
+  without blocking, through TLS, then always makes the socket blocking
+  again (it was left non-blocking when it found the connection gone).
+  What TLS sends for itself (session tickets, key updates) leaves it
+  open; the socket's end or TLS's close_notify says the server closed it
+  (the next request fails with `ConnectionLost`); data sent unasked or a
+  broken TLS stream leave it out of step, so it's closed (`NotConnected`
+  after).
+- `ping()`: keeps an idle connection open (`protocol.md`, "Rules").
+  `wait()` sleeps, pinging every `KEEPALIVE_SECS` meanwhile (the
+  tool's `--follow` uses it).
 
 ## Who connects: certificates
 
 A client is its certificate, issued by the CA the servers trust
-(`certificates.md`, `bakashrot-cert issue`): its name is its node, its
+(`certificates.md`, `bakashrot cert issue`): its name is its node, its
 roles say what it may do on each server (`config.md`). It needs the CA's
 certificate (to check the server's), its own certificate and key, and the
 CA's CRL if there is one (servers it revokes are refused).
 
 ### `client.toml`
 
-What Python's `Client.from_file()` and the tools read. Paths are relative
+What Python's `Client.from_file()` and the tool read. Paths are relative
 to the file's folder.
 
 ```toml
@@ -42,8 +77,11 @@ crl = "ca.crl"               # optional; a file not there yet: none
 
 Its conventions:
 
-- **One connection per process.** Calls from several threads wait for each
-  other.
+- **Clients.** `BakaShrot_CreateClient()` makes one and returns its
+  handle, the first argument of every other export;
+  `BakaShrot_FreeClient(Client)` frees it. Each client has its own
+  connection, answers and errors, and different clients can be used from
+  different threads at once. A bad handle fails with `InvalidArgument`.
 - **`A` and `W` exports:** strings in and out as UTF-8 (`char*`) or UTF-16
   (`uint16_t*`, `wchar_t*` on Windows; PureBasic uses these),
   null-terminated. A null string is an empty one where that means
@@ -63,24 +101,54 @@ Its conventions:
   on the other; the C runtime linked statically on Windows (the release
   DLL imports system DLLs only).
 
+Every export but `CreateClient` takes the handle first (left out below):
+a client's, or an enumeration's for the enumeration getters.
+
 | Exports | What |
 |---|---|
+| `CreateClient()`, `FreeClient` | a new client's handle (0 if it failed); freed (its enumerations closed), 1 |
 | `SetCaCertificate`, `SetCertificate`, `SetPrivateKey`, `SetCrl` (`A`/`W`) | PEM text (starting with `-----BEGIN`), or the path of a file holding it; `SetCrl` null or empty for none. Before connecting (`AlreadyConnected`); a file that can't be read is `FileError` |
 | `Connect(Host, Port)` (`A`/`W`) | TLS with those; refused: `AuthRejected` (the server refused the certificate), `ServerNotVerified` (this client refused the server's), `NotAllowed` (none of its roles is the server's), `VersionMismatch` |
 | `IsConnected`, `Disconnect` | `IsConnected` notices a connection the server closed |
+| `Ping` | 1, or 0 if the connection is gone: keeps it open. The server closes one silent for 5 min; the DLL has no thread of its own, so an app idle longer calls it every minute or so |
+| `SetAnswerTimeout(Milliseconds)`, `GetAnswerTimeout` | how long an answer may take: 30000 until changed, more than 0 (`InvalidArgument`). Kept across connections, and applied to the current one too (unlike the other settings). Past it, `ConnectionLost`, the connection closed and the server's query stopped |
 | `GetNode` (`A`/`W`) | the node the server says this client is |
 | `PushMessageTo(Topic, Data)` (`A`/`W`) | the id, -1 on failure |
 | `GetLatestMessageOf(Topic, Node)` (`A`/`W`) | 1, or 0 with `NotFound` when there's none yet |
 | `GetMessages(Topic, Node, After, Limit)` (`A`/`W`) | how many (0 isn't a failure), -1 on failure; then `GetMessageCount`, `SelectMessage(Index)`, `HasMoreMessages` |
 | `GetMessageId`, `GetMessagePushedAt`, `GetMessageAttachmentSize`, `IsMessageAttachmentReady`, `GetMessageData`/`Topic`/`Node` (`A`/`W`) | the selected message; topic and node as asked |
-| `ListTopics`, `ListNodes`, then `GetNamesList` (`A`/`W`) | how many; `{"kind":"topic","names":[...],"truncated":false}` |
-| `Query(Sql)`, then `GetQueryResult` (`A`/`W`) | `{"columns":[...],"rows":[[...],...]}` |
+| `ListNames(Kind, Topics, Nodes)` (`A`/`W`), then `GetNamesListAsJson` (`A`/`W`) | how many; `{"kind":"topic","names":[...],"truncated":false}`. 1 topics, 2 nodes, of the topic/node pairs `Topics` and `Nodes` match (a name or a pattern each, null for any): `(1, null, null)` every topic it may see, `(1, null, "kitchen")` the topics kitchen pushed to, `(2, "sensors.*", null)` the nodes that pushed to those |
+| `Query(Sql)` (`A`/`W`), then `GetQueryResultAsJson` (`A`/`W`) | `{"columns":[...],"rows":[[...],...]}` |
+| `EnumerateNames(Kind, Topics, Nodes)` (`A`/`W`), then `NextName`, `GetEnumName` (`A`/`W`), `GetNameCount`, `IsNamesListTruncated` | the same list without JSON: an enumeration's handle (0 on failure, the client's error); see below |
+| `EnumerateQuery(Sql)` (`A`/`W`), then `GetQueryColumnCount`, `GetQueryColumnName(Index)` (`A`/`W`), `NextQueryRow`, `GetQueryValue(Index)` (`A`/`W`), `IsQueryValueNull(Index)` | the same result without JSON, a row at a time; see below |
+| `CloseEnum` | an enumeration closed: 1, 0 if it wasn't one |
 | `PushMessageWithFile(Topic, Data, FilePath)`, `PushMessageWithData(Topic, Data, *Data, Size)` (`A`/`W`) | the id, -1 on failure; the attachment 1 byte and up, as much as the server takes (`TooBig`); a file read twice (its SHA-256 first), one changed in between refused (`DataMismatch`) |
 | `SaveAttachment(Topic, Node, MessageId, FilePath)` (`A`/`W`) | its size, -1 on failure (`NotFound`, `NotReady`, `AttachmentMismatch`); a failed one leaves no file |
 | `LoadAttachment(Topic, Node, MessageId)` (`A`/`W`), then `GetAttachmentData(*Buffer, Size)`, `FreeAttachmentData()` | into memory, for small ones; the getter returns the size, copies nothing if it doesn't fit |
-| `GetLastError`, `GetRefusalReason` (`A`/`W`) | why the last call failed |
+| `GetLastError`, `GetRefusalReason` (`A`/`W`) | why the client's last call failed |
 
 The header has each one's comment. Every name starts with `BakaShrot_`.
+
+**Enumerations**, like Win32's `FindFirstFile` / `FindNextFile` /
+`FindClose`: `EnumerateNames()` or `EnumerateQuery()` asks the server
+once and keeps the whole answer; `NextName()` / `NextQueryRow()` move to
+the next item (1, 0 once there are no more, -1 for a handle that isn't
+one of that kind), the getters read it. An enumeration starts before its
+first item, so `while (BakaShrot_NextName(e) == 1)` reads them all, none
+for an empty list. Several can be open at once, even on one client; the
+client's later calls don't change them. They don't outlive their client:
+`FreeClient()` closes them, their handles refused after. Otherwise
+`CloseEnum()` once done. Their handles are numbered with the clients',
+never reused: one is never the other's. A value's getter returns 0 for a
+null, `IsQueryValueNull()` tells it from an empty string.
+
+```c
+int64_t e = BakaShrot_EnumerateNamesW(client, 1, NULL, L"kitchen");
+while (BakaShrot_NextName(e) == 1) {
+    BakaShrot_GetEnumNameW(e, name, sizeof name);   /* a topic kitchen pushed to */
+}
+BakaShrot_CloseEnum(e);
+```
 
 ## Python
 
@@ -89,32 +157,96 @@ certificate, key, crl=None)` (PEM text or paths) or
 `Client.from_file("client.toml")` (Python 3.11+, `tomllib`; the rest runs
 on 3.8), `client.node` once connected, `push(data, topic,
 attachment=None)` (the topic required; the attachment bytes or a path),
-`latest()`, `get_messages()`, `iter_messages()`, `follow()`,
+`latest()`, `get_messages()`, `iter_messages()`, `follow()` (pinging
+every minute while it waits longer), `ping()` (`KEEPALIVE_SECONDS`),
+`answer_timeout` (seconds, `ANSWER_TIMEOUT_SECONDS` until set; before
+connecting or while connected),
 `get_attachment()` (bytes), `save_attachment()` (a file),
-`list_topics()` / `list_nodes()` (names), `query()` / `query_raw()`.
+`list_topics()` / `list_nodes()` (names; `topic=` and `node=`, a name or
+a pattern each, filter them: `list_topics(node="kitchen")` the topics
+kitchen pushed to), `query()` / `query_raw()`.
+Strings go to the DLL as UTF-8 C strings: one with a NUL (a message, a
+name, SQL, a path) is refused (`INVALID_ARGUMENT`) rather than cut there.
+Each `Client` has its own client in the DLL: several can be connected at
+once, from any threads.
 Errors: `RefusedError`, `ConnectionLostError`, `AuthError` (a certificate
 refused, either way, or no role allowed), `BakaShrotError`. The DLL is
 looked for next to the module, or `BAKASHROT_DLL`. The release has a
 wheel with the library in it (`pip install bakashrot-*.whl`, nothing else:
 `bindings/python/make_wheel.py`, `../README.md`, "Releases").
 
+## C#
+
+The NuGet package `NibblePoker.BakaShrot.Client` (namespace
+`NibblePoker.BakaShrot`), or `bindings/csharp/NibblePoker.BakaShrot.Client/BakaShrot.cs`,
+one file to copy into a project. C# 2 and .NET 2.0's class library only:
+built for `net35` (it references `mscorlib` 2.0 only, so .NET Framework
+2.0 and 3.x load it, 4.x too) and `netstandard2.0` (.NET Core 2.0 and up,
+.NET 5 and up). The assembly is `NibblePoker.BakaShrot.Client.dll`, not
+`BakaShrot.dll`, which is the library's name on Windows.
+
+The package has the library for Windows and Linux, x64 and ARM64, in
+`runtimes/<rid>/native/`: .NET Core and .NET take the machine's (or
+`dotnet publish -r`'s). .NET Framework ignores `runtimes/`: the package's
+`build/net35/NibblePoker.BakaShrot.Client.targets` copies `win-x64`'s next
+to the app, `win-arm64`'s when `PlatformTarget` is `ARM64`
+(`BakaShrotRuntime` to choose). CI packs it after the releases, from
+their libraries, and keeps it as the run's `bakashrot-nuget` artifact.
+
+```csharp
+using (Client client = new Client("10.0.0.2", 7000, "ca.crt", "kitchen.crt", "kitchen.key", null))
+{
+    client.Connect();
+    long id = client.Push("sensors", "{\"t\":21}");
+    foreach (Message message in client.IterMessages("sensors", client.Node, 0))
+        Console.WriteLine(message.Id + " " + message.Data);
+}
+```
+
+`new Client(host, port, ca, certificate, key, crl)` (PEM text or paths,
+`crl` null for none), `Connect()`, `Node`, `Connected`, `Push(topic,
+data[, byte[]])`, `PushFile(topic, data, path)`, `Latest()` (null if
+none), `GetMessages()` (a `MessagesPage`), `IterMessages()`, `Follow()`
+(pinging every minute while it waits longer), `Ping()` (`KeepAliveMs`),
+`AnswerTimeoutMs` (`DefaultAnswerTimeoutMs` until set),
+`GetAttachment()` (bytes), `SaveAttachment()` (a file), `ListTopics()` /
+`ListNodes()` / `Query()` (the library's JSON, as a string: parsing it
+is the app's; `ListTopics(topic, node)` / `ListNodes(topic, node)`
+filter the lists as Python's do, null for any), `EnumerateTopics()` /
+`EnumerateNodes()` (the same, filtered the same, as an
+`IEnumerable<string>`) and `EnumerateQuery()` (`QueryRow`s: `Values`,
+null for NULL, by index or column name, `Columns`), over the library's
+enumerations, no JSON: each `foreach` asks again, the enumeration closed
+when it ends (`Close()` ends it too, `ConnectionLostException`),
+`Close()` / `Dispose()`. The same exceptions as Python's:
+`RefusedException`, `ConnectionLostException`, `AuthException`,
+`BakaShrotException`, each with its `ErrorCode`. Strings go as UTF-16 (the
+`W` exports); one with a NUL is refused (`InvalidArgument`) rather than
+cut. Each `Client` has its own client in the DLL, its calls serialized:
+several at once, from any threads.
+
+The library is found the usual DllImport way: next to the app, then the
+PATH (`LD_LIBRARY_PATH` on Linux). It's 64-bit: the app must run as a
+64-bit process (no "Prefer 32-bit" on .NET Framework).
+
 ## PureBasic
 
 `bindings/purebasic/BakaShrot_Client_Prototypes.pbi` (with
 `BakaShrot_ErrorCodes.pbi`): `BakaShrot_LoadClient("bakashrot.dll")`, then
-the `W` exports without their suffix, `BakaShrot_*String()` helpers for the
-getters. Run directly, it's an example: `ClientExample <DllPath> <CaFile>
+the `W` exports without their suffix, the client first, and
+`BakaShrot_*String(Client)` helpers for the getters. Run directly, it's an example: `ClientExample <DllPath> <CaFile>
 <CertificateFile> <KeyFile> <Host> <Port>`, pushing a message and one
-with an attachment, reading both back (run by hand against a server;
-not in CI, which has no PureBasic).
+with an attachment, reading both back, then a second client at the same
+time (run by hand against a server; not in CI, which has no PureBasic).
 
-## The tools
+## The tool
 
-`bakashrot`, one program to push, read, query and list (`bakashrot-cert`,
-for the CA, is apart: `certificates.md`). Each command connects with
-`-c <file>` (`client.toml` by default), does one thing and exits: 0, 1 on a
-failure (why on stderr: `Refused by the server (NotAllowed): ...`,
-`Failed to connect to ...`), 2 on bad arguments. `--help` on each.
+`bakashrot`, one program to push, read, query and list, and to make the
+certificates (`bakashrot cert`, no server needed: `certificates.md`).
+Each other command connects with `-c <file>` (`client.toml` by default),
+does one thing and exits: 0, 1 on a failure (why on stderr: `Refused by
+the server (NotAllowed): ...`, `Failed to connect to ...`), 2 on bad
+arguments. `--help` on each.
 
 ```text
 bakashrot push logs '{"t":21}'                 Pushed as message #42
@@ -129,12 +261,14 @@ bakashrot messages logs kitchen -f --after latest --time
 bakashrot query "SELECT topic, count(*) FROM messages GROUP BY topic"
 bakashrot list                                 Topics (2): ... Nodes (1): ...
 bakashrot list nodes --json                    {"kind":"node","names":["kitchen"],"truncated":false}
+bakashrot list topics --nodes kitchen          Topics (1): the topics kitchen pushed to
+bakashrot list nodes --topics 'sensors.*'      Nodes (2): those that pushed to sensors.*
 ```
 
 - **`messages`:** the first 100 by default (`--limit 0` for all), `--after
   <id>` or `latest`; data as stored, a line break in it spanning lines;
-  `--follow` checks every `--interval` ms (500) until stopped or the
-  connection fails (exit 1); `--time` adds the push time between the id and
+  `--follow` checks every `--interval` ms (500, up to an hour, pinging
+  every minute meanwhile) until stopped or the connection fails (exit 1); `--time` adds the push time between the id and
   the data.
 - **Attachments:** `push -a <file>`; `attachment` replaces the file,
   leaves none if it fails; `latest` says a message's (", not on this
@@ -149,14 +283,52 @@ bakashrot list nodes --json                    {"kind":"node","names":["kitchen"
 
 ## Tests
 
+`crates/bakashrot-client/tests/failures.rs`, against a fake server (TLS
+with a test CA, then scripted answers): a late answer never taken for
+the next request's, a wrong, malformed or cut answer, a part of the
+wrong size, a refusal among the parts, a source failing mid-upload, a
+connection the server closed (each: closed, `NotConnected` after,
+nothing more sent); a refusal and an argument refused before sending
+keeping it; a longer timeout waiting for a slow answer; `is_open()`
+leaving it blocking, noticing a close_notify with the socket still open,
+closing on data sent unasked or a broken TLS stream, and staying open
+past a key update (the next request under the new keys). Each closing
+path broken on purpose once: the tests caught it (`is_open()` five ways,
+2026-11-20, the old socket peek among them).
+
 `crates/bakashrot-capi/tests/`, each against a server on a free port:
 
-- `exports.rs`: the exports as C calls them: certificates from files and
+- `exports.rs`, `exports`: the exports as C calls them, on one client: certificates from files and
   PEM, the `W` strings (and some `A`), the buffers (the size, too small,
   unaligned), selecting messages, attachments (from a file and memory,
   saved and loaded, the buffer, refused ones), every refusal and the
   client's own errors, closing, another identity.
-- `python.rs`: runs `bindings/python/check_bakashrot.py` on the DLL; skipped, saying so, without Python 3.11+.
+- `exports.rs`, `clients`: two clients at once, each with its own answers
+  and errors; bad and freed handles; 4 threads on 4 clients; a client
+  freed while another thread uses it.
+- `exports.rs`, `answer_timeouts`: the answer timeout refused at 0 or
+  less, kept across connections; a query past it `ConnectionLost`.
+- `codes.rs`: Python's, C#'s and PureBasic's error codes are the
+  protocol's (`error.rs`), every one by the same number and name; the
+  values Python and C# copy (the answer timeout, the keepalive,
+  `MAX_GET_MESSAGES`) are the Rust side's.
+- `python.rs`: runs `bindings/python/check_bakashrot.py` on the DLL (two
+  `Client`s at once, too); skipped, saying so, without Python 3.11+.
+- PureBasic, by hand (no PureBasic in CI): run
+  `BakaShrot_Client_Prototypes.pbi` directly, `ClientExample <DllPath>
+  <CaFile> <CertificateFile> <KeyFile> <Host> <Port>`. Passed 2026-11-17
+  with PureBasic 5.73 LTS and 6.41 (C backend), x64. 2026-11-20, both
+  again: the answer timeout exports and `QueryTimedOut` (11) through
+  the DLL against a server with `query_time_limit = "1s"`.
+- C#, by hand (not in `test.ps1`): `cargo build`, then `dotnet test
+  bindings/csharp/NibblePoker.BakaShrot.Client.Tests` (NUnit). Its `[SetUpFixture]`
+  makes the certificates with `target/debug`'s `bakashrot cert`
+  (`BAKASHROT_BIN` for another folder), starts `bakashrot-server` on a free
+  port in `target/csharp-tests/`, copies the library next to the tests.
+  On `net48` (the `net35` build) and `net8.0` (`netstandard2.0`), on Linux
+  `net8.0` only. Passed 2026-11-18 on both, and on `net11.0`
+  (`-p:TargetFrameworks=net11.0`); 2026-11-20 on both again
+  (`AnswerTimeouts`).
 - `header.rs`: `bindings/c/bakashrot.h` matches the exports (rewritten
   when it doesn't: check it in).
 

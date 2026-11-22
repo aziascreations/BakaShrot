@@ -2,7 +2,7 @@
 
 Who connects to whom, and how it's checked. The code is
 `crates/bakashrot-pki` (the library) and `crates/bakashrot-tools`
-(`bakashrot-cert`, the tool). Decided in `../revamp.md`, "Decided".
+(`bakashrot cert`, the tool's commands). Decided in `../revamp.md`, "Decided".
 
 ## The idea
 
@@ -68,7 +68,7 @@ connected, `peer_identity()` gives the other end's `Identity`.
 
 ## Revocation
 
-- `bakashrot-cert revoke` writes `ca.crl`, signed by the CA, with every
+- `bakashrot cert revoke` writes `ca.crl`, signed by the CA, with every
   certificate revoked before (written aside, then moved in place).
 - A server reads it into `Revocations`, which its TLS setup shares
   (`SharedRevocations`): replacing what's inside takes effect for the next
@@ -95,11 +95,11 @@ connected, `peer_identity()` gives the other end's `Identity`.
 ## The tool
 
 ```
-bakashrot-cert ca --name "Home CA"                       ca.crt, ca.key
-bakashrot-cert issue --name kitchen --role sensor        kitchen.crt, kitchen.key
-bakashrot-cert issue --name server-1 --role peer --server
-bakashrot-cert revoke kitchen.crt                         ca.crl
-bakashrot-cert show kitchen.crt
+bakashrot cert ca --name "Home CA"                       ca.crt, ca.key
+bakashrot cert issue --name kitchen --role sensor        kitchen.crt, kitchen.key
+bakashrot cert issue --name server-1 --role peer --server
+bakashrot cert revoke kitchen.crt                         ca.crl
+bakashrot cert show kitchen.crt
 ```
 
 `--ca` (the folder of `ca.crt` / `ca.key`, `.` by default), `--out` (where

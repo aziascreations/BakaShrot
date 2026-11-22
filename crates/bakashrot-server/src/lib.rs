@@ -27,12 +27,13 @@ use bakashrot_config::Config;
 use bakashrot_pki::{Revocations, SharedRevocations, summarize, tls};
 use bakashrot_proto::ErrorCode;
 use bakashrot_proto::packets::RequestRefused;
-use bakashrot_storage::{Database, QueryRunner, Reader};
+use bakashrot_storage::{Database, QueryRunner, Reader, Stop};
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{info, warn};
@@ -43,6 +44,12 @@ const CRL_POLL: Duration = Duration::from_secs(5);
 
 /// How often the WAL is checkpointed.
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How long an idle database connection is kept before it's closed.
+const POOL_IDLE: Duration = Duration::from_secs(60);
+
+/// How often the idle database connections are looked at.
+const POOL_SWEEP: Duration = Duration::from_secs(10);
 
 /// A server, ready to take connections.
 #[derive(Clone)]
@@ -64,9 +71,11 @@ struct Shared {
     database: Database,
     pushes: Pushes,
     /// Read connections not in use.
-    readers: Mutex<Vec<Reader>>,
+    readers: Pool<Reader>,
     /// Query connections not in use.
-    queries: Mutex<Vec<QueryRunner>>,
+    queries: Pool<QueryRunner>,
+    /// Clients' queries running now.
+    queries_running: AtomicUsize,
     /// The replicated attachments being received (topic, node, message
     /// id): one peer at a time each (`accept_from.rs`).
     receiving: Mutex<HashSet<(String, String, u64)>>,
@@ -101,21 +110,22 @@ impl Server {
         let pushes = Pushes::start(database.writer().map_err(|error| error.to_string())?)
             .map_err(|error| format!("the writer's thread: {error}"))?;
         start_checkpoints(&database)?;
-        Ok(Server {
-            shared: Arc::new(Shared {
-                name,
-                acceptor: TlsAcceptor::from(tls),
-                connector: TlsConnector::from(dialing),
-                revocations,
-                ca,
-                database,
-                pushes,
-                readers: Mutex::new(Vec::new()),
-                queries: Mutex::new(Vec::new()),
-                receiving: Mutex::new(HashSet::new()),
-                config,
-            }),
-        })
+        let shared = Arc::new(Shared {
+            name,
+            acceptor: TlsAcceptor::from(tls),
+            connector: TlsConnector::from(dialing),
+            revocations,
+            ca,
+            database,
+            pushes,
+            readers: Pool::new(),
+            queries: Pool::new(),
+            queries_running: AtomicUsize::new(0),
+            receiving: Mutex::new(HashSet::new()),
+            config,
+        });
+        start_pool_sweeps(&shared)?;
+        Ok(Server { shared })
     }
 
     /// The server's name: its certificate's.
@@ -179,6 +189,13 @@ impl Server {
         self.shared.pushes.stop().await;
     }
 
+    /// How many clients' queries are running now: each until it's
+    /// answered, stopped past `query_time_limit`, or stopped as its client
+    /// leaves.
+    pub fn queries_running(&self) -> usize {
+        self.shared.queries_running.load(Ordering::Relaxed)
+    }
+
     /// Reloads the CRL file now: how many certificates it revokes.
     pub fn reload_revocations(&self) -> Result<usize, String> {
         let shared = &self.shared;
@@ -220,40 +237,144 @@ impl Shared {
         Ok(sha256)
     }
 
-    /// Runs a client's SQL on a query connection, off the async threads.
+    /// Runs a client's SQL on a query connection, off the async threads:
+    /// stopped past `query_time_limit`, or once this future is dropped
+    /// (its client left), not left running on its thread.
     async fn query(self: &Arc<Self>, sql: String) -> Result<String, RequestRefused> {
+        let stop = Stop::new();
+        let _stop_if_dropped = StopOnDrop(stop.clone());
+        let limit = self.config.server.query_time_limit;
+        let shared = self.clone();
         self.pooled(
             |shared| &shared.queries,
             Database::query_runner,
-            move |runner: &QueryRunner| runner.run(&sql),
+            move |runner: &QueryRunner| {
+                let _running = Counted::new(&shared.queries_running);
+                runner.run_limited(&sql, limit, &stop)
+            },
         )
         .await
     }
 
     /// Runs `work` on an idle connection of `pool`, or a new one, then
-    /// puts it back.
+    /// puts it back (closed if the pool has enough idle ones already).
     async fn pooled<C: Send + 'static, T: Send + 'static>(
         self: &Arc<Self>,
-        pool: fn(&Shared) -> &Mutex<Vec<C>>,
+        pool: fn(&Shared) -> &Pool<C>,
         open: fn(&Database) -> bakashrot_storage::Result<C>,
         work: impl FnOnce(&C) -> bakashrot_storage::Result<T> + Send + 'static,
     ) -> Result<T, RequestRefused> {
         let shared = self.clone();
         tokio::task::spawn_blocking(move || {
-            let idle = pool(&shared).lock().ok().and_then(|mut idle| idle.pop());
-            let connection = match idle {
+            let connection = match pool(&shared).take() {
                 Some(connection) => connection,
                 None => open(&shared.database).map_err(refusal)?,
             };
             let value = work(&connection).map_err(refusal);
-            if let Ok(mut idle) = pool(&shared).lock() {
-                idle.push(connection);
-            }
+            let max = shared.config.server.idle_database_connections;
+            pool(&shared).put_back(connection, max, Instant::now());
             value
         })
         .await
         .unwrap_or_else(|_| Err(server_error("a read failed")))
     }
+}
+
+/// Stops a query when dropped: answered by then, or its client gone.
+struct StopOnDrop(Stop);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
+/// Counts one in its counter while it lives (a panic included).
+struct Counted<'a>(&'a AtomicUsize);
+
+impl<'a> Counted<'a> {
+    fn new(counter: &'a AtomicUsize) -> Counted<'a> {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Counted(counter)
+    }
+}
+
+impl Drop for Counted<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Database connections not in use, each with when it was put back: the
+/// last one put back is taken first, so the others age out.
+struct Pool<C> {
+    idle: Mutex<Vec<(C, Instant)>>,
+}
+
+impl<C> Pool<C> {
+    fn new() -> Self {
+        Pool {
+            idle: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(C, Instant)>> {
+        self.idle.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The idle connection used last, if any.
+    fn take(&self) -> Option<C> {
+        self.lock().pop().map(|(connection, _)| connection)
+    }
+
+    /// Keeps `connection` for later, unused since `now`, unless `max` are
+    /// kept already: then it's closed (outside the lock).
+    fn put_back(&self, connection: C, max: usize, now: Instant) {
+        let mut idle = self.lock();
+        if idle.len() < max {
+            idle.push((connection, now));
+        } else {
+            drop(idle);
+            drop(connection);
+        }
+    }
+
+    /// Closes the connections unused for `idle_for` or more at `now`.
+    fn sweep(&self, now: Instant, idle_for: Duration) {
+        let stale: Vec<(C, Instant)> = self
+            .lock()
+            .extract_if(.., |(_, since)| {
+                now.saturating_duration_since(*since) >= idle_for
+            })
+            .collect();
+        drop(stale);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lock().len()
+    }
+}
+
+/// Closes the pools' connections unused for [`POOL_IDLE`], looked at every
+/// [`POOL_SWEEP`] on a thread of its own, until the server is dropped.
+fn start_pool_sweeps(shared: &Arc<Shared>) -> Result<(), String> {
+    let shared = Arc::downgrade(shared);
+    std::thread::Builder::new()
+        .name("pool sweeps".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(POOL_SWEEP);
+                let Some(shared) = shared.upgrade() else {
+                    return;
+                };
+                let now = Instant::now();
+                shared.readers.sweep(now, POOL_IDLE);
+                shared.queries.sweep(now, POOL_IDLE);
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| format!("the pool sweeps' thread: {error}"))
 }
 
 /// Checkpoints the WAL every second, on a thread and a connection of its
@@ -284,7 +405,8 @@ fn refusal(error: bakashrot_storage::Error) -> RequestRefused {
         Error::UnknownName(_) => ErrorCode::UnknownName,
         Error::TooBig(_) => ErrorCode::TooBig,
         Error::Query(_) => ErrorCode::QueryFailed,
-        Error::Sqlite(_) | Error::Unusable(_) => {
+        Error::QueryTimedOut(_) => ErrorCode::QueryTimedOut,
+        Error::Sqlite(_) | Error::Unusable(_) | Error::RolledBack => {
             warn!("the database: {error}");
             return server_error("the database failed");
         }
@@ -338,6 +460,27 @@ fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pools_keep_few_and_close_the_idle() {
+        let pool = Pool::new();
+        let start = Instant::now();
+        // Three back at once, two kept at most: the third closed.
+        for connection in [1, 2, 3] {
+            pool.put_back(connection, 2, start);
+        }
+        assert_eq!(pool.len(), 2);
+        // The last one put back is taken first.
+        assert_eq!(pool.take(), Some(2));
+        pool.put_back(2, 2, start + Duration::from_secs(30));
+        // At 60 s, the one idle since the start goes, not the other.
+        pool.sweep(start + POOL_IDLE, POOL_IDLE);
+        assert_eq!(pool.take(), Some(2));
+        assert_eq!(pool.take(), None);
+        // None kept at all.
+        pool.put_back(4, 0, start);
+        assert_eq!(pool.len(), 0);
+    }
 
     #[test]
     fn a_clock_before_1970_is_refused() {

@@ -42,9 +42,8 @@ network**, not exposed to the internet. So:
   server then needs every node's public key).
 - **Private keys sit in PEM files**, readable by whoever can read them: on
   trusted machines, file permissions are enough.
-- **One connection per process in the DLL** (`revamp.md`,
-  "Open questions"): a handle-based API for several. Polling rather than
-  pushed subscriptions; nothing reconnects by itself, on purpose.
+- **Polling rather than pushed subscriptions;** nothing reconnects by
+  itself, on purpose.
 - **At least once:** a push whose answer was lost (the server stopped
   between committing and answering) is stored twice if retried. A client
   that minds reads the latest message before retrying.
@@ -62,13 +61,6 @@ network**, not exposed to the internet. So:
 From a read of the source on 2026-11-15: no test shows any of these yet.
 Reproduce one before fixing it, and move it up (or drop it) once known.
 
-- **`sync_interval` over 5 min.** The server dialed closes the idle link
-  (`IDLE_TIMEOUT`), so every check-in fails once ("closed the link",
-  warned), then the link is dialed again after `retry_delay`. Nothing
-  in the config caps `sync_interval`. Left as it is (the owner,
-  2026-11-16): replicating every 5 min or more isn't a real use, the
-  example config says to keep it under. Fix if needed: cap it under the
-  idle timeout, or have an idle link ask its `SyncState` more often.
 - **Resuming a big replicated attachment.** Before answering `Continue`,
   the receiver reads back and hashes every part it already has
   (`accept_from.rs`, `replicate_attachment`, `hash_parts`), while the
@@ -80,11 +72,6 @@ Reproduce one before fixing it, and move it up (or drop it) once known.
   the example config says so by `max_attachment_size` (1 GiB by
   default). Fix if needed: a wait scaled to the parts already received,
   or the hash's state kept with the attachment.
-- **`SyncState` in one packet.** Every head the peer may
-  send goes in one frame of 16 MiB at most: with very many topic and
-  node pairs (hundreds of thousands) it doesn't fit, the packet can't
-  be sent and replication stops. Fix: heads in several packets, or only
-  those that changed.
 - **Peers with several roles.** `SyncState` lists the union of its
   roles' `accept_topics` and the union of their `accept_nodes`
   (`Permissions::accepted`), while what's taken is each role on its

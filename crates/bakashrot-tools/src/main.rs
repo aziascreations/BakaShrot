@@ -1,6 +1,9 @@
 //! `bakashrot`: pushes messages, reads them and their attachments, runs
 //! queries and lists names from the command line, connecting with a
-//! `client.toml`; see `docs/client.md`, "The tools".
+//! `client.toml`; see `docs/client.md`, "The tool". `bakashrot cert`
+//! issues the certificates (`cert.rs`, `docs/certificates.md`).
+
+mod cert;
 
 use bakashrot_client::{Client, Error, Settings};
 use bakashrot_proto::error::{code_name, is_refusal_code};
@@ -18,12 +21,12 @@ use std::time::Duration;
 #[command(
     name = "bakashrot",
     version,
-    about = "Pushes and reads BakaShrot's messages",
+    about = "Pushes and reads BakaShrot's messages, issues its certificates",
     after_help = "Exits with 0 on success, 1 on a failure, 2 on bad arguments."
 )]
 struct Cli {
     /// The client's settings: the server, the CA's certificate, this
-    /// client's certificate and key, the CRL.
+    /// client's certificate and key, the CRL (cert doesn't use them).
     #[arg(short, long, global = true, default_value = "client.toml")]
     config: PathBuf,
     #[command(subcommand)]
@@ -102,13 +105,29 @@ enum Command {
     },
     /// Lists the topics this client may use and the nodes of those it may
     /// read; every one if its roles have list_topics / list_nodes, or query.
+    /// --topics and --nodes keep the topics and nodes of the topic and node
+    /// pairs they match: `list topics --nodes kitchen` the topics kitchen
+    /// pushed to, `list nodes --topics 'sensors.*'` the nodes that pushed
+    /// to those.
     List {
         /// What to list.
         #[arg(value_enum, default_value_t = What::All)]
         what: What,
+        /// Only of the topics with this name or matching this pattern.
+        #[arg(long)]
+        topics: Option<String>,
+        /// Only of the nodes with this name or matching this pattern.
+        #[arg(long)]
+        nodes: Option<String>,
         /// Prints JSON, a line per list: {"kind":...,"names":[...],"truncated":...}.
         #[arg(long)]
         json: bool,
+    },
+    /// Makes a CA, issues certificates, revokes them, shows them; no
+    /// server needed (run it where the CA's key is).
+    Cert {
+        #[command(subcommand)]
+        command: cert::Command,
     },
 }
 
@@ -159,6 +178,7 @@ fn main() -> ExitCode {
 
 fn run(config: &Path, command: Command) -> Result<(), String> {
     match command {
+        Command::Cert { command } => cert::run(command)?,
         Command::Push {
             topic,
             message,
@@ -246,7 +266,10 @@ fn run(config: &Path, command: Command) -> Result<(), String> {
                     break;
                 }
                 if !batch.more {
-                    std::thread::sleep(Duration::from_millis(interval));
+                    // Pinging meanwhile: `--interval` goes up to 1 h.
+                    client
+                        .wait(Duration::from_millis(interval))
+                        .map_err(failed)?;
                 }
             }
         }
@@ -254,7 +277,12 @@ fn run(config: &Path, command: Command) -> Result<(), String> {
             let sql = input(&sql)?;
             println!("{}", connect(config)?.query(&sql).map_err(failed)?);
         }
-        Command::List { what, json } => {
+        Command::List {
+            what,
+            topics,
+            nodes,
+            json,
+        } => {
             let mut client = connect(config)?;
             let kinds = [
                 (NameKind::Topic, "topic", "Topics"),
@@ -267,7 +295,9 @@ fn run(config: &Path, command: Command) -> Result<(), String> {
                 ) {
                     continue;
                 }
-                let list = client.list_names(kind).map_err(failed)?;
+                let list = client
+                    .list_names(kind, topics.as_deref(), nodes.as_deref())
+                    .map_err(failed)?;
                 if json {
                     let json = serde_json::json!({
                         "kind": name,

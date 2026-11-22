@@ -184,6 +184,21 @@ pub(crate) fn batch_size<'de, D: Deserializer<'de>>(reader: D) -> Result<u32, D:
     Ok(size)
 }
 
+/// The most idle database connections a server keeps per pool.
+pub(crate) const MAX_IDLE_CONNECTIONS: u32 = 512;
+
+/// How many idle database connections to keep, 0 to
+/// `MAX_IDLE_CONNECTIONS`.
+pub(crate) fn idle_connections<'de, D: Deserializer<'de>>(reader: D) -> Result<usize, D::Error> {
+    let count = u32::deserialize(reader)?;
+    if count > MAX_IDLE_CONNECTIONS {
+        return Err(D::Error::custom(format!(
+            "{count} idle database connections: 0 to {MAX_IDLE_CONNECTIONS}"
+        )));
+    }
+    Ok(count as usize)
+}
+
 /// Checks a list of names or patterns, none twice.
 pub(crate) fn check_names(list: &[String]) -> Result<(), String> {
     for (at, entry) in list.iter().enumerate() {
